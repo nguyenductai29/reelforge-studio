@@ -1,0 +1,5 @@
+{
+  "database_url": "sqlite:///instance/reelforge.sqlite3",
+  "storage_dir": "instance/media",
+  "secure_cookies": false
+}
