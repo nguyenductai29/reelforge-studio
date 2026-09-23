@@ -151,3 +151,29 @@ class AITool(Base):
     model: Mapped[str] = mapped_column(String(100))
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class WorkflowRun(Base):
+    __tablename__ = "workflow_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("workflows.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    retry_of_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id"), nullable=True)
+    graph_snapshot: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="running")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkflowRunStep(Base):
+    __tablename__ = "workflow_run_steps"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id"), index=True)
+    node_id: Mapped[str] = mapped_column(String(64))
+    node_type: Mapped[str] = mapped_column(String(24))
+    position: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

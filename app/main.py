@@ -15,8 +15,8 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
-from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool
-from app import billing, payments, usage
+from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep
+from app import billing, payments, usage, workflow_engine
 
 
 SYSTEM_DEFAULTS = {
@@ -118,6 +118,10 @@ class AIToolInput(BaseModel):
     provider: str = Field(min_length=1, max_length=60, pattern=r"^[a-zA-Z0-9._-]+$")
     model: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9._:/-]+$")
     is_enabled: bool = True
+
+
+class StartWorkflowRun(BaseModel):
+    project_id: str
 
 
 class NewWorkflow(BaseModel):
@@ -755,6 +759,95 @@ def workflow_readiness(workflow_id: str, request: Request):
                 detail, status = "Bước này đã có trong sơ đồ.", "configured"
             steps.append({"node_id": node["id"], "task": task, "status": status, "detail": detail})
         return {"workflow_id": workflow.id, "runnable": False, "steps": steps}
+
+
+def public_run(run, steps=None):
+    result = {"id": run.id, "workflow_id": run.workflow_id, "project_id": run.project_id,
+              "retry_of_id": run.retry_of_id, "status": run.status,
+              "created_at": run.created_at.isoformat(),
+              "finished_at": run.finished_at.isoformat() if run.finished_at else None}
+    if steps is not None:
+        result["steps"] = [{"node_id": step.node_id, "node_type": step.node_type,
+                            "status": step.status, "detail": step.detail,
+                            "output": json.loads(step.output) if step.output else None}
+                           for step in steps]
+    return result
+
+
+def persist_run(db, ws, workflow, project, snapshot, retry_of_id=None):
+    # The graph and result are committed together, even if external nodes block.
+    graph = parse_graph(snapshot)
+    validate_graph(WorkflowGraph.model_validate(graph))
+    enabled = {t.task for t in db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True)))}
+    assets = list(db.scalars(select(Asset).where(Asset.workspace_id == ws.id).order_by(Asset.created_at, Asset.id)))
+    now = datetime.now(timezone.utc)
+    run = WorkflowRun(id=ident(), workspace_id=ws.id, workflow_id=workflow.id, project_id=project.id,
+                      retry_of_id=retry_of_id, graph_snapshot=json.dumps(graph), status="running", created_at=now)
+    db.add(run)
+    db.flush()
+    outcomes = workflow_engine.execute_graph(graph, project, assets, enabled)
+    steps = [WorkflowRunStep(id=ident(), run_id=run.id, node_id=item["node_id"],
+              node_type=item["node_type"], position=index, status=item["status"], detail=item["detail"],
+              output=json.dumps(item["output"]) if item["output"] is not None else None, finished_at=now)
+             for index, item in enumerate(outcomes)]
+    db.add_all(steps)
+    run.status = "completed" if all(item["status"] == "completed" for item in outcomes) else "blocked"
+    run.finished_at = now
+    return public_run(run, steps)
+
+
+@app.get("/api/workflows/{workflow_id}/runs")
+def list_workflow_runs(workflow_id: str, request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
+        if not workflow:
+            raise HTTPException(404, "Workflow not found")
+        runs = db.scalars(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow.id,
+            WorkflowRun.workspace_id == ws.id).order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc()).limit(30))
+        return [public_run(run) for run in runs]
+
+
+@app.post("/api/workflows/{workflow_id}/runs", status_code=201)
+def start_workflow_run(workflow_id: str, data: StartWorkflowRun, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        active_plan(db, ws)
+        workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
+        project = db.scalar(select(Project).where(Project.id == data.project_id, Project.workspace_id == ws.id))
+        if not workflow or not project:
+            raise HTTPException(404, "Workflow or project not found")
+        return persist_run(db, ws, workflow, project, workflow.definition)
+
+
+@app.get("/api/workflow-runs/{run_id}")
+def get_workflow_run(run_id: str, request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id))
+        if not run:
+            raise HTTPException(404, "Workflow run not found")
+        steps = db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id).order_by(WorkflowRunStep.position))
+        return public_run(run, list(steps))
+
+
+@app.post("/api/workflow-runs/{run_id}/retry", status_code=201)
+def retry_workflow_run(run_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        active_plan(db, ws)
+        original = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id))
+        if not original:
+            raise HTTPException(404, "Workflow run not found")
+        if original.status not in {"blocked", "failed"}:
+            raise HTTPException(409, "Only blocked or failed runs can be retried")
+        workflow = db.scalar(select(Workflow).where(Workflow.id == original.workflow_id, Workflow.workspace_id == ws.id))
+        project = db.scalar(select(Project).where(Project.id == original.project_id, Project.workspace_id == ws.id))
+        if not workflow or not project:
+            raise HTTPException(404, "Workflow or project not found")
+        return persist_run(db, ws, workflow, project, original.graph_snapshot, retry_of_id=original.id)
 
 
 @app.post("/api/workflows", status_code=201)
