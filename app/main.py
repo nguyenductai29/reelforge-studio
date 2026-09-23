@@ -12,6 +12,7 @@ from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, inspect, select
+from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription
@@ -22,6 +23,7 @@ SYSTEM_DEFAULTS = {
     "secure_cookies": False,
     "storage_dir": "instance/media",
     "trial_project_limit": 2,
+    "registration_enabled": True,
 }
 WORKSPACE_DEFAULTS = {
     "default_language": "vi",
@@ -68,6 +70,10 @@ class Credentials(BaseModel):
 class NewAccount(Credentials):
     workspace_name: str = Field(min_length=1, max_length=100)
     plan_code: str = "trial"
+
+
+class RegisterInput(Credentials):
+    workspace_name: str = Field(min_length=1, max_length=100)
 
 
 class PlanInput(BaseModel):
@@ -171,10 +177,24 @@ class SystemSettingsInput(BaseModel):
     frontend_origin: str
     secure_cookies: bool
     trial_project_limit: int = Field(ge=1, le=10000)
+    registration_enabled: bool
 
 
 def ident():
     return str(uuid.uuid4())
+
+
+def provision_workspace(db, user, name, plan_code):
+    """Insert parents first so PostgreSQL foreign keys are valid at each flush."""
+    db.add(user)
+    db.flush()
+    ws = Workspace(id=ident(), name=name, owner_id=user.id, plan=plan_code)
+    db.add(ws)
+    db.flush()
+    db.add(Subscription(workspace_id=ws.id, plan_code=plan_code, status="active", starts_at=datetime.now(timezone.utc)))
+    db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner"))
+    db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
+    return ws
 
 
 def hashed_password(password: str) -> str:
@@ -256,7 +276,8 @@ def index():
 @app.get("/api/status")
 def status():
     with Session() as db:
-        return {"setup_required": db.scalar(select(func.count()).select_from(User)) == 0}
+        return {"setup_required": db.scalar(select(func.count()).select_from(User)) == 0,
+                "registration_enabled": setting(db, "registration_enabled")}
 
 
 @app.post("/api/setup")
@@ -269,16 +290,31 @@ def setup(data: Credentials, request: Request, response: Response):
         if db.scalar(select(func.count()).select_from(User)):
             raise HTTPException(409, "Setup already completed")
         user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=True)
-        ws = Workspace(id=ident(), name="My Studio", owner_id=user.id)
-        # Flush parents before inserting rows with foreign keys. Without ORM
-        # relationships SQLAlchemy may flush the membership first on Postgres.
-        db.add(user)
-        db.flush()
-        db.add(ws)
-        db.flush()
-        db.add(Subscription(workspace_id=ws.id, plan_code="trial", status="active", starts_at=datetime.now(timezone.utc)))
-        db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner"))
-        db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
+        provision_workspace(db, user, "My Studio", "trial")
+    return login(data, request, response)
+
+
+@app.post("/api/register", status_code=201)
+def register(data: RegisterInput, request: Request, response: Response):
+    same_origin(request)
+    email, name = data.email.strip().lower(), data.workspace_name.strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(data.password) < 12 or not name:
+        raise HTTPException(400, "Valid email, workspace name and password of at least 12 characters required")
+    try:
+        with Session.begin() as db:
+            if not db.scalar(select(func.count()).select_from(User)):
+                raise HTTPException(403, "Create the first studio as administrator")
+            if not setting(db, "registration_enabled"):
+                raise HTTPException(403, "Registration is closed")
+            if db.scalar(select(User.id).where(User.email == email)):
+                raise HTTPException(409, "Email already exists")
+            plan = db.get(Plan, "trial")
+            if not plan or not plan.is_active:
+                raise HTTPException(403, "Trial plan unavailable")
+            user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=False, is_active=True)
+            provision_workspace(db, user, name, "trial")
+    except IntegrityError as exc:
+        raise HTTPException(409, "Email already exists") from exc
     return login(data, request, response)
 
 
@@ -399,14 +435,7 @@ def create_account(data: NewAccount, request: Request):
         if not plan or not plan.is_active:
             raise HTTPException(400, "Plan unavailable")
         user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=False, is_active=True)
-        db.add(user)
-        db.flush()
-        ws = Workspace(id=ident(), name=name, owner_id=user.id, plan=plan.code)
-        db.add(ws)
-        db.flush()
-        db.add(Subscription(workspace_id=ws.id, plan_code=plan.code, status="active", starts_at=datetime.now(timezone.utc)))
-        db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner"))
-        db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
+        ws = provision_workspace(db, user, name, plan.code)
         return {"user_id": user.id, "workspace_id": ws.id}
 
 

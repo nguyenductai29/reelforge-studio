@@ -32,7 +32,7 @@ Open http://localhost:3000 to create the first admin account. API documentation 
 
 Back up PostgreSQL, pull the new source, stop the API, and run `python -m alembic upgrade head` from the project root before restarting Uvicorn. The `0002_plans_users` migration retains existing users, studios and content, seeds Trial / Standard / Pro, and creates a subscription for each existing studio. The previous Trial project limit is copied into the new Trial plan. Restart Next.js to load the Admin screen. Do not run `stamp head` to perform this upgrade.
 
-The system administrator can open **Quản trị** to create a user with a new studio, assign a plan, pause a subscription, disable an account, or edit project and workflow limits. There is no public registration or email delivery yet; the admin must give the new user their initial password through an appropriate channel. An account disabled by the admin loses its existing login sessions. Subscription changes are manual and do not charge anyone. `monthly_credits` is configuration for a future usage engine: credits are not issued, spent or billed yet.
+The system administrator can open **Quản trị** to create a user with a new studio, assign a plan, pause a subscription, disable an account, or edit project and workflow limits. The sign-in screen also offers self-registration after initial admin setup: each new user receives a separate Trial studio. The system admin can turn registration off in System Settings; it is enabled by default. There is no email verification, password recovery or email delivery yet; admin-created initial passwords must be shared through an appropriate channel. An account disabled by the admin loses its existing login sessions. Subscription changes are manual and do not charge anyone. `monthly_credits` is configuration for a future usage engine: credits are not issued, spent or billed yet.
 
 ## Settings and data
 
@@ -49,6 +49,6 @@ For an existing instance using `instance/config.json`, the backend reads it if `
 ## Current architecture and next steps
 
 - Projects, assets, workflows and workspace settings are scoped to the signed-in user's workspace. The first user is the system admin.
-- Active subscriptions enforce the configured project and workflow limits on new records. Plan administration is manual; there is no checkout, credit ledger or open registration yet.
+- Active subscriptions enforce the configured project and workflow limits on new records. Plan administration is manual; there is no checkout or credit ledger yet.
 - Workflow diagrams support adding, moving, connecting and removing nodes; the saved graph is validated as an acyclic graph and scoped to a workspace. Old linear workflow templates are displayed as graphs without a schema change. These are **designs only**; no graph execution, AI calls, render, review, publishing or usage/billing are implemented.
 - The dashboard includes clearly marked planning views for AI tools, channels, scheduling and analytics. They do not accept credentials or publish content yet.

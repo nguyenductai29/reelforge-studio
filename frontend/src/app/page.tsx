@@ -10,7 +10,7 @@ import { errorMessage } from "../lib/messages";
 type Project = { id: string; title: string; topic: string; status: string };
 type Asset = { id: string; filename: string; bytes: number; content_type: string };
 type Dashboard = { workspace: { id: string; name: string; plan: string }; is_admin: boolean; projects: Project[]; assets: Asset[]; workflows: Workflow[]; limits: { projects: number | null } };
-type Settings = { workspace: { default_language: string; video_orientation: string; approval_required: boolean }; system: { frontend_origin: string; secure_cookies: boolean; storage_dir: string; trial_project_limit: number } | null };
+type Settings = { workspace: { default_language: string; video_orientation: string; approval_required: boolean }; system: { frontend_origin: string; secure_cookies: boolean; storage_dir: string; trial_project_limit: number; registration_enabled: boolean } | null };
 type Page = "dashboard" | "projects" | "library" | "workflows" | "ai" | "channels" | "calendar" | "analytics" | "settings" | "admin";
 const nav: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "Tổng quan", icon: "◫" }, { id: "projects", label: "Dự án", icon: "▣" },
@@ -27,6 +27,8 @@ export default function Home() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [setup, setSetup] = useState(false);
+  const [register, setRegister] = useState(false);
+  const [canRegister, setCanRegister] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,7 +40,11 @@ export default function Home() {
     try { setData(await api<Dashboard>("dashboard")); setError(""); }
     catch (e) {
       if (e instanceof Error && e.message === "Please sign in") {
-        setData(null); setSetup((await api<{ setup_required: boolean }>("status")).setup_required);
+        setData(null);
+        const status = await api<{ setup_required: boolean; registration_enabled: boolean }>("status");
+        setSetup(status.setup_required);
+        setCanRegister(status.registration_enabled);
+        if (status.setup_required || !status.registration_enabled) setRegister(false);
       } else setError(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
   }, []);
@@ -59,7 +65,7 @@ export default function Home() {
   }
   async function auth(e: FormEvent<HTMLFormElement>) {
     e.preventDefault(); const form = e.currentTarget; const fields = new FormData(form);
-    if (await submit(setup ? "setup" : "login", { email: fields.get("email"), password: fields.get("password") })) form.reset();
+    if (await submit(setup ? "setup" : register ? "register" : "login", { email: fields.get("email"), password: fields.get("password"), ...(register && !setup ? { workspace_name: fields.get("workspace_name") } : {}) })) form.reset();
   }
   async function formSubmit(e: FormEvent<HTMLFormElement>, endpoint: string) {
     e.preventDefault(); const form = e.currentTarget; const fields = new FormData(form);
@@ -76,6 +82,7 @@ export default function Home() {
       frontend_origin: fields.get("frontend_origin"),
       secure_cookies: fields.get("secure_cookies") === "on",
       trial_project_limit: Number(fields.get("trial_project_limit")),
+      registration_enabled: fields.get("registration_enabled") === "on",
     };
     setBusy(true); setError("");
     try {
@@ -94,7 +101,7 @@ export default function Home() {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; }
   }
   if (loading) return <div className="loading"><Spinner label="Đang tải ReelForge Studio…" /></div>;
-  if (!data) return <main className="auth-wrap"><Card className="auth-card"><div className="brand">✦ ReelForge <span>STUDIO</span></div><h1>{setup ? "Tạo studio của bạn" : "Chào mừng trở lại"}</h1><p className="subtle">{setup ? "Tạo tài khoản quản trị đầu tiên để bắt đầu." : "Đăng nhập để quản lý các dự án video."}</p><form onSubmit={auth}><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Mật khẩu<input name="password" type="password" autoComplete={setup ? "new-password" : "current-password"} minLength={setup ? 12 : undefined} required /></label><button disabled={busy}>{setup ? "Tạo studio" : "Đăng nhập"} <span>→</span></button></form>{error && <Message>{errorMessage(error)}</Message>}<p className="footnote">{setup ? "Mật khẩu tối thiểu 12 ký tự." : "Dữ liệu được lưu trên server của bạn."}</p></Card></main>;
+  if (!data) return <main className="auth-wrap"><Card className="auth-card"><div className="brand">✦ ReelForge <span>STUDIO</span></div><h1>{setup ? "Tạo studio của bạn" : register ? "Tạo tài khoản" : "Chào mừng trở lại"}</h1><p className="subtle">{setup ? "Tạo tài khoản quản trị đầu tiên để bắt đầu." : register ? "Tạo studio riêng với gói Trial để bắt đầu." : "Đăng nhập để quản lý các dự án video."}</p><form onSubmit={auth}>{register && !setup && <label>Tên studio<input name="workspace_name" maxLength={100} required placeholder="Ví dụ: Studio của tôi" /></label>}<label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Mật khẩu<input name="password" type="password" autoComplete={setup || register ? "new-password" : "current-password"} minLength={setup || register ? 12 : undefined} required /></label><button disabled={busy}>{busy ? <Spinner label="Đang xử lý…" /> : setup ? "Tạo studio" : register ? "Tạo tài khoản Trial" : "Đăng nhập"}<span>→</span></button></form>{error && <Message>{errorMessage(error)}</Message>}{!setup && canRegister && <button className="auth-switch" type="button" disabled={busy} onClick={() => { setRegister(!register); setError(""); }}>{register ? "Đã có tài khoản? Đăng nhập" : "Chưa có tài khoản? Tạo tài khoản"}</button>}<p className="footnote">{setup || register ? "Mật khẩu tối thiểu 12 ký tự." : "Dữ liệu được lưu trên server của bạn."}</p></Card></main>;
   const { projects, assets, workflows, workspace, limits } = data;
   const activeWorkflow = workflows.find(w => w.id === selectedWorkflow) ?? workflows[0];
   const shownAssets = assets.filter(a => a.filename.toLowerCase().includes(mediaSearch.toLowerCase()) && (mediaType === "all" || a.content_type.startsWith(mediaType + "/")));
@@ -115,6 +122,6 @@ export default function Home() {
     {page === "channels" && <Planned title="Kênh đăng tải" description="Kết nối YouTube, Facebook và TikTok để đăng video sau khi được duyệt. OAuth và publisher chưa được triển khai." items={["YouTube", "Facebook", "TikTok"]}/>}
     {page === "calendar" && <Planned title="Lịch đăng" description="Chọn thời điểm và trạng thái từng bài đăng sau khi publisher hoạt động. Hiện chưa có lịch hoặc job đăng tải." items={["Lịch theo tháng", "Hàng đợi đăng", "Lịch sử đăng"]}/>}
     {page === "analytics" && <Planned title="Phân tích" description="Theo dõi video đã đăng, hiệu suất từng kênh, mức sử dụng AI và chi phí. Chưa có dữ liệu hoặc đồng bộ analytics." items={["Hiệu suất video", "Sử dụng AI", "Chi phí và credits"]}/>}
-    {page === "settings" && <div className="two-col"><Card><h2>Workspace: {workspace.name}</h2><p className="subtle">Gói {workspace.plan.toUpperCase()} · ID {workspace.id}</p>{settings && <form key={JSON.stringify(settings.workspace)} onSubmit={e => saveSettings(e, "workspace")}><label>Ngôn ngữ mặc định<select name="default_language" defaultValue={settings.workspace.default_language}><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="ja">日本語</option></select></label><label>Tỷ lệ video<select name="video_orientation" defaultValue={settings.workspace.video_orientation}><option value="vertical">Dọc (9:16)</option><option value="horizontal">Ngang (16:9)</option><option value="square">Vuông (1:1)</option></select></label><label className="check-label"><input name="approval_required" type="checkbox" defaultChecked={settings.workspace.approval_required} /> Yêu cầu duyệt trước khi đăng</label><button disabled={busy}>Lưu cài đặt workspace</button></form>}</Card><Card><h2>Cài đặt hệ thống</h2>{settings?.system && data.is_admin ? <form key={JSON.stringify(settings.system)} onSubmit={e => saveSettings(e, "system")}><label>Địa chỉ frontend<input name="frontend_origin" type="url" required defaultValue={settings.system.frontend_origin} /></label><label>Giới hạn dự án Trial<input name="trial_project_limit" type="number" min={1} max={10000} required defaultValue={settings.system.trial_project_limit} /></label><label className="check-label"><input name="secure_cookies" type="checkbox" defaultChecked={settings.system.secure_cookies} /> Cookie chỉ qua HTTPS</label><button disabled={busy}>Lưu cài đặt hệ thống</button><p className="hint">Thư mục media: {settings.system.storage_dir}. Chuyển dữ liệu media cần thực hiện trên server.</p></form> : <p className="subtle">Chỉ quản trị viên được xem và chỉnh sửa cài đặt hệ thống.</p>}<p className="hint">Kết nối AI, mạng xã hội và thanh toán sẽ có khi các module tương ứng được triển khai.</p></Card></div>}
+    {page === "settings" && <div className="two-col"><Card><h2>Workspace: {workspace.name}</h2><p className="subtle">Gói {workspace.plan.toUpperCase()} · ID {workspace.id}</p>{settings && <form key={JSON.stringify(settings.workspace)} onSubmit={e => saveSettings(e, "workspace")}><label>Ngôn ngữ mặc định<select name="default_language" defaultValue={settings.workspace.default_language}><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="ja">日本語</option></select></label><label>Tỷ lệ video<select name="video_orientation" defaultValue={settings.workspace.video_orientation}><option value="vertical">Dọc (9:16)</option><option value="horizontal">Ngang (16:9)</option><option value="square">Vuông (1:1)</option></select></label><label className="check-label"><input name="approval_required" type="checkbox" defaultChecked={settings.workspace.approval_required} /> Yêu cầu duyệt trước khi đăng</label><button disabled={busy}>Lưu cài đặt workspace</button></form>}</Card><Card><h2>Cài đặt hệ thống</h2>{settings?.system && data.is_admin ? <form key={JSON.stringify(settings.system)} onSubmit={e => saveSettings(e, "system")}><label>Địa chỉ frontend<input name="frontend_origin" type="url" required defaultValue={settings.system.frontend_origin} /></label><label>Giới hạn dự án Trial<input name="trial_project_limit" type="number" min={1} max={10000} required defaultValue={settings.system.trial_project_limit} /></label><label className="check-label"><input name="secure_cookies" type="checkbox" defaultChecked={settings.system.secure_cookies} /> Cookie chỉ qua HTTPS</label><label className="check-label"><input name="registration_enabled" type="checkbox" defaultChecked={settings.system.registration_enabled} /> Cho phép đăng ký tài khoản Trial</label><button disabled={busy}>Lưu cài đặt hệ thống</button><p className="hint">Thư mục media: {settings.system.storage_dir}. Chuyển dữ liệu media cần thực hiện trên server.</p></form> : <p className="subtle">Chỉ quản trị viên được xem và chỉnh sửa cài đặt hệ thống.</p>}<p className="hint">Kết nối AI, mạng xã hội và thanh toán sẽ có khi các module tương ứng được triển khai.</p></Card></div>}
     </div></main></div>;
 }
