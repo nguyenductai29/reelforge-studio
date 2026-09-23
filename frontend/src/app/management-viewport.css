@@ -1,0 +1,280 @@
+/* Administration and billing keep navigation and actions within the viewport. */
+.management-viewport {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.management-viewport > .message {
+  flex: none;
+  max-height: 90px;
+  margin: 0;
+  overflow: auto;
+}
+.management-viewport > .module-tabs,
+.management-panel > .module-tabs {
+  flex: 1;
+  min-height: 0;
+}
+.management-viewport .admin-summary {
+  flex: none;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.management-viewport .admin-summary .card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+}
+.management-viewport .admin-summary small {
+  font-size: 10px;
+}
+.management-viewport .admin-summary strong {
+  margin: 0;
+  font-size: 27px;
+  line-height: 1;
+}
+.management-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+.management-panel-heading {
+  flex: none;
+  padding-bottom: 12px;
+}
+.management-panel-heading h2,
+.management-panel-heading .card-head h2 {
+  margin: 0 0 7px;
+  font-size: 16px;
+}
+.management-panel-heading .card-head {
+  gap: 12px;
+}
+.management-panel-heading .card-head button {
+  flex: none;
+}
+.management-panel-heading .subtle {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.management-list {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+  padding-right: 5px;
+  scrollbar-gutter: stable;
+}
+.management-list .admin-row {
+  gap: 12px;
+}
+.management-list .admin-row > div {
+  min-width: min(180px, 100%);
+  overflow-wrap: anywhere;
+}
+.management-list .admin-row select {
+  min-width: 130px;
+}
+.management-list .credit-adjust {
+  width: 100%;
+}
+.management-list .credit-adjust input[name="reason"] {
+  flex: 1;
+  min-width: 100px;
+  max-width: 340px;
+}
+.management-list .list-row > div {
+  min-width: 0;
+}
+.management-list .list-row small {
+  overflow-wrap: anywhere;
+}
+.management-form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+}
+.management-form-fields {
+  flex: 1;
+  padding: 0 5px 12px 0;
+  scrollbar-gutter: stable;
+}
+.management-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 14px 20px;
+}
+.management-field-grid label {
+  min-width: 0;
+  margin: 0;
+}
+.management-field-grid .check-label {
+  align-self: end;
+  min-height: 43px;
+}
+.management-form-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.management-form-actions small {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.management-form-actions button {
+  flex: none;
+  margin: 0;
+}
+.management-plan-tabs {
+  gap: 10px;
+}
+.billing-status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 22px;
+  padding: 12px 18px;
+}
+.billing-status small {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+.billing-status strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.1;
+}
+.billing-status strong span {
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 400;
+}
+.billing-status .billing-balance {
+  margin-left: auto;
+  text-align: right;
+}
+.billing-plan-scroll .billing-grid {
+  align-items: stretch;
+}
+.billing-plan-scroll .billing-grid .card {
+  min-height: 0;
+}
+.billing-plan-scroll .hint {
+  margin-bottom: 0;
+}
+.billing-order-row > .text-button {
+  flex: none;
+}
+@media (max-width: 700px) {
+  .management-viewport {
+    gap: 9px;
+  }
+  .management-viewport .admin-summary {
+    gap: 6px;
+  }
+  .management-viewport .admin-summary .card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    padding: 9px 10px;
+  }
+  .management-viewport .admin-summary small {
+    font-size: 8px;
+    letter-spacing: .5px;
+  }
+  .management-viewport .admin-summary strong {
+    font-size: 22px;
+  }
+  .management-field-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 13px;
+  }
+  .management-panel.card {
+    padding: 14px;
+  }
+  .management-form-actions {
+    padding-top: 9px;
+  }
+  .management-form-actions small {
+    flex-basis: 100%;
+  }
+  .billing-status {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    padding: 10px 13px;
+  }
+  .billing-status > .subtle {
+    order: 3;
+    flex-basis: 100%;
+    font-size: 11px;
+  }
+  .billing-status strong {
+    font-size: 18px;
+  }
+  .billing-order-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .billing-order-row .row-icon {
+    width: 29px;
+    height: 29px;
+  }
+}
+@media (max-height: 650px) {
+  .management-viewport {
+    gap: 7px;
+  }
+  .management-viewport .admin-summary .card {
+    flex-direction: row;
+    align-items: center;
+    padding: 7px 10px;
+  }
+  .management-viewport .admin-summary strong {
+    font-size: 22px;
+  }
+  .management-panel.card {
+    padding: 12px;
+  }
+  .management-panel-heading {
+    padding-bottom: 8px;
+  }
+  .management-panel-heading h2,
+  .management-panel-heading .card-head h2 {
+    margin-bottom: 4px;
+    font-size: 14px;
+  }
+  .management-panel-heading .subtle {
+    font-size: 11px;
+  }
+  .management-form-actions {
+    padding-top: 7px;
+  }
+  .billing-status {
+    padding: 8px 12px;
+  }
+}

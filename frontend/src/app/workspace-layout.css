@@ -1,0 +1,165 @@
+/* Every module owns the available viewport; only its data/form panes can scroll. */
+.broadcast-shell .content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  padding: 18px 24px;
+  scrollbar-gutter: auto;
+}
+.broadcast-shell .content > .heading { flex: none; align-items: center; gap: 14px; margin: 0 0 16px; }
+.broadcast-shell .heading .eyebrow { margin-bottom: 5px; font-size: 8px; }
+.broadcast-shell .heading h1 { font-size: 26px; line-height: 1.15; margin-bottom: 5px; }
+.broadcast-shell .heading .subtle { font-size: 12px; }
+.broadcast-shell .content > .message { flex: none; max-height: 18%; overflow: auto; margin: 0 0 10px; }
+.module-body { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.module-body > * { min-width: 0; }
+.module-fill { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.module-scroll { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #555158 transparent; }
+.module-scroll:focus-visible { outline: 1px solid var(--signal); outline-offset: -2px; }
+.module-tabs { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.module-tab-list { display: flex; flex: none; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; border-bottom: 1px solid var(--border); margin-bottom: 12px; padding: 0 0 7px; }
+.module-tab-list button { flex: none; min-height: 38px; padding: 8px 14px; color: var(--muted); border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 12px; font-weight: 500; }
+.module-tab-list button:hover { background: #252225; color: var(--text); }
+.module-tab-list button[aria-selected=true] { color: var(--signal); background: #b83e3517; border-color: #b83e354a; }
+.module-tab-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.module-tab-panel[hidden], .module-tab-list[hidden] { display: none; }
+.module-tabs.is-split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 16px; }
+.module-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.module-card { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; padding: 18px; }
+.module-card > h2, .module-card > .card-head, .module-card > .subtle, .module-card > .library-filters { flex: none; }
+.module-card > h2 { margin-bottom: 12px; font-size: 15px; }
+.module-card > .card-head { min-height: 32px; margin-bottom: 8px; }
+.module-card .card-head h2 { margin: 0; font-size: 15px; }
+.module-card > .module-scroll { flex: 1; }
+.module-form { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; margin: 0; }
+.module-form > .module-scroll { flex: 1; padding: 0 3px 12px; }
+.module-form label { margin: 12px 0; gap: 6px; }
+.module-form input, .module-form select, .module-form textarea { padding: 10px 12px; }
+.module-form textarea { min-height: 92px; }
+.module-actions { flex: none; display: flex; gap: 9px; align-items: center; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--border); }
+.module-actions button { margin-top: 0; min-height: 40px; }
+.module-help { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 10px 0; }
+.module-body > .roadmap-banner { flex: 1; min-height: 0; overflow: auto; }
+.module-body > .spinner-wrap { margin: auto; }
+.module-card .library-filters { margin: 4px 0 12px; }
+.module-card .library-filters input { max-width: none; }
+.module-card .list-row small { overflow-wrap: anywhere; }
+.module-card .asset-link { flex: none; }
+.library-upload-note { border-top: 1px solid var(--border); padding-top: 14px; }
+.module-notice { flex: none; margin: 0 0 12px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 6px; background: #191719; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.module-notice p { margin: 0; }
+.ai-module > .message { flex: none; margin: 0 0 10px; max-height: 18%; overflow: auto; }
+.ai-module .ai-tool-row > div:first-child { min-width: 0; }
+.ai-module .ai-tool-row .subtle { overflow-wrap: anywhere; }
+.ai-module .ai-tool-actions { flex: none; }
+.ai-module .ai-tool-row { gap: 12px; }
+.ai-module .ai-tool-actions button { min-height: 36px; }
+.workflow-module { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.workflow-picker-bar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.workflow-picker-bar label { display: flex; align-items: center; gap: 12px; margin: 0; min-width: 0; font-size: 10px; }
+.workflow-picker-bar select { max-width: 380px; width: 100%; min-width: 0; padding: 9px 12px; }
+.workflow-picker-bar > span { font-size: 10px; color: var(--muted); flex: none; }
+.workflow-module .editor-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; border-radius: 8px; }
+.workflow-module .editor-top { flex: none; min-height: 0; padding: 12px 16px; }
+.workflow-module .editor-top h2 { font-size: 16px; margin: 0; }
+.workflow-module .editor-top .eyebrow { display: none; }
+.workflow-module .editor-top .subtle { font-size: 10px; }
+.workflow-module .editor-actions { gap: 10px; }
+.workflow-module .editor-body { flex: 1; height: auto; min-height: 0; grid-template-columns: 155px minmax(0, 1fr) 180px; grid-template-rows: minmax(0, 1fr); }
+.workflow-module .node-palette, .workflow-module .node-inspector { min-height: 0; min-width: 0; overscroll-behavior: contain; scrollbar-width: thin; }
+.workflow-module .flow-stage { min-height: 0; }
+.workflow-module .flow-stage-label { top: 10px; left: 10px; font-size: 8px; }
+.workflow-module .editor-footer { flex: none; padding: 8px 14px; font-size: 10px; }
+.workflow-module .editor-footer > span:last-child { display: none; }
+.workflow-module .run-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; padding: 16px; overflow: hidden; }
+.workflow-module .run-panel > .card-head { flex: none; }
+.workflow-module .run-panel h2 { font-size: 15px; margin: 0 0 6px; }
+.workflow-module .run-panel .subtle { font-size: 11px; }
+.workflow-module .run-controls { flex: none; margin: 12px 0; }
+.workflow-module .run-controls label { min-width: 0; flex: 1; max-width: 350px; }
+.workflow-module .run-controls select { padding: 9px; }
+.workflow-module .run-controls button { flex: none; }
+.workflow-module .run-history { overflow-x: auto; flex: none; }
+.workflow-module .run-history button { width: 220px; min-width: min(160px, 100%); max-width: 100%; overflow: hidden; }
+.workflow-module .run-history small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.workflow-module .run-detail { margin-top: 5px; padding-top: 12px; }
+.workflow-module .run-panel > .message, .workflow-module .run-panel > .hint { flex: none; max-height: 20%; overflow: auto; margin: 5px 0; }
+.workflow-create-card { max-width: 700px; width: 100%; align-self: center; }
+.dialog { max-height: calc(100dvh - 40px); overflow-y: auto; }
+@media (max-width: 1200px) {
+  .workflow-module .editor-body { grid-template-columns: 140px minmax(0, 1fr); }
+  .workflow-module .node-inspector { display: none; }
+}
+@media (max-width: 1000px) {
+  .module-columns { grid-template-columns: minmax(0, 1fr); }
+  .workflow-module .editor-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: 66px minmax(0, 1fr); }
+  .workflow-module .node-palette { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; height: auto; padding: 8px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .workflow-module .node-palette h3, .workflow-module .node-palette p, .workflow-module .node-palette h4 { display: none; }
+  .workflow-module .node-palette section { display: flex; flex: none; gap: 5px; }
+  .workflow-module .node-palette button { width: auto; white-space: nowrap; margin: 0; }
+}
+@media (max-width: 700px) {
+  .broadcast-shell .content { padding: 12px; }
+  .broadcast-shell .topbar { height: 34px; }
+  .broadcast-shell .sidebar { padding: 9px 12px; position: relative; z-index: 20; }
+  .broadcast-shell .sidebar.is-nav-open nav { position: absolute; top: 100%; left: 0; right: 0; margin: 0; padding: 10px 12px; max-height: min(65dvh, 420px); background: #171719; border-bottom: 1px solid var(--border); box-shadow: 0 12px 24px #0008; }
+  .broadcast-shell .sidebar.is-nav-open .sidebar-bottom { display: flex; position: fixed; left: 12px; right: 12px; bottom: 12px; padding: 12px; margin: 0; background: #171719; border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px #0008; }
+  .broadcast-shell .heading { margin-bottom: 12px !important; }
+  .broadcast-shell .heading .eyebrow { display: none; }
+  .broadcast-shell .heading h1 { font-size: 22px; margin: 0; }
+  .broadcast-shell .heading .subtle { display: none; }
+  .module-tab-list { gap: 3px; margin-bottom: 9px; padding-bottom: 6px; }
+  .module-tab-list button { min-height: 40px; padding: 8px 11px; }
+  .module-card { padding: 14px; }
+  .module-card .card-head h2 { font-size: 14px; }
+  .module-form input, .module-form textarea, .module-form select { font-size: 16px; }
+  .module-actions button { min-height: 42px; }
+  .module-notice { font-size: 11px; padding: 8px 10px; margin-bottom: 10px; }
+  .workflow-picker-bar { margin-bottom: 10px; }
+  .workflow-picker-bar label { width: 100%; }
+  .workflow-picker-bar label > span, .workflow-picker-bar > span { display: none; }
+  .workflow-picker-bar select { max-width: none; }
+  .workflow-module .editor-top { flex-direction: row; align-items: center; gap: 8px; padding: 9px 10px; }
+  .workflow-module .editor-top h2 { font-size: 13px; }
+  .workflow-module .editor-top > div:first-child { min-width: 0; }
+  .workflow-module .editor-top h2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .workflow-module .editor-top .subtle { display: none; }
+  .workflow-module .editor-actions { width: auto; flex: none; }
+  .workflow-module .editor-state { font-size: 9px; }
+  .workflow-module .editor-actions button { min-height: 38px; padding: 8px; font-size: 11px; }
+  .workflow-module .run-panel { padding: 12px; }
+  .workflow-module .run-panel > .card-head { flex-wrap: wrap; }
+  .workflow-module .run-panel > .card-head .subtle { display: none; }
+  .workflow-module .run-controls { gap: 8px; align-items: flex-end; }
+  .workflow-module .run-controls label { min-width: 100px; }
+  .workflow-module .run-controls button { padding: 10px; }
+  .workflow-module .run-controls select { font-size: 12px; }
+}
+@media (max-height: 500px) {
+  .broadcast-shell .topbar { height: 34px; }
+  .broadcast-shell .content { padding: 8px 12px; }
+  .broadcast-shell .content > .heading { margin-bottom: 8px; }
+  .broadcast-shell .heading h1 { font-size: 20px; margin: 0; }
+  .broadcast-shell .heading .eyebrow, .broadcast-shell .heading .subtle, .broadcast-shell .heading .date { display: none; }
+  .module-tab-list { margin-bottom: 6px; padding-bottom: 4px; }
+  .module-tab-list button { min-height: 34px; padding: 6px 12px; }
+  .module-notice { padding: 6px 10px; margin-bottom: 6px; font-size: 10px; }
+  .module-card { padding: 10px 12px; }
+  .module-actions { padding-top: 8px; }
+  .module-actions button { min-height: 36px; padding: 8px 12px; }
+  .workflow-module .node-palette { padding: 4px; }
+  .workflow-module .editor-body { grid-template-rows: 48px minmax(0, 1fr); }
+  .workflow-module .editor-top { padding: 6px 10px; }
+  .workflow-picker-bar { margin-bottom: 6px; }
+  .workflow-picker-bar select { padding: 6px 10px; }
+  .workflow-module .run-panel { padding: 8px 12px; }
+  .workflow-module .run-panel > .card-head { align-items: center; }
+  .workflow-module .run-panel > .card-head .subtle { display: none; }
+  .workflow-module .run-panel > .card-head h2 { margin: 0; }
+  .workflow-module .run-controls { margin: 6px 0; }
+  .workflow-module .run-controls label { gap: 4px; font-size: 10px; }
+  .workflow-module .run-controls select { padding: 6px 9px; }
+  .workflow-module .run-controls button { height: 36px; padding: 7px 12px; }
+}

@@ -28,6 +28,14 @@ npm run dev
 
 Open http://localhost:3000 to create the first admin account. API documentation is at http://127.0.0.1:8000/docs. The Next.js proxy defaults to `http://127.0.0.1:8000`; if the API is at a different server address, copy `frontend/config.example.json` to `frontend/instance/config.json` and set `api_base_url` to the address **reachable by the Next.js server**. That address is the frontend's connection bootstrap, not an application preference.
 
+### Broadcast Control Room
+
+The Cinematic Noir theme uses charcoal surfaces, warm ivory text, and restrained red accents. Bebas Neue supplies the English display typography; Barlow handles interface copy and Vietnamese titles. Both families are self-hosted, with font provenance and licenses in `frontend/src/app/fonts/`.
+
+The overview uses a responsive production console: studio media on the left, a central 9:16 preview, and saved workflows on the right. Search or filter workspace media, then select an image, video, or audio file to preview its actual contents. The preview offers native playback, contain/fill framing, a reference safe-area overlay, and fullscreen where supported. These viewing controls do not edit the source file or render a project. Workflow selection opens the existing editor and run history.
+
+Every signed-in module stays inside the viewport: navigation, headings, tabs, and primary form actions remain visible while long lists and form fields scroll within their own panels. On smaller screens, Control Room switches between Preview, Media, and Workflow; project/library/AI/settings panels use tabs. Workflow editing, runs, and creation have separate views, as do administration and billing. Tabs keep their panels mounted to preserve unfinished forms and graph edits. The 9:16 preview sizes itself from the space available in its panel. Empty studios show setup actions and actual zero counts. This interface update needs no new migration.
+
 ### Updating an existing installation
 
 Back up PostgreSQL, pull the new source, stop the API, and run `python -m alembic upgrade head` from the project root before restarting Uvicorn. The `0002_plans_users` migration retains existing users, studios and content, seeds Trial / Standard / Pro, and creates a subscription for each existing studio. The previous Trial project limit is copied into the new Trial plan. Restart Next.js to load the Admin screen. Do not run `stamp head` to perform this upgrade.
@@ -74,7 +82,7 @@ For an existing instance using `instance/config.json`, the backend reads it if `
 
 ### AI tools and workflow readiness
 
-The **Công cụ AI** screen stores task, provider, model, and enabled status per workspace in PostgreSQL. Apply migration `0005_ai_tools` with `python -m alembic upgrade head` before restarting the API. A workflow's `GET /api/workflows/{id}/readiness` reports missing AI choices and provider connections without making provider requests or charging credits. Provider credentials and AI generation are not implemented yet; selecting a model does not enable generation. The dashboard now fits the viewport and scrolls its content area independently.
+The **Công cụ AI** screen stores task, provider, model, and enabled status per workspace in PostgreSQL. Apply migration `0005_ai_tools` with `python -m alembic upgrade head` before restarting the API. A workflow's `GET /api/workflows/{id}/readiness` reports missing AI choices and provider connections without making provider requests or charging credits. Provider credentials and AI generation are not implemented yet; selecting a model does not enable generation. Modules fit the viewport, with independent scrolling inside data and form panels.
 
 ### Workflow runs (migration 0006)
 
