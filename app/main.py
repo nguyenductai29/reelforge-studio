@@ -13,9 +13,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, inspect, select
 
-from app.db import ROOT, config, engine, Session
-from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting
-
+from app.db import ROOT, Session, config, engine
+from app.models import (Asset, LoginSession, Membership, Project,
+                        SystemSetting, User, Workflow, Workspace,
+                        WorkspaceSetting)
 
 SYSTEM_DEFAULTS = {
     "frontend_origin": "http://localhost:3000",
@@ -224,7 +225,11 @@ def setup(data: Credentials, request: Request, response: Response):
             raise HTTPException(409, "Setup already completed")
         user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=True)
         ws = Workspace(id=ident(), name="My Studio", owner_id=user.id)
-        db.add_all([user, ws, Membership(user_id=user.id, workspace_id=ws.id, role="owner")])
+        db.add(user)
+        db.flush()
+        db.add(ws)
+        db.flush()
+        db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner"))
         db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
     return login(data, request, response)
 
