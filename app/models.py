@@ -13,6 +13,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class LoginSession(Base):
@@ -78,3 +79,21 @@ class WorkspaceSetting(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
 
+
+class Plan(Base):
+    __tablename__ = "plans"
+    code: Mapped[str] = mapped_column(String(20), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    project_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    workflow_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_credits: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    plan_code: Mapped[str] = mapped_column(ForeignKey("plans.code"))
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

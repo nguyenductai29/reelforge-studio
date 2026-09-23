@@ -13,10 +13,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, inspect, select
 
-from app.db import ROOT, Session, config, engine
-from app.models import (Asset, LoginSession, Membership, Project,
-                        SystemSetting, User, Workflow, Workspace,
-                        WorkspaceSetting)
+from app.db import ROOT, config, engine, Session
+from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription
+
 
 SYSTEM_DEFAULTS = {
     "frontend_origin": "http://localhost:3000",
@@ -64,6 +63,29 @@ ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/we
 class Credentials(BaseModel):
     email: str
     password: str
+
+
+class NewAccount(Credentials):
+    workspace_name: str = Field(min_length=1, max_length=100)
+    plan_code: str = "trial"
+
+
+class PlanInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    project_limit: int | None = Field(default=None, ge=1)
+    workflow_limit: int | None = Field(default=None, ge=1)
+    monthly_credits: int = Field(default=0, ge=0)
+    is_active: bool = True
+
+
+class SubscriptionInput(BaseModel):
+    plan_code: str
+    status: str = Field(pattern="^(active|paused|canceled)$")
+    ends_at: datetime | None = None
+
+
+class ActiveInput(BaseModel):
+    is_active: bool
 
 
 class NewProject(BaseModel):
@@ -177,7 +199,7 @@ def authorize(request: Request, db):
     if not raw or not row or row.expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
         raise HTTPException(401, "Please sign in")
     user = db.get(User, row.user_id)
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(401, "Please sign in")
     return user
 
@@ -188,6 +210,29 @@ def workspace_for(request: Request, db):
     if not membership:
         raise HTTPException(403, "No workspace")
     return db.get(Workspace, membership.workspace_id)
+
+
+def admin_for(request: Request, db):
+    user = authorize(request, db)
+    if not user.is_admin:
+        raise HTTPException(403, "System admin required")
+    return user
+
+
+def active_plan(db, ws):
+    subscription = db.get(Subscription, ws.id)
+    if not subscription or subscription.status != "active" or (subscription.ends_at and subscription.ends_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)):
+        raise HTTPException(403, "Workspace subscription is inactive")
+    plan = db.get(Plan, subscription.plan_code)
+    if not plan or not plan.is_active:
+        raise HTTPException(403, "Plan is unavailable")
+    return plan
+
+
+def enforce_limit(db, ws, table, limit_name):
+    limit = getattr(active_plan(db, ws), limit_name)
+    if limit is not None and db.scalar(select(func.count()).select_from(table).where(table.workspace_id == ws.id)) >= limit:
+        raise HTTPException(403, f"{limit_name.replace('_', ' ').capitalize()} reached")
 
 
 def same_origin(request: Request):
@@ -225,10 +270,13 @@ def setup(data: Credentials, request: Request, response: Response):
             raise HTTPException(409, "Setup already completed")
         user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=True)
         ws = Workspace(id=ident(), name="My Studio", owner_id=user.id)
+        # Flush parents before inserting rows with foreign keys. Without ORM
+        # relationships SQLAlchemy may flush the membership first on Postgres.
         db.add(user)
         db.flush()
         db.add(ws)
         db.flush()
+        db.add(Subscription(workspace_id=ws.id, plan_code="trial", status="active", starts_at=datetime.now(timezone.utc)))
         db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner"))
         db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
     return login(data, request, response)
@@ -239,7 +287,7 @@ def login(data: Credentials, request: Request, response: Response):
     same_origin(request)
     with Session.begin() as db:
         user = db.scalar(select(User).where(User.email == data.email.strip().lower()))
-        if not user or not check_password(data.password, user.password_hash):
+        if not user or not user.is_active or not check_password(data.password, user.password_hash):
             raise HTTPException(401, "Invalid credentials")
         token = secrets.token_urlsafe(48)
         db.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=7)))
@@ -269,8 +317,9 @@ def dashboard(request: Request):
         assets = db.scalars(select(Asset).where(Asset.workspace_id == ws.id).order_by(Asset.created_at.desc())).all()
         workflows = db.scalars(select(Workflow).where(Workflow.workspace_id == ws.id)).all()
         user = authorize(request, db)
-        trial_limit = setting(db, "trial_project_limit")
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": ws.plan}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": trial_limit if ws.plan == "trial" else None}}
+        subscription = db.get(Subscription, ws.id)
+        plan = db.get(Plan, subscription.plan_code) if subscription else None
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": subscription.status if subscription else "unavailable"}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
 
 
 @app.get("/api/settings")
@@ -310,7 +359,116 @@ def update_system_settings(data: SystemSettingsInput, request: Request):
             raise HTTPException(403, "System admin required")
         for key, value in {**data.model_dump(), "frontend_origin": origin}.items():
             db.get(SystemSetting, key).value = json.dumps(value)
+        db.get(Plan, "trial").project_limit = data.trial_project_limit
         return {"system": {key: setting(db, key) for key in SYSTEM_DEFAULTS}}
+
+
+def plan_data(plan):
+    return {"code": plan.code, "name": plan.name, "project_limit": plan.project_limit,
+            "workflow_limit": plan.workflow_limit, "monthly_credits": plan.monthly_credits,
+            "is_active": plan.is_active}
+
+
+@app.get("/api/admin")
+def admin_overview(request: Request):
+    with Session() as db:
+        admin_for(request, db)
+        users = db.scalars(select(User).order_by(User.email)).all()
+        workspaces = db.scalars(select(Workspace).order_by(Workspace.created_at.desc())).all()
+        plans = db.scalars(select(Plan).order_by(Plan.code)).all()
+        return {"plans": [plan_data(p) for p in plans],
+                "users": [{"id": u.id, "email": u.email, "is_active": u.is_active, "is_admin": u.is_admin} for u in users],
+                "workspaces": [{"id": w.id, "name": w.name, "owner_id": w.owner_id,
+                                "plan_code": s.plan_code if s else None,
+                                "status": s.status if s else "unavailable",
+                                "ends_at": s.ends_at.isoformat() if s and s.ends_at else None}
+                               for w in workspaces for s in [db.get(Subscription, w.id)]]}
+
+
+@app.post("/api/admin/accounts", status_code=201)
+def create_account(data: NewAccount, request: Request):
+    same_origin(request)
+    email, name = data.email.strip().lower(), data.workspace_name.strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(data.password) < 12 or not name:
+        raise HTTPException(400, "Valid email, workspace name and password of at least 12 characters required")
+    with Session.begin() as db:
+        admin_for(request, db)
+        if db.scalar(select(User.id).where(User.email == email)):
+            raise HTTPException(409, "Email already exists")
+        plan = db.get(Plan, data.plan_code)
+        if not plan or not plan.is_active:
+            raise HTTPException(400, "Plan unavailable")
+        user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=False, is_active=True)
+        db.add(user)
+        db.flush()
+        ws = Workspace(id=ident(), name=name, owner_id=user.id, plan=plan.code)
+        db.add(ws)
+        db.flush()
+        db.add(Subscription(workspace_id=ws.id, plan_code=plan.code, status="active", starts_at=datetime.now(timezone.utc)))
+        db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner"))
+        db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
+        return {"user_id": user.id, "workspace_id": ws.id}
+
+
+@app.put("/api/admin/users/{user_id}")
+def set_user_active(user_id: str, data: ActiveInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        user = db.get(User, user_id)
+        if not user:
+            raise HTTPException(404, "User not found")
+        if user.id == admin.id and not data.is_active:
+            raise HTTPException(400, "Cannot disable your own account")
+        if user.is_admin and not data.is_active and db.scalar(select(func.count()).select_from(User).where(User.is_admin.is_(True), User.is_active.is_(True))) <= 1:
+            raise HTTPException(400, "Cannot disable the last system admin")
+        user.is_active = data.is_active
+        if not data.is_active:
+            for session in db.scalars(select(LoginSession).where(LoginSession.user_id == user_id)):
+                db.delete(session)
+        return {"id": user.id, "is_active": user.is_active}
+
+
+@app.put("/api/admin/plans/{code}")
+def update_plan(code: str, data: PlanInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        admin_for(request, db)
+        plan = db.get(Plan, code)
+        if not plan:
+            raise HTTPException(404, "Plan not found")
+        if code == "trial" and data.project_limit is None:
+            raise HTTPException(400, "Trial requires a project limit")
+        if not data.is_active and db.scalar(select(func.count()).select_from(Subscription).where(Subscription.plan_code == code, Subscription.status == "active")):
+            raise HTTPException(409, "Move active subscriptions before disabling this plan")
+        for field, value in data.model_dump().items():
+            setattr(plan, field, value)
+        if code == "trial":
+            db.get(SystemSetting, "trial_project_limit").value = json.dumps(data.project_limit)
+        return plan_data(plan)
+
+
+@app.put("/api/admin/workspaces/{workspace_id}/subscription")
+def update_subscription(workspace_id: str, data: SubscriptionInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        admin_for(request, db)
+        ws, plan = db.get(Workspace, workspace_id), db.get(Plan, data.plan_code)
+        if not ws:
+            raise HTTPException(404, "Workspace not found")
+        if not plan or not plan.is_active:
+            raise HTTPException(400, "Plan unavailable")
+        subscription = db.get(Subscription, workspace_id)
+        if not subscription:
+            raise HTTPException(404, "Subscription not found")
+        if data.ends_at and data.ends_at.tzinfo is None:
+            raise HTTPException(400, "End date must include timezone")
+        subscription.plan_code = plan.code
+        subscription.status = data.status
+        subscription.starts_at = datetime.now(timezone.utc)
+        subscription.ends_at = data.ends_at
+        ws.plan = plan.code  # Keep the legacy workspace column synchronized.
+        return {"workspace_id": ws.id, "plan_code": plan.code, "status": data.status}
 
 
 @app.post("/api/projects", status_code=201)
@@ -318,9 +476,7 @@ def create_project(data: NewProject, request: Request):
     same_origin(request)
     with Session.begin() as db:
         ws = workspace_for(request, db)
-        count = db.scalar(select(func.count()).select_from(Project).where(Project.workspace_id == ws.id))
-        if ws.plan == "trial" and count >= setting(db, "trial_project_limit"):
-            raise HTTPException(403, "Trial project limit reached")
+        enforce_limit(db, ws, Project, "project_limit")
         project = Project(id=ident(), workspace_id=ws.id, title=data.title.strip(), topic=data.topic.strip())
         if not project.title:
             raise HTTPException(400, "Title required")
@@ -333,6 +489,7 @@ def create_workflow(data: NewWorkflow, request: Request):
     same_origin(request)
     with Session.begin() as db:
         ws = workspace_for(request, db)
+        enforce_limit(db, ws, Workflow, "workflow_limit")
         workflow = Workflow(id=ident(), workspace_id=ws.id, name=data.name.strip(), definition=json.dumps(default_graph()))
         if not workflow.name:
             raise HTTPException(400, "Name required")
@@ -346,6 +503,7 @@ def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
     validate_graph(graph)
     with Session.begin() as db:
         ws = workspace_for(request, db)
+        active_plan(db, ws)
         membership = db.get(Membership, (authorize(request, db).id, ws.id))
         if membership.role != "owner":
             raise HTTPException(403, "Workspace owner required")
@@ -364,6 +522,7 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
         raise HTTPException(415, "Unsupported media type")
     with Session.begin() as db:
         ws = workspace_for(request, db)
+        active_plan(db, ws)
         asset_id = ident()
         filename = Path(file.filename or "upload").name[:255]
         target = media_root(db) / ws.id / asset_id

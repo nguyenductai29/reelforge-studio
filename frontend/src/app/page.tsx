@@ -1,12 +1,17 @@
 "use client";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import FlowEditor, { type Graph, type Workflow } from "./FlowEditor";
+import AdminPanel from "./AdminPanel";
+import Spinner from "../components/Spinner";
+import Message from "../components/Message";
+import { api } from "../lib/api";
+import { errorMessage } from "../lib/messages";
 
 type Project = { id: string; title: string; topic: string; status: string };
 type Asset = { id: string; filename: string; bytes: number; content_type: string };
 type Dashboard = { workspace: { id: string; name: string; plan: string }; is_admin: boolean; projects: Project[]; assets: Asset[]; workflows: Workflow[]; limits: { projects: number | null } };
 type Settings = { workspace: { default_language: string; video_orientation: string; approval_required: boolean }; system: { frontend_origin: string; secure_cookies: boolean; storage_dir: string; trial_project_limit: number } | null };
-type Page = "dashboard" | "projects" | "library" | "workflows" | "ai" | "channels" | "calendar" | "analytics" | "settings";
+type Page = "dashboard" | "projects" | "library" | "workflows" | "ai" | "channels" | "calendar" | "analytics" | "settings" | "admin";
 const nav: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "Tổng quan", icon: "◫" }, { id: "projects", label: "Dự án", icon: "▣" },
   { id: "library", label: "Kho media", icon: "▧" }, { id: "workflows", label: "Sơ đồ workflow", icon: "◇" },
@@ -14,12 +19,6 @@ const nav: { id: Page; label: string; icon: string }[] = [
   { id: "calendar", label: "Lịch đăng", icon: "▦" }, { id: "analytics", label: "Phân tích", icon: "◷" },
   { id: "settings", label: "Cài đặt", icon: "⚙" },
 ];
-async function api<T>(endpoint: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`/api/${endpoint}`, { credentials: "same-origin", cache: "no-store", ...init });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail ?? `Yêu cầu thất bại (${res.status})`);
-  return data as T;
-}
 function Card({ children, className = "" }: { children: ReactNode; className?: string }) { return <section className={`card ${className}`}>{children}</section>; }
 function Empty({ children }: { children: ReactNode }) { return <div className="empty">{children}</div>; }
 function Planned({title,description,items}:{title:string;description:string;items:string[]}){return <div className="roadmap-banner"><span className="tag">TRONG LỘ TRÌNH</span><h2>{title}</h2><p>{description}</p><div className="roadmap-items">{items.map(item=><span key={item}>{item} · Sắp có</span>)}</div></div>}
@@ -94,14 +93,15 @@ export default function Home() {
       return true;
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; }
   }
-  if (loading) return <div className="loading">Đang tải ReelForge Studio…</div>;
-  if (!data) return <main className="auth-wrap"><Card className="auth-card"><div className="brand">✦ ReelForge <span>STUDIO</span></div><h1>{setup ? "Tạo studio của bạn" : "Chào mừng trở lại"}</h1><p className="subtle">{setup ? "Tạo tài khoản quản trị đầu tiên để bắt đầu." : "Đăng nhập để quản lý các dự án video."}</p><form onSubmit={auth}><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Mật khẩu<input name="password" type="password" autoComplete={setup ? "new-password" : "current-password"} minLength={setup ? 12 : undefined} required /></label><button disabled={busy}>{setup ? "Tạo studio" : "Đăng nhập"} <span>→</span></button></form>{error && <p className="error" role="alert">{error}</p>}<p className="footnote">{setup ? "Mật khẩu tối thiểu 12 ký tự." : "Dữ liệu được lưu trên server của bạn."}</p></Card></main>;
+  if (loading) return <div className="loading"><Spinner label="Đang tải ReelForge Studio…" /></div>;
+  if (!data) return <main className="auth-wrap"><Card className="auth-card"><div className="brand">✦ ReelForge <span>STUDIO</span></div><h1>{setup ? "Tạo studio của bạn" : "Chào mừng trở lại"}</h1><p className="subtle">{setup ? "Tạo tài khoản quản trị đầu tiên để bắt đầu." : "Đăng nhập để quản lý các dự án video."}</p><form onSubmit={auth}><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Mật khẩu<input name="password" type="password" autoComplete={setup ? "new-password" : "current-password"} minLength={setup ? 12 : undefined} required /></label><button disabled={busy}>{setup ? "Tạo studio" : "Đăng nhập"} <span>→</span></button></form>{error && <Message>{errorMessage(error)}</Message>}<p className="footnote">{setup ? "Mật khẩu tối thiểu 12 ký tự." : "Dữ liệu được lưu trên server của bạn."}</p></Card></main>;
   const { projects, assets, workflows, workspace, limits } = data;
   const activeWorkflow = workflows.find(w => w.id === selectedWorkflow) ?? workflows[0];
   const shownAssets = assets.filter(a => a.filename.toLowerCase().includes(mediaSearch.toLowerCase()) && (mediaType === "all" || a.content_type.startsWith(mediaType + "/")));
-  return <div className="shell"><aside className="sidebar"><div className="brand">✦ ReelForge <span>STUDIO</span></div><div className="nav-label">WORKSPACE</div><nav>{nav.map(item => <button key={item.id} className={page === item.id ? "selected" : ""} onClick={() => { setPage(item.id); setError(""); }}><span className="nav-icon">{item.icon}</span>{item.label}</button>)}</nav><div className="sidebar-bottom"><div className="workspace-icon">RS</div><div className="workspace-meta"><b>{workspace.name}</b><small>{workspace.plan.toUpperCase()}</small></div><button className="logout" title="Đăng xuất" onClick={async () => { await api("logout", { method: "POST" }); await refresh(); }}>↪</button></div></aside>
-    <main className="main"><header className="topbar"><div className="breadcrumb">Studio <span>/</span> {nav.find(n => n.id === page)?.label}</div><div className="top-right"><span className="online-dot" /> Hệ thống hoạt động <span className="plan-badge">{workspace.plan.toUpperCase()}</span></div></header><div className="content"><div className="heading"><div><p className="eyebrow">REELFORGE STUDIO</p><h1>{nav.find(n => n.id === page)?.label}</h1><p className="subtle">{page === "dashboard" ? "Tổng quan hoạt động trong studio của bạn." : page === "projects" ? "Tổ chức ý tưởng và các series video." : page === "library" ? "Tài nguyên cho mọi dự án của bạn." : page === "workflows" ? "Thiết kế node, nối các bước và lưu sơ đồ." : page === "ai" ? "Provider và model cho từng bước sản xuất." : page === "settings" ? "Thiết lập và trạng thái tài khoản." : "Không gian chuẩn bị cho giai đoạn tiếp theo."}</p></div><div className="date">{new Intl.DateTimeFormat("vi-VN", { dateStyle: "long" }).format(new Date())}</div></div>
-    {error && <div className="error" role="alert">{error}</div>}
+  return <div className="shell"><aside className="sidebar"><div className="brand">✦ ReelForge <span>STUDIO</span></div><div className="nav-label">WORKSPACE</div><nav>{[...nav, ...(data.is_admin ? [{ id: "admin" as Page, label: "Quản trị", icon: "♛" }] : [])].map(item => <button key={item.id} className={page === item.id ? "selected" : ""} onClick={() => { setPage(item.id); setError(""); }}><span className="nav-icon">{item.icon}</span>{item.label}</button>)}</nav><div className="sidebar-bottom"><div className="workspace-icon">RS</div><div className="workspace-meta"><b>{workspace.name}</b><small>{workspace.plan.toUpperCase()}</small></div><button className="logout" title="Đăng xuất" onClick={async () => { await api("logout", { method: "POST" }); await refresh(); }}>↪</button></div></aside>
+    <main className="main"><header className="topbar"><div className="breadcrumb">Studio <span>/</span> {page === "admin" ? "Quản trị" : nav.find(n => n.id === page)?.label}</div><div className="top-right"><span className="online-dot" /> Hệ thống hoạt động <span className="plan-badge">{workspace.plan.toUpperCase()}</span></div></header><div className="content"><div className="heading"><div><p className="eyebrow">REELFORGE STUDIO</p><h1>{page === "admin" ? "Quản trị" : nav.find(n => n.id === page)?.label}</h1><p className="subtle">{page === "dashboard" ? "Tổng quan hoạt động trong studio của bạn." : page === "projects" ? "Tổ chức ý tưởng và các series video." : page === "library" ? "Tài nguyên cho mọi dự án của bạn." : page === "workflows" ? "Thiết kế node, nối các bước và lưu sơ đồ." : page === "ai" ? "Provider và model cho từng bước sản xuất." : page === "settings" ? "Thiết lập và trạng thái tài khoản." : "Không gian chuẩn bị cho giai đoạn tiếp theo."}</p></div><div className="date">{new Intl.DateTimeFormat("vi-VN", { dateStyle: "long" }).format(new Date())}</div></div>
+    {error && <Message>{errorMessage(error)}</Message>}
+    {page === "admin" && data.is_admin && <AdminPanel />}
     {page === "dashboard" && <>
       <div className="hero"><div className="hero-copy"><span className="hero-kicker">✦ CREATIVE CONTROL CENTER</span><h2>Biến ý tưởng thành<br/><em>câu chuyện có hình.</em></h2><p>Quản lý dự án, xây sơ đồ sản xuất và tái sử dụng media trong một studio.</p><div className="hero-actions"><button className="primary-action" onClick={() => setPage("projects")}>＋ Tạo dự án</button><button className="secondary-action" onClick={() => setPage("workflows")}>Xem sơ đồ workflow ↗</button></div></div><div className="hero-art" aria-hidden="true"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="hero-core">✦</div><span className="hero-chip chip-one">IDEA</span><span className="hero-chip chip-two">MEDIA</span><span className="hero-chip chip-three">RENDER</span></div></div>
       <div className="section-heading"><h2>Studio trong một góc nhìn</h2><span>DỮ LIỆU THẬT CỦA WORKSPACE</span></div>
