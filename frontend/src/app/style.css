@@ -13,3 +13,23 @@ select{width:100%;border:1px solid #343c4f;background:#0e131d;color:#f4f4f8;bord
 .auth-switch{display:block;width:100%;border:0;background:transparent;color:#c6afff;padding:12px;margin-top:12px;font-size:13px;font-weight:600}.auth-switch:hover{text-decoration:underline}
 .billing-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.billing-grid .card{min-height:210px}.billing-grid h2{margin:20px 0 10px}.billing-grid strong{display:block;font-size:22px;margin-bottom:15px}.billing-grid button{margin-top:24px}@media(max-width:900px){.billing-grid{grid-template-columns:1fr}}
 .credit-adjust{display:flex;align-items:center;gap:7px;margin:0;flex-wrap:wrap}.credit-adjust input{width:110px;padding:8px}.credit-adjust input[name=reason]{width:145px}.credit-adjust button{margin:0!important}.usage-history{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:850px){.usage-history{grid-template-columns:1fr}}
+
+/* The viewport stays fixed; only the dashboard body and navigation can scroll. */
+html,body{height:100%;overflow:hidden}
+.shell{height:100dvh;min-height:0;overflow:hidden}
+.sidebar{height:100dvh;min-height:0;overflow:hidden}
+.sidebar nav{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.sidebar-bottom{flex:none}
+.main{height:100dvh;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.topbar{flex:none}
+.content{width:100%;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.auth-wrap{height:100dvh;min-height:0;overflow-y:auto}
+.ai-tool-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(300px,1fr);gap:18px;margin-top:18px}
+.ai-tool-row{display:flex;justify-content:space-between;gap:18px;padding:16px 0;border-top:1px solid var(--border)}
+.ai-tool-row b{font-size:14px}.ai-tool-row small{color:#c3acff;font-size:11px}.ai-tool-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.ai-tool-actions button{background:#ffffff12;color:#ddd3ff;border:1px solid #ffffff25;border-radius:7px;padding:7px 10px;font-size:11px}
+.ai-tool-layout select{width:100%;border:1px solid #343c4f;background:#0e131d;color:#f4f4f8;border-radius:8px;padding:12px}
+.ai-tool-check{display:flex;align-items:center}.ai-tool-check input{width:auto}
+.ai-tool-layout form .secondary-action{margin-left:8px}
+@media(max-width:900px){.ai-tool-layout{grid-template-columns:1fr}}
+@media(max-width:700px){.shell{height:100dvh;min-height:0;display:flex;flex-direction:column}.sidebar{height:auto;min-height:0;flex:none}.sidebar nav{overflow-x:auto;overflow-y:hidden}.main{height:auto;min-height:0;flex:1}.content{width:100%;min-height:0;overflow-y:auto}.ai-tool-row{flex-direction:column}}

@@ -71,3 +71,7 @@ For an existing instance using `instance/config.json`, the backend reads it if `
 - Active subscriptions enforce the configured project and workflow limits on new records. Plan administration is manual; there is no checkout or credit ledger yet.
 - Workflow diagrams support adding, moving, connecting and removing nodes; the saved graph is validated as an acyclic graph and scoped to a workspace. Old linear workflow templates are displayed as graphs without a schema change. These are **designs only**; no graph execution, AI calls, render, review, publishing or usage/billing are implemented.
 - The dashboard includes clearly marked planning views for AI tools, channels, scheduling and analytics. They do not accept credentials or publish content yet.
+
+### AI tools and workflow readiness
+
+The **Công cụ AI** screen stores task, provider, model, and enabled status per workspace in PostgreSQL. Apply migration `0005_ai_tools` with `python -m alembic upgrade head` before restarting the API. A workflow's `GET /api/workflows/{id}/readiness` reports missing AI choices and provider connections without making provider requests or charging credits. Provider credentials and actual workflow execution are not implemented yet; selecting a model does not enable generation. The dashboard now fits the viewport and scrolls its content area independently.

@@ -141,3 +141,13 @@ class UsageEvent(Base):
     credits: Mapped[int] = mapped_column(Integer)
     reference: Mapped[str] = mapped_column(String(100), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+class AITool(Base):
+    __tablename__ = "ai_tools"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    task: Mapped[str] = mapped_column(String(20))
+    provider: Mapped[str] = mapped_column(String(60))
+    model: Mapped[str] = mapped_column(String(100))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

@@ -15,7 +15,7 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
-from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent
+from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool
 from app import billing, payments, usage
 
 
@@ -108,6 +108,16 @@ class ActiveInput(BaseModel):
 class NewProject(BaseModel):
     title: str = Field(min_length=1, max_length=150)
     topic: str = Field(default="", max_length=3000)
+
+
+AI_TASKS = {"script", "image", "video", "voice", "music"}
+
+
+class AIToolInput(BaseModel):
+    task: str = Field(pattern="^(script|image|video|voice|music)$")
+    provider: str = Field(min_length=1, max_length=60, pattern=r"^[a-zA-Z0-9._-]+$")
+    model: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9._:/-]+$")
+    is_enabled: bool = True
 
 
 class NewWorkflow(BaseModel):
@@ -667,6 +677,84 @@ def create_project(data: NewProject, request: Request):
             raise HTTPException(400, "Title required")
         db.add(project)
         return public_project(project)
+
+
+def public_ai_tool(tool):
+    return {"id": tool.id, "task": tool.task, "provider": tool.provider, "model": tool.model, "is_enabled": tool.is_enabled}
+
+
+def ai_tool_owner(request, db):
+    ws = workspace_for(request, db)
+    active_plan(db, ws)
+    member = db.get(Membership, (authorize(request, db).id, ws.id))
+    if not member or member.role != "owner":
+        raise HTTPException(403, "Workspace owner required")
+    return ws
+
+
+@app.get("/api/ai-tools")
+def list_ai_tools(request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        return [public_ai_tool(t) for t in db.scalars(select(AITool).where(AITool.workspace_id == ws.id).order_by(AITool.created_at, AITool.id))]
+
+
+@app.post("/api/ai-tools", status_code=201)
+def create_ai_tool(data: AIToolInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = ai_tool_owner(request, db)
+        tool = AITool(id=ident(), workspace_id=ws.id, **data.model_dump())
+        db.add(tool)
+        return public_ai_tool(tool)
+
+
+@app.put("/api/ai-tools/{tool_id}")
+def update_ai_tool(tool_id: str, data: AIToolInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = ai_tool_owner(request, db)
+        tool = db.scalar(select(AITool).where(AITool.id == tool_id, AITool.workspace_id == ws.id))
+        if not tool:
+            raise HTTPException(404, "AI tool not found")
+        for key, value in data.model_dump().items():
+            setattr(tool, key, value)
+        return public_ai_tool(tool)
+
+
+@app.delete("/api/ai-tools/{tool_id}", status_code=204)
+def delete_ai_tool(tool_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = ai_tool_owner(request, db)
+        tool = db.scalar(select(AITool).where(AITool.id == tool_id, AITool.workspace_id == ws.id))
+        if not tool:
+            raise HTTPException(404, "AI tool not found")
+        db.delete(tool)
+    return Response(status_code=204)
+
+
+@app.get("/api/workflows/{workflow_id}/readiness")
+def workflow_readiness(workflow_id: str, request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
+        if not workflow:
+            raise HTTPException(404, "Workflow not found")
+        graph = parse_graph(workflow.definition)
+        enabled = {tool.task for tool in db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True)))}
+        steps = []
+        for node in graph["nodes"]:
+            task = node["type"]
+            if task in AI_TASKS:
+                detail = "Đã chọn model; cần kết nối provider trước khi chạy." if task in enabled else "Chưa chọn công cụ AI cho tác vụ này."
+                status = "needs_connection" if task in enabled else "missing_tool"
+            elif task in {"render", "publish"}:
+                detail, status = "Cần kết nối dịch vụ thực thi trước khi chạy.", "needs_connection"
+            else:
+                detail, status = "Bước này đã có trong sơ đồ.", "configured"
+            steps.append({"node_id": node["id"], "task": task, "status": status, "detail": detail})
+        return {"workflow_id": workflow.id, "runnable": False, "steps": steps}
 
 
 @app.post("/api/workflows", status_code=201)
