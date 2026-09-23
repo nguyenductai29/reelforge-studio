@@ -8,21 +8,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_FILE = ROOT / "instance" / "config.json"
-config = json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {}
-database_url = config.get("database_url", "sqlite:///instance/reelforge.sqlite3")
+CONFIG_FILE = ROOT / "instance" / "bootstrap.json"
+LEGACY_CONFIG_FILE = ROOT / "instance" / "config.json"
+source_file = CONFIG_FILE if CONFIG_FILE.exists() else LEGACY_CONFIG_FILE
+config = json.loads(source_file.read_text()) if source_file.exists() else {}
+database_url = config.get("database_url")
+if not database_url:
+    raise RuntimeError("Create instance/bootstrap.json with a PostgreSQL database_url before starting ReelForge Studio")
 if database_url.startswith("sqlite:///instance/"):
     database_url = "sqlite:///" + str(ROOT / database_url.removeprefix("sqlite:///"))
-storage = Path(config.get("storage_dir", "instance/media"))
-if not storage.is_absolute():
-    storage = ROOT / storage
-storage.mkdir(parents=True, exist_ok=True)
 engine = create_engine(database_url, connect_args={"check_same_thread": False} if database_url.startswith("sqlite:") else {}, pool_pre_ping=True)
 Session = sessionmaker(engine, expire_on_commit=False)
 
@@ -90,9 +90,56 @@ class Workflow(Base):
     definition: Mapped[str] = mapped_column(Text, default='["idea","script","scenes","assets","voice","render","review","publish"]')
 
 
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+
+
+class WorkspaceSetting(Base):
+    __tablename__ = "workspace_settings"
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+
+
+SYSTEM_DEFAULTS = {
+    "frontend_origin": "http://localhost:3000",
+    "secure_cookies": False,
+    "storage_dir": "instance/media",
+    "trial_project_limit": 2,
+}
+WORKSPACE_DEFAULTS = {
+    "default_language": "vi",
+    "video_orientation": "vertical",
+    "approval_required": True,
+}
+
+
+def setting(db, key):
+    return json.loads(db.get(SystemSetting, key).value)
+
+
+def workspace_settings(db, workspace_id):
+    return {key: json.loads(db.get(WorkspaceSetting, (workspace_id, key)).value) for key in WORKSPACE_DEFAULTS}
+
+
+def media_root(db):
+    path = Path(setting(db, "storage_dir"))
+    return path if path.is_absolute() else ROOT / path
+
+
 Base.metadata.create_all(engine)
+with Session.begin() as db:
+    for key, default in SYSTEM_DEFAULTS.items():
+        if db.get(SystemSetting, key) is None:
+            # Carry any pre-existing JSON configuration into the database once.
+            db.add(SystemSetting(key=key, value=json.dumps(config.get(key, default))))
+    for (workspace_id,) in db.execute(select(Workspace.id)):
+        for key, default in WORKSPACE_DEFAULTS.items():
+            if db.get(WorkspaceSetting, (workspace_id, key)) is None:
+                db.add(WorkspaceSetting(workspace_id=workspace_id, key=key, value=json.dumps(default)))
 app = FastAPI(title="ReelForge Studio")
-TRIAL_PROJECTS = 2
 MAX_UPLOAD = 100 * 1024 * 1024
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "audio/mpeg", "audio/wav", "audio/ogg"}
 
@@ -109,6 +156,18 @@ class NewProject(BaseModel):
 
 class NewWorkflow(BaseModel):
     name: str = Field(min_length=1, max_length=150)
+
+
+class WorkspaceSettingsInput(BaseModel):
+    default_language: str = Field(pattern="^(vi|en|ja)$")
+    video_orientation: str = Field(pattern="^(vertical|horizontal|square)$")
+    approval_required: bool
+
+
+class SystemSettingsInput(BaseModel):
+    frontend_origin: str
+    secure_cookies: bool
+    trial_project_limit: int = Field(ge=1, le=10000)
 
 
 def ident():
@@ -152,7 +211,9 @@ def workspace_for(request: Request, db):
 
 def same_origin(request: Request):
     origin = request.headers.get("origin")
-    allowed = {str(request.base_url).rstrip("/"), str(config.get("frontend_origin", "http://localhost:3000")).rstrip("/")}
+    with Session() as db:
+        frontend_origin = setting(db, "frontend_origin")
+    allowed = {str(request.base_url).rstrip("/"), frontend_origin.rstrip("/")}
     if origin and origin.rstrip("/") not in allowed:
         raise HTTPException(403, "Invalid origin")
 
@@ -184,6 +245,7 @@ def setup(data: Credentials, request: Request, response: Response):
         user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=True)
         ws = Workspace(id=ident(), name="My Studio", owner_id=user.id)
         db.add_all([user, ws, Membership(user_id=user.id, workspace_id=ws.id, role="owner")])
+        db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
     return login(data, request, response)
 
 
@@ -196,7 +258,9 @@ def login(data: Credentials, request: Request, response: Response):
             raise HTTPException(401, "Invalid credentials")
         token = secrets.token_urlsafe(48)
         db.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=7)))
-    response.set_cookie("rf_session", token, httponly=True, samesite="strict", secure=bool(config.get("secure_cookies", False)), max_age=604800)
+    with Session() as db:
+        secure_cookies = setting(db, "secure_cookies")
+    response.set_cookie("rf_session", token, httponly=True, samesite="strict", secure=secure_cookies, max_age=604800)
     return {"email": user.email}
 
 
@@ -219,7 +283,49 @@ def dashboard(request: Request):
         projects = db.scalars(select(Project).where(Project.workspace_id == ws.id).order_by(Project.created_at.desc())).all()
         assets = db.scalars(select(Asset).where(Asset.workspace_id == ws.id).order_by(Asset.created_at.desc())).all()
         workflows = db.scalars(select(Workflow).where(Workflow.workspace_id == ws.id)).all()
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": ws.plan}, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type} for a in assets], "workflows": [{"id": w.id, "name": w.name, "steps": json.loads(w.definition)} for w in workflows], "limits": {"projects": TRIAL_PROJECTS if ws.plan == "trial" else None}}
+        user = authorize(request, db)
+        trial_limit = setting(db, "trial_project_limit")
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": ws.plan}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type} for a in assets], "workflows": [{"id": w.id, "name": w.name, "steps": json.loads(w.definition)} for w in workflows], "limits": {"projects": trial_limit if ws.plan == "trial" else None}}
+
+
+@app.get("/api/settings")
+def get_settings(request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        user = authorize(request, db)
+        system = None
+        if user.is_admin:
+            system = {key: setting(db, key) for key in SYSTEM_DEFAULTS}
+        return {"workspace": workspace_settings(db, ws.id), "system": system}
+
+
+@app.put("/api/settings/workspace")
+def update_workspace_settings(data: WorkspaceSettingsInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        membership = db.get(Membership, (authorize(request, db).id, ws.id))
+        if membership.role != "owner":
+            raise HTTPException(403, "Workspace owner required")
+        for key, value in data.model_dump().items():
+            db.get(WorkspaceSetting, (ws.id, key)).value = json.dumps(value)
+        return {"workspace": data.model_dump()}
+
+
+@app.put("/api/settings/system")
+def update_system_settings(data: SystemSettingsInput, request: Request):
+    same_origin(request)
+    origin = data.frontend_origin.rstrip("/")
+    if not re.fullmatch(r"https?://[^/\s]+", origin):
+        raise HTTPException(400, "Use a valid frontend origin (scheme and host only)")
+    if data.secure_cookies and not origin.startswith("https://"):
+        raise HTTPException(400, "Secure cookies require HTTPS frontend origin")
+    with Session.begin() as db:
+        if not authorize(request, db).is_admin:
+            raise HTTPException(403, "System admin required")
+        for key, value in {**data.model_dump(), "frontend_origin": origin}.items():
+            db.get(SystemSetting, key).value = json.dumps(value)
+        return {"system": {key: setting(db, key) for key in SYSTEM_DEFAULTS}}
 
 
 @app.post("/api/projects", status_code=201)
@@ -228,7 +334,7 @@ def create_project(data: NewProject, request: Request):
     with Session.begin() as db:
         ws = workspace_for(request, db)
         count = db.scalar(select(func.count()).select_from(Project).where(Project.workspace_id == ws.id))
-        if ws.plan == "trial" and count >= TRIAL_PROJECTS:
+        if ws.plan == "trial" and count >= setting(db, "trial_project_limit"):
             raise HTTPException(403, "Trial project limit reached")
         project = Project(id=ident(), workspace_id=ws.id, title=data.title.strip(), topic=data.topic.strip())
         if not project.title:
@@ -259,7 +365,7 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
         ws = workspace_for(request, db)
         asset_id = ident()
         filename = Path(file.filename or "upload").name[:255]
-        target = storage / ws.id / asset_id
+        target = media_root(db) / ws.id / asset_id
         target.parent.mkdir(parents=True, exist_ok=True)
         size = 0
         try:
@@ -284,4 +390,4 @@ def download_asset(asset_id: str, request: Request):
         asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.workspace_id == ws.id))
         if not asset:
             raise HTTPException(404, "Asset not found")
-        return FileResponse(storage / ws.id / asset.id, media_type=asset.content_type, filename=asset.filename)
+        return FileResponse(media_root(db) / ws.id / asset.id, media_type=asset.content_type, filename=asset.filename)

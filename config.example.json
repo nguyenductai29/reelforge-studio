@@ -1,6 +1,3 @@
 {
-  "database_url": "sqlite:///instance/reelforge.sqlite3",
-  "storage_dir": "instance/media",
-  "secure_cookies": false,
-  "frontend_origin": "http://localhost:3000"
+  "database_url": "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME"
 }

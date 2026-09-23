@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from
 type Project = { id: string; title: string; topic: string; status: string };
 type Asset = { id: string; filename: string; bytes: number; content_type: string };
 type Workflow = { id: string; name: string; steps: string[] };
-type Dashboard = { workspace: { id: string; name: string; plan: string }; projects: Project[]; assets: Asset[]; workflows: Workflow[]; limits: { projects: number | null } };
+type Dashboard = { workspace: { id: string; name: string; plan: string }; is_admin: boolean; projects: Project[]; assets: Asset[]; workflows: Workflow[]; limits: { projects: number | null } };
+type Settings = { workspace: { default_language: string; video_orientation: string; approval_required: boolean }; system: { frontend_origin: string; secure_cookies: boolean; storage_dir: string; trial_project_limit: number } | null };
 type Page = "dashboard" | "projects" | "library" | "workflows" | "settings";
 const nav: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "Tổng quan", icon: "◫" }, { id: "projects", label: "Dự án", icon: "▣" },
@@ -27,6 +28,7 @@ export default function Home() {
   const [page, setPage] = useState<Page>("dashboard");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const refresh = useCallback(async () => {
     try { setData(await api<Dashboard>("dashboard")); setError(""); }
     catch (e) {
@@ -36,6 +38,11 @@ export default function Home() {
     } finally { setLoading(false); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (page === "settings" && data) {
+      void api<Settings>("settings").then(setSettings).catch(e => setError(e instanceof Error ? e.message : String(e)));
+    }
+  }, [page, data]);
   async function submit(endpoint: string, body: FormData | object): Promise<boolean> {
     setBusy(true); setError("");
     try {
@@ -53,6 +60,26 @@ export default function Home() {
     e.preventDefault(); const form = e.currentTarget; const fields = new FormData(form);
     if (await submit(endpoint, endpoint === "assets" ? fields : Object.fromEntries(fields))) form.reset();
   }
+  async function saveSettings(e: FormEvent<HTMLFormElement>, scope: "workspace" | "system") {
+    e.preventDefault();
+    const fields = new FormData(e.currentTarget);
+    const body = scope === "workspace" ? {
+      default_language: fields.get("default_language"),
+      video_orientation: fields.get("video_orientation"),
+      approval_required: fields.get("approval_required") === "on",
+    } : {
+      frontend_origin: fields.get("frontend_origin"),
+      secure_cookies: fields.get("secure_cookies") === "on",
+      trial_project_limit: Number(fields.get("trial_project_limit")),
+    };
+    setBusy(true); setError("");
+    try {
+      await api(`settings/${scope}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      setSettings(await api<Settings>("settings"));
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
   if (loading) return <div className="loading">Đang tải ReelForge Studio…</div>;
   if (!data) return <main className="auth-wrap"><Card className="auth-card"><div className="brand">✦ ReelForge <span>STUDIO</span></div><h1>{setup ? "Tạo studio của bạn" : "Chào mừng trở lại"}</h1><p className="subtle">{setup ? "Tạo tài khoản quản trị đầu tiên để bắt đầu." : "Đăng nhập để quản lý các dự án video."}</p><form onSubmit={auth}><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Mật khẩu<input name="password" type="password" autoComplete={setup ? "new-password" : "current-password"} minLength={setup ? 12 : undefined} required /></label><button disabled={busy}>{setup ? "Tạo studio" : "Đăng nhập"} <span>→</span></button></form>{error && <p className="error" role="alert">{error}</p>}<p className="footnote">{setup ? "Mật khẩu tối thiểu 12 ký tự." : "Dữ liệu được lưu trên server của bạn."}</p></Card></main>;
   const { projects, assets, workflows, workspace, limits } = data;
@@ -63,6 +90,6 @@ export default function Home() {
     {page === "projects" && <div className="two-col"><Card><h2>Tạo dự án</h2><p className="subtle">Đặt tên cho series hoặc video sắp làm.</p><form onSubmit={e => formSubmit(e, "projects")}><label>Tên dự án<input name="title" maxLength={150} required placeholder="Ví dụ: Truyện kinh dị Nhật Bản" /></label><label>Chủ đề<textarea name="topic" maxLength={3000} placeholder="Mô tả ý tưởng hoặc định hướng nội dung" /></label><button disabled={busy}>＋ Tạo dự án</button></form></Card><Card><div className="card-head"><h2>Danh sách dự án</h2><span className="tag">{projects.length}{limits.projects !== null ? ` / ${limits.projects} TRIAL` : ""}</span></div>{projects.length ? projects.map(p => <div className="list-row" key={p.id}><div className="row-icon">▣</div><div><b>{p.title}</b><small>{p.topic || "Chưa có chủ đề"}</small></div><span className="status">{p.status}</span></div>) : <Empty>Chưa có dự án nào.</Empty>}</Card></div>}
     {page === "library" && <div className="two-col"><Card><h2>Tải media</h2><p className="subtle">Ảnh, video và âm thanh tối đa 100 MB mỗi tệp.</p><form onSubmit={e => formSubmit(e, "assets")}><label>Chọn tệp<input name="file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,audio/mpeg,audio/wav,audio/ogg" required /></label><button disabled={busy}>↑ Tải lên kho</button></form></Card><Card><div className="card-head"><h2>Tài nguyên</h2><span className="tag">{assets.length} TỆP</span></div>{assets.length ? assets.map(a => <div className="list-row" key={a.id}><div className="row-icon">▧</div><div><a href={`/api/assets/${encodeURIComponent(a.id)}`}>{a.filename}</a><small>{a.content_type} · {(a.bytes / 1048576).toFixed(2)} MB</small></div></div>) : <Empty>Kho media còn trống.</Empty>}</Card></div>}
     {page === "workflows" && <div className="two-col"><Card><h2>Tạo workflow mẫu</h2><p className="subtle">Đặt tên cho luồng sản xuất video của bạn.</p><form onSubmit={e => formSubmit(e, "workflows")}><label>Tên workflow<input name="name" maxLength={150} required placeholder="Ví dụ: Short phim kinh dị" /></label><button disabled={busy}>＋ Tạo workflow</button></form><p className="hint">Workflow hiện là mẫu lưu trong database, chưa chạy tự động.</p></Card><Card><div className="card-head"><h2>Workflow đã lưu</h2><span className="tag">{workflows.length} MẪU</span></div>{workflows.length ? workflows.map(w => <div className="workflow-row" key={w.id}><b>◇ {w.name}</b><p>{w.steps.join(" → ")}</p></div>) : <Empty>Chưa có workflow nào.</Empty>}</Card></div>}
-    {page === "settings" && <div className="two-col"><Card><h2>Workspace</h2><div className="setting-row"><span>Tên</span><b>{workspace.name}</b></div><div className="setting-row"><span>Gói hiện tại</span><b>{workspace.plan.toUpperCase()}</b></div><div className="setting-row"><span>Workspace ID</span><code>{workspace.id}</code></div></Card><Card><h2>Tích hợp dự kiến</h2><p className="subtle">AI providers, kết nối mạng xã hội và thanh toán sẽ được cấu hình sau khi các module tương ứng sẵn sàng.</p><p className="hint">Không tải API key hoặc token lên kho media.</p></Card></div>}
+    {page === "settings" && <div className="two-col"><Card><h2>Workspace: {workspace.name}</h2><p className="subtle">Gói {workspace.plan.toUpperCase()} · ID {workspace.id}</p>{settings && <form key={JSON.stringify(settings.workspace)} onSubmit={e => saveSettings(e, "workspace")}><label>Ngôn ngữ mặc định<select name="default_language" defaultValue={settings.workspace.default_language}><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="ja">日本語</option></select></label><label>Tỷ lệ video<select name="video_orientation" defaultValue={settings.workspace.video_orientation}><option value="vertical">Dọc (9:16)</option><option value="horizontal">Ngang (16:9)</option><option value="square">Vuông (1:1)</option></select></label><label className="check-label"><input name="approval_required" type="checkbox" defaultChecked={settings.workspace.approval_required} /> Yêu cầu duyệt trước khi đăng</label><button disabled={busy}>Lưu cài đặt workspace</button></form>}</Card><Card><h2>Cài đặt hệ thống</h2>{settings?.system && data.is_admin ? <form key={JSON.stringify(settings.system)} onSubmit={e => saveSettings(e, "system")}><label>Địa chỉ frontend<input name="frontend_origin" type="url" required defaultValue={settings.system.frontend_origin} /></label><label>Giới hạn dự án Trial<input name="trial_project_limit" type="number" min={1} max={10000} required defaultValue={settings.system.trial_project_limit} /></label><label className="check-label"><input name="secure_cookies" type="checkbox" defaultChecked={settings.system.secure_cookies} /> Cookie chỉ qua HTTPS</label><button disabled={busy}>Lưu cài đặt hệ thống</button><p className="hint">Thư mục media: {settings.system.storage_dir}. Chuyển dữ liệu media cần thực hiện trên server.</p></form> : <p className="subtle">Chỉ quản trị viên được xem và chỉnh sửa cài đặt hệ thống.</p>}<p className="hint">Kết nối AI, mạng xã hội và thanh toán sẽ có khi các module tương ứng được triển khai.</p></Card></div>}
     </div></main></div>;
 }
