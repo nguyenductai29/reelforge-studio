@@ -1,6 +1,6 @@
 """Database models for the initial Alembic schema."""
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -88,6 +88,7 @@ class Plan(Base):
     workflow_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monthly_credits: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    price_vnd: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Subscription(Base):
@@ -97,3 +98,18 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PaymentOrder(Base):
+    __tablename__ = "payment_orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    plan_code: Mapped[str] = mapped_column(ForeignKey("plans.code"))
+    provider: Mapped[str] = mapped_column(String(24))
+    order_code: Mapped[int] = mapped_column(BigInteger, unique=True)
+    amount_vnd: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

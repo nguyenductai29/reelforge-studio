@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import FlowEditor, { type Graph, type Workflow } from "./FlowEditor";
 import AdminPanel from "./AdminPanel";
+import BillingPanel from "./BillingPanel";
 import Spinner from "../components/Spinner";
 import Message from "../components/Message";
 import { api } from "../lib/api";
@@ -11,13 +12,14 @@ type Project = { id: string; title: string; topic: string; status: string };
 type Asset = { id: string; filename: string; bytes: number; content_type: string };
 type Dashboard = { workspace: { id: string; name: string; plan: string }; is_admin: boolean; projects: Project[]; assets: Asset[]; workflows: Workflow[]; limits: { projects: number | null } };
 type Settings = { workspace: { default_language: string; video_orientation: string; approval_required: boolean }; system: { frontend_origin: string; secure_cookies: boolean; storage_dir: string; trial_project_limit: number; registration_enabled: boolean } | null };
-type Page = "dashboard" | "projects" | "library" | "workflows" | "ai" | "channels" | "calendar" | "analytics" | "settings" | "admin";
+type Page = "dashboard" | "projects" | "library" | "workflows" | "ai" | "channels" | "calendar" | "analytics" | "settings" | "admin" | "billing";
 const nav: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "Tổng quan", icon: "◫" }, { id: "projects", label: "Dự án", icon: "▣" },
   { id: "library", label: "Kho media", icon: "▧" }, { id: "workflows", label: "Sơ đồ workflow", icon: "◇" },
   { id: "ai", label: "Công cụ AI", icon: "✧" }, { id: "channels", label: "Kênh đăng tải", icon: "↗" },
   { id: "calendar", label: "Lịch đăng", icon: "▦" }, { id: "analytics", label: "Phân tích", icon: "◷" },
   { id: "settings", label: "Cài đặt", icon: "⚙" },
+  { id: "billing", label: "Gói & thanh toán", icon: "◈" },
 ];
 function Card({ children, className = "" }: { children: ReactNode; className?: string }) { return <section className={`card ${className}`}>{children}</section>; }
 function Empty({ children }: { children: ReactNode }) { return <div className="empty">{children}</div>; }
@@ -49,6 +51,7 @@ export default function Home() {
     } finally { setLoading(false); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { if (new URLSearchParams(window.location.search).has("payment")) setPage("billing"); }, []);
   useEffect(() => {
     if (page === "settings" && data) {
       void api<Settings>("settings").then(setSettings).catch(e => setError(e instanceof Error ? e.message : String(e)));
@@ -109,6 +112,7 @@ export default function Home() {
     <main className="main"><header className="topbar"><div className="breadcrumb">Studio <span>/</span> {page === "admin" ? "Quản trị" : nav.find(n => n.id === page)?.label}</div><div className="top-right"><span className="online-dot" /> Hệ thống hoạt động <span className="plan-badge">{workspace.plan.toUpperCase()}</span></div></header><div className="content"><div className="heading"><div><p className="eyebrow">REELFORGE STUDIO</p><h1>{page === "admin" ? "Quản trị" : nav.find(n => n.id === page)?.label}</h1><p className="subtle">{page === "dashboard" ? "Tổng quan hoạt động trong studio của bạn." : page === "projects" ? "Tổ chức ý tưởng và các series video." : page === "library" ? "Tài nguyên cho mọi dự án của bạn." : page === "workflows" ? "Thiết kế node, nối các bước và lưu sơ đồ." : page === "ai" ? "Provider và model cho từng bước sản xuất." : page === "settings" ? "Thiết lập và trạng thái tài khoản." : "Không gian chuẩn bị cho giai đoạn tiếp theo."}</p></div><div className="date">{new Intl.DateTimeFormat("vi-VN", { dateStyle: "long" }).format(new Date())}</div></div>
     {error && <Message>{errorMessage(error)}</Message>}
     {page === "admin" && data.is_admin && <AdminPanel />}
+    {page === "billing" && <BillingPanel onPayment={refresh} />}
     {page === "dashboard" && <>
       <div className="hero"><div className="hero-copy"><span className="hero-kicker">✦ CREATIVE CONTROL CENTER</span><h2>Biến ý tưởng thành<br/><em>câu chuyện có hình.</em></h2><p>Quản lý dự án, xây sơ đồ sản xuất và tái sử dụng media trong một studio.</p><div className="hero-actions"><button className="primary-action" onClick={() => setPage("projects")}>＋ Tạo dự án</button><button className="secondary-action" onClick={() => setPage("workflows")}>Xem sơ đồ workflow ↗</button></div></div><div className="hero-art" aria-hidden="true"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="hero-core">✦</div><span className="hero-chip chip-one">IDEA</span><span className="hero-chip chip-two">MEDIA</span><span className="hero-chip chip-three">RENDER</span></div></div>
       <div className="section-heading"><h2>Studio trong một góc nhìn</h2><span>DỮ LIỆU THẬT CỦA WORKSPACE</span></div>

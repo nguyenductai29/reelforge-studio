@@ -32,6 +32,21 @@ Open http://localhost:3000 to create the first admin account. API documentation 
 
 Back up PostgreSQL, pull the new source, stop the API, and run `python -m alembic upgrade head` from the project root before restarting Uvicorn. The `0002_plans_users` migration retains existing users, studios and content, seeds Trial / Standard / Pro, and creates a subscription for each existing studio. The previous Trial project limit is copied into the new Trial plan. Restart Next.js to load the Admin screen. Do not run `stamp head` to perform this upgrade.
 
+Migration `0003_billing_orders` adds optional VND prices to plans and payment orders. Existing subscriptions and data remain unchanged. Install the updated `requirements.txt` before restarting the API.
+
+### VNQR checkout with payOS
+
+1. Open a payOS merchant account and create a payment channel. In **Quản trị**, configure the Standard and Pro prices in VND per 30 days. Empty prices keep checkout disabled.
+2. In your ignored `instance/bootstrap.json`, keep `database_url` and add the private keys:
+
+```json
+"payos": {"client_id": "YOUR_CLIENT_ID", "api_key": "YOUR_API_KEY", "checksum_key": "YOUR_CHECKSUM_KEY"}
+```
+
+Put that `payos` property alongside `database_url` inside the same JSON object. Keep the real keys only on the backend server. Never commit `instance/bootstrap.json`. Configure a public HTTPS endpoint for the backend at `/api/webhooks/payos` in your payOS channel; localhost cannot receive live webhooks. Set `frontend_origin` in System Settings to your public HTTPS frontend URL and enable secure cookies. Verify the callback configuration with payOS before accepting customers.
+
+The workspace owner can select a higher priced plan under **Gói & thanh toán**. The server freezes the VND price in a payment order, requests a payOS hosted link, and updates the subscription for 30 days only after validating the signed webhook and matching its amount. Repeated callbacks do not extend the subscription again. A return to the website is informational, not proof of payment. Admin changes to a subscription remain manual and bypass checkout; account for them separately. Card checkout requires actual OnePAY merchant integration details; it is not active. Crypto payments are not enabled.
+
 The system administrator can open **Quản trị** to create a user with a new studio, assign a plan, pause a subscription, disable an account, or edit project and workflow limits. The sign-in screen also offers self-registration after initial admin setup: each new user receives a separate Trial studio. The system admin can turn registration off in System Settings; it is enabled by default. There is no email verification, password recovery or email delivery yet; admin-created initial passwords must be shared through an appropriate channel. An account disabled by the admin loses its existing login sessions. Subscription changes are manual and do not charge anyone. `monthly_credits` is configuration for a future usage engine: credits are not issued, spent or billed yet.
 
 ## Settings and data

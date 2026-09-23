@@ -15,7 +15,8 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
-from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription
+from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder
+from app import billing
 
 
 SYSTEM_DEFAULTS = {
@@ -82,6 +83,11 @@ class PlanInput(BaseModel):
     workflow_limit: int | None = Field(default=None, ge=1)
     monthly_credits: int = Field(default=0, ge=0)
     is_active: bool = True
+    price_vnd: int | None = Field(default=None, ge=2000, le=2_000_000_000)
+
+
+class CheckoutInput(BaseModel):
+    plan_code: str = Field(pattern="^(standard|pro)$")
 
 
 class SubscriptionInput(BaseModel):
@@ -402,7 +408,100 @@ def update_system_settings(data: SystemSettingsInput, request: Request):
 def plan_data(plan):
     return {"code": plan.code, "name": plan.name, "project_limit": plan.project_limit,
             "workflow_limit": plan.workflow_limit, "monthly_credits": plan.monthly_credits,
-            "is_active": plan.is_active}
+            "is_active": plan.is_active, "price_vnd": plan.price_vnd}
+
+
+def order_data(order):
+    return {"id": order.id, "plan_code": order.plan_code, "provider": order.provider,
+            "amount_vnd": order.amount_vnd, "status": order.status,
+            "created_at": order.created_at.isoformat(), "paid_at": order.paid_at.isoformat() if order.paid_at else None}
+
+
+@app.get("/api/billing")
+def billing_overview(request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        subscription = db.get(Subscription, ws.id)
+        orders = db.scalars(select(PaymentOrder).where(PaymentOrder.workspace_id == ws.id).order_by(PaymentOrder.created_at.desc()).limit(30)).all()
+        return {"plans": [plan_data(p) for p in db.scalars(select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.code))],
+                "subscription": {"plan_code": subscription.plan_code, "status": subscription.status,
+                                 "ends_at": subscription.ends_at.isoformat() if subscription.ends_at else None},
+                "orders": [order_data(o) for o in orders], "payos_ready": billing.configured()}
+
+
+@app.post("/api/billing/checkout", status_code=201)
+def billing_checkout(data: CheckoutInput, request: Request):
+    same_origin(request)
+    if not billing.configured():
+        raise HTTPException(503, "payOS is not configured")
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        if db.get(Membership, (authorize(request, db).id, ws.id)).role != "owner":
+            raise HTTPException(403, "Workspace owner required")
+        subscription = db.get(Subscription, ws.id)
+        if not subscription or subscription.status != "active":
+            raise HTTPException(403, "Subscription is inactive")
+        if ("trial", "standard", "pro").index(data.plan_code) <= ("trial", "standard", "pro").index(subscription.plan_code):
+            raise HTTPException(400, "Choose a higher plan")
+        plan = db.get(Plan, data.plan_code)
+        if not plan or not plan.is_active or not plan.price_vnd:
+            raise HTTPException(400, "Plan price is not configured")
+        origin = setting(db, "frontend_origin")
+        order = PaymentOrder(id=ident(), workspace_id=ws.id, plan_code=plan.code,
+                             provider="payos", order_code=secrets.randbelow(8_000_000_000_000) + 1_000_000_000_000,
+                             amount_vnd=plan.price_vnd, status="pending", created_at=datetime.now(timezone.utc))
+        db.add(order)
+        db.flush()
+        order_id, code, amount, plan_code = order.id, order.order_code, order.amount_vnd, plan.code
+    try:
+        link = billing.create_link(code, amount, plan_code, origin)
+    except Exception as exc:
+        with Session.begin() as db:
+            row = db.get(PaymentOrder, order_id)
+            if row and row.status == "pending":
+                row.status = "failed"
+        raise HTTPException(502, "Unable to create payment link") from exc
+    with Session.begin() as db:
+        row = db.get(PaymentOrder, order_id)
+        row.checkout_url = link
+    return {"order_id": order_id, "checkout_url": link}
+
+
+@app.post("/api/webhooks/payos")
+async def payos_webhook(request: Request):
+    body = await request.body()
+    if len(body) > 65536 or not billing.configured():
+        raise HTTPException(400, "Invalid webhook")
+    try:
+        payload = json.loads(body)
+        verified = billing.verify_webhook(body)
+    except Exception as exc:
+        raise HTTPException(400, "Invalid webhook") from exc
+    if not payload.get("success") or payload.get("code") != "00":
+        return {"ok": True}
+    with Session.begin() as db:
+        order = db.scalar(select(PaymentOrder).where(PaymentOrder.order_code == verified.order_code).with_for_update())
+        if not order:
+            return {"ok": True}  # payOS validation ping or unknown order.
+        if order.status in ("paid", "paid_unapplied"):
+            return {"ok": True}
+        if order.status != "pending" or order.provider != "payos":
+            return {"ok": True}
+        if int(verified.amount) != order.amount_vnd or getattr(verified, "currency", "VND") != "VND":
+            raise HTTPException(400, "Payment amount mismatch")
+        order.provider_reference = str(getattr(verified, "reference", ""))[:128]
+        order.paid_at = datetime.now(timezone.utc)
+        subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == order.workspace_id).with_for_update())
+        if not subscription or subscription.starts_at.replace(tzinfo=timezone.utc) > order.created_at.replace(tzinfo=timezone.utc):
+            order.status = "paid_unapplied"
+            return {"ok": True}
+        subscription.plan_code = order.plan_code
+        subscription.status = "active"
+        subscription.starts_at = order.paid_at
+        subscription.ends_at = order.paid_at + timedelta(days=30)
+        db.get(Workspace, order.workspace_id).plan = order.plan_code
+        order.status = "paid"
+    return {"ok": True}
 
 
 @app.get("/api/admin")
@@ -468,6 +567,8 @@ def update_plan(code: str, data: PlanInput, request: Request):
             raise HTTPException(404, "Plan not found")
         if code == "trial" and data.project_limit is None:
             raise HTTPException(400, "Trial requires a project limit")
+        if code == "trial" and data.price_vnd is not None:
+            raise HTTPException(400, "Trial cannot have a checkout price")
         if not data.is_active and db.scalar(select(func.count()).select_from(Subscription).where(Subscription.plan_code == code, Subscription.status == "active")):
             raise HTTPException(409, "Move active subscriptions before disabling this plan")
         for field, value in data.model_dump().items():
