@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "@xyflow/react/dist/style.css";
 import "./style.css";
 export const metadata: Metadata = { title: "ReelForge Studio", description: "Your short video studio" };
 export default function Layout({ children }: Readonly<{ children: React.ReactNode }>) {

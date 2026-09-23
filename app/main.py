@@ -1,6 +1,7 @@
 """ReelForge Studio: small, self-hosted first slice."""
 import hashlib
 import json
+import math
 import re
 import secrets
 import uuid
@@ -71,6 +72,70 @@ class NewProject(BaseModel):
 
 class NewWorkflow(BaseModel):
     name: str = Field(min_length=1, max_length=150)
+
+
+class GraphNode(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    type: str
+    x: float
+    y: float
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+
+
+class WorkflowGraph(BaseModel):
+    nodes: list[GraphNode] = Field(min_length=1, max_length=30)
+    edges: list[GraphEdge] = Field(max_length=60)
+
+
+NODE_TYPES = {"idea", "script", "scenes", "image", "video", "assets", "voice", "music", "subtitle", "render", "review", "publish"}
+
+
+def default_graph():
+    types = ["idea", "script", "scenes", "image", "voice", "render", "review", "publish"]
+    coords = [(40, 210), (300, 210), (560, 210), (820, 50), (820, 370), (1090, 210), (1350, 210), (1610, 210)]
+    nodes = [{"id": f"n{i}", "type": kind, "x": x, "y": y} for i, (kind, (x, y)) in enumerate(zip(types, coords))]
+    links = [(0, 1), (1, 2), (2, 3), (2, 4), (3, 5), (4, 5), (5, 6), (6, 7)]
+    return {"nodes": nodes, "edges": [{"source": f"n{a}", "target": f"n{b}"} for a, b in links]}
+
+
+def parse_graph(definition):
+    value = json.loads(definition)
+    if isinstance(value, list):
+        # Compatibility for workflows created before visual editing existed.
+        nodes = [{"id": f"n{i}", "type": "assets" if kind == "assets" else kind, "x": i * 260, "y": 180} for i, kind in enumerate(value)]
+        return {"nodes": nodes, "edges": [{"source": f"n{i}", "target": f"n{i+1}"} for i in range(len(nodes)-1)]}
+    return value
+
+
+def validate_graph(graph: WorkflowGraph):
+    ids = [node.id for node in graph.nodes]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(422, "Duplicate node ID")
+    if any(node.type not in NODE_TYPES or not math.isfinite(node.x) or not math.isfinite(node.y) or abs(node.x) > 100000 or abs(node.y) > 100000 for node in graph.nodes):
+        raise HTTPException(422, "Invalid node type or position")
+    links = [(edge.source, edge.target) for edge in graph.edges]
+    if len(links) != len(set(links)) or any(a not in ids or b not in ids or a == b for a, b in links):
+        raise HTTPException(422, "Invalid or duplicate connection")
+    pending = {key: 0 for key in ids}
+    onward = {key: [] for key in ids}
+    for a, b in links:
+        pending[b] += 1
+        onward[a].append(b)
+    queue = [key for key, degree in pending.items() if degree == 0]
+    visited = 0
+    while queue:
+        current = queue.pop()
+        visited += 1
+        for target in onward[current]:
+            pending[target] -= 1
+            if pending[target] == 0:
+                queue.append(target)
+    if visited != len(ids):
+        raise HTTPException(422, "Workflow cannot contain a cycle")
 
 
 class WorkspaceSettingsInput(BaseModel):
@@ -200,7 +265,7 @@ def dashboard(request: Request):
         workflows = db.scalars(select(Workflow).where(Workflow.workspace_id == ws.id)).all()
         user = authorize(request, db)
         trial_limit = setting(db, "trial_project_limit")
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": ws.plan}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type} for a in assets], "workflows": [{"id": w.id, "name": w.name, "steps": json.loads(w.definition)} for w in workflows], "limits": {"projects": trial_limit if ws.plan == "trial" else None}}
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": ws.plan}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": trial_limit if ws.plan == "trial" else None}}
 
 
 @app.get("/api/settings")
@@ -263,11 +328,27 @@ def create_workflow(data: NewWorkflow, request: Request):
     same_origin(request)
     with Session.begin() as db:
         ws = workspace_for(request, db)
-        workflow = Workflow(id=ident(), workspace_id=ws.id, name=data.name.strip(), definition=json.dumps(["idea", "script", "scenes", "assets", "voice", "render", "review", "publish"]))
+        workflow = Workflow(id=ident(), workspace_id=ws.id, name=data.name.strip(), definition=json.dumps(default_graph()))
         if not workflow.name:
             raise HTTPException(400, "Name required")
         db.add(workflow)
-        return {"id": workflow.id, "name": workflow.name, "steps": json.loads(workflow.definition)}
+        return {"id": workflow.id, "name": workflow.name, "graph": parse_graph(workflow.definition)}
+
+
+@app.put("/api/workflows/{workflow_id}")
+def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
+    same_origin(request)
+    validate_graph(graph)
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        membership = db.get(Membership, (authorize(request, db).id, ws.id))
+        if membership.role != "owner":
+            raise HTTPException(403, "Workspace owner required")
+        workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
+        if not workflow:
+            raise HTTPException(404, "Workflow not found")
+        workflow.definition = graph.model_dump_json()
+        return {"id": workflow.id, "name": workflow.name, "graph": graph.model_dump()}
 
 
 @app.post("/api/assets", status_code=201)

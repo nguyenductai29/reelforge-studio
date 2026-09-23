@@ -1,6 +1,6 @@
 # ReelForge Studio
 
-Self-hosted foundation for a short-video production platform. Next.js/React/TypeScript powers the dashboard, while FastAPI/Python serves the API. Current features: first-run admin setup, login, workspace projects and media, workflow templates and database-backed settings. Video generation, rendering, publishing, paid billing and automated workflows are **not yet implemented**.
+Self-hosted foundation for a short-video production platform. Next.js/React/TypeScript powers the dashboard, while FastAPI/Python serves the API. Current features: first-run admin setup, login, workspace projects and media, an interactive workflow diagram editor, and database-backed settings. Video generation, rendering, publishing, paid billing and automated workflows are **not yet implemented**.
 
 ## Start locally with PostgreSQL
 
@@ -44,4 +44,5 @@ For an existing instance using `instance/config.json`, the backend reads it if `
 
 - Projects, assets, workflows and workspace settings are scoped to the signed-in user's workspace. The first user is the system admin.
 - Trial's project limit is enforced server-side from a database setting. There is no checkout, plan upgrade endpoint or open registration yet.
-- Workflow records are templates only; the engine, FFmpeg workers, human review, scheduled publishing and usage/billing are planned next.
+- Workflow diagrams support adding, moving, connecting and removing nodes; the saved graph is validated as an acyclic graph and scoped to a workspace. Old linear workflow templates are displayed as graphs without a schema change. These are **designs only**; no graph execution, AI calls, render, review, publishing or usage/billing are implemented.
+- The dashboard includes clearly marked planning views for AI tools, channels, scheduling and analytics. They do not accept credentials or publish content yet.
