@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 from app.db import engine, Session
 from app.models import PaymentOrder, Subscription
+from app.usage import consume
 @event.listens_for(engine, "connect")
 def fk(connection, record): connection.execute("PRAGMA foreign_keys=ON")
 command.upgrade(Config("alembic.ini"), "head")
@@ -40,11 +41,12 @@ assert client.post("/api/billing/checkout", json={"plan_code": "pro"}).status_co
 billing.configured = lambda: True
 billing.create_link = lambda *args: "https://pay.payos.vn/test"
 assert client.post("/api/billing/checkout", json={"plan_code": "pro"}).status_code == 400
-price = {"name": "Pro", "project_limit": None, "workflow_limit": None, "monthly_credits": 0, "is_active": True, "price_vnd": 50000}
+price = {"name": "Pro", "project_limit": None, "workflow_limit": None, "monthly_credits": 10, "is_active": True, "price_vnd": 50000}
 assert client.put("/api/admin/plans/pro", json=price).status_code == 200
 checkout = client.post("/api/billing/checkout", json={"plan_code": "pro"})
 assert checkout.status_code == 201, checkout.text
 order_id = checkout.json()["order_id"]
+assert client.put("/api/admin/plans/pro", json={**price, "monthly_credits": 20}).status_code == 200
 with Session() as db:
     order = db.get(PaymentOrder, order_id)
     code, workspace_id = order.order_code, order.workspace_id
@@ -60,9 +62,28 @@ assert client.post("/api/webhooks/payos", json={"success": True, "code": "00"}).
 with Session() as db:
     first_end = db.get(Subscription, workspace_id).ends_at
 assert client.get("/api/dashboard").json()["workspace"]["plan"] == "pro"
+assert client.get("/api/usage").json()["balance"] == 10
 assert client.post("/api/webhooks/payos", json={"success": True, "code": "00"}).status_code == 200
 with Session() as db:
     assert db.get(Subscription, workspace_id).ends_at == first_end
+assert client.get("/api/usage").json()["balance"] == 10
+with Session.begin() as db:
+    assert consume(db, workspace_id, tool="script", units=2, credits=3, reference="job-1") == 7
+with Session.begin() as db:
+    assert consume(db, workspace_id, tool="script", units=2, credits=3, reference="job-1") == 7
+assert client.get("/api/usage").json()["balance"] == 7
+assert client.put("/api/admin/plans/pro", json=price).status_code == 200
+renewal = client.post("/api/billing/checkout", json={"plan_code": "pro"})
+assert renewal.status_code == 201, renewal.text
+with Session() as db:
+    renewal_code = db.get(PaymentOrder, renewal.json()["order_id"]).order_code
+billing.get_payment = lambda order_code: SimpleNamespace(order_code=renewal_code, amount=50000, amount_paid=50000, status="PAID", id="provider-ref")
+assert client.post(f"/api/billing/orders/{renewal.json()['order_id']}/refresh").status_code == 200
+assert client.get("/api/usage").json()["balance"] == 17
+with Session() as db:
+    assert db.get(Subscription, workspace_id).ends_at > first_end
+assert client.post(f"/api/billing/orders/{renewal.json()['order_id']}/refresh").status_code == 200
+assert client.get("/api/usage").json()["balance"] == 17
 '''
             completed = subprocess.run([sys.executable, "-c", program], cwd=target, env={**os.environ, "PYTHONPATH": str(target)}, capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr[-3000:])

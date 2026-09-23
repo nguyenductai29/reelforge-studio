@@ -108,8 +108,36 @@ class PaymentOrder(Base):
     provider: Mapped[str] = mapped_column(String(24))
     order_code: Mapped[int] = mapped_column(BigInteger, unique=True)
     amount_vnd: Mapped[int] = mapped_column(Integer)
+    credits_award: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(24), default="pending")
     checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CreditAccount(Base):
+    __tablename__ = "credit_accounts"
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    balance: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CreditLedger(Base):
+    __tablename__ = "credit_ledger"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    delta: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(40))
+    reference: Mapped[str] = mapped_column(String(100), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    tool: Mapped[str] = mapped_column(String(80))
+    units: Mapped[int] = mapped_column(Integer)
+    credits: Mapped[int] = mapped_column(Integer)
+    reference: Mapped[str] = mapped_column(String(100), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

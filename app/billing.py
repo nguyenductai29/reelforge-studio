@@ -36,3 +36,8 @@ def create_link(order_code: int, amount: int, plan: str, origin: str) -> str:
 def verify_webhook(body: bytes):
     """SDK verifies the signed data using the configured checksum key."""
     return client().webhooks.verify(body)
+
+
+def get_payment(order_code: int):
+    """Read provider status over the authenticated payOS Merchant API."""
+    return client().payment_requests.get(order_code)
