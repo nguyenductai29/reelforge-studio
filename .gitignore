@@ -5,3 +5,7 @@ instance/
 *.sqlite3
 *.db
 .pytest_cache/
+frontend/node_modules/
+frontend/.next/
+frontend/instance/
+frontend/*.tsbuildinfo

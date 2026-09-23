@@ -1,36 +1,50 @@
 # ReelForge Studio
 
-An early self-hosted foundation for a short-video production studio. The current version provides first-run admin setup, session login, a workspace dashboard, projects, media uploads and workflow templates. Generation, rendering, publishing and payments are **not implemented yet**.
+Self-hosted foundation for a short-video production platform. The architecture separates a Next.js/React/TypeScript dashboard from a FastAPI/Python API. Current features: first-run admin setup, session login, a workspace dashboard, projects, media uploads, and workflow templates. Video generation, rendering, publishing, paid billing and automated workflows are **not yet implemented**.
 
-## Run locally
+## Start locally
 
-Requires Python 3.11+.
+Requires Python 3.11+ and Node.js 20.9+.
+
+**Backend** (terminal 1, from repository root):
 
 ```bash
 python -m venv .venv
 # Linux/macOS: source .venv/bin/activate
-# Windows: .venv\Scripts\activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open http://127.0.0.1:8000 and create the first admin account. The password must have at least 12 characters. With no configuration file, the app creates `instance/reelforge.sqlite3` and stores uploads in `instance/media`.
+**Frontend** (terminal 2):
 
-## PostgreSQL and configuration
+```bash
+cd frontend
+npm ci
+npm run dev
+```
 
-There is no `.env` file. Create `instance/config.json` (excluded from Git) based on `config.example.json`. For PostgreSQL, set `database_url` to `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME`. Restrict file permissions to the service account. Set `secure_cookies` to `true` when serving over HTTPS. Keep the database and media volume on persistent storage and back them up together. Never expose the app to the public internet over HTTP.
+Open http://localhost:3000 and create the first admin account. Do not use the backend port as the UI. Backend API documentation: http://127.0.0.1:8000/docs.
 
-## Architecture
+## Configuration without `.env`
 
-- Every project, media asset and workflow belongs to a workspace; API reads and writes enforce workspace scope.
-- Trial currently limits projects to two. This is a provisional server-side entitlement; there is no paid checkout or plan activation endpoint.
-- Media is stored on the filesystem and metadata is stored in SQLite or PostgreSQL.
-- Workflow records are templates only. A durable queue, rendering worker, approval gate and official publisher integrations are planned next.
+Default: SQLite in `instance/reelforge.sqlite3`, uploads in `instance/media`, backend at `127.0.0.1:8000`, frontend at `localhost:3000`.
 
-## Roadmap
+For PostgreSQL or custom storage, copy `config.example.json` to `instance/config.json` in the repository root. Set `database_url` to `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME`. The file may contain database credentials: keep it out of Git and restrict permissions to the service account. Set `secure_cookies` to `true` under HTTPS and `frontend_origin` to the browser-visible frontend origin. The Next.js proxy reads `frontend/instance/config.json` if present; copy `frontend/config.example.json` there and set `api_base_url` to the backend address reachable by the Next.js server. Restart both services after changing these files.
 
-1. Migrations, workspace roles, invitations and richer plan entitlements.
-2. Script and scene editor; job runner with retries and idempotency.
-3. FFmpeg rendering, review and approval.
-4. OAuth and official YouTube/Facebook/TikTok publishing where account/API access permits.
-5. Subscription billing, usage metering, provider credentials stored encrypted with an external master key.
+The browser calls `/api/*` on the frontend origin, and Next.js forwards requests to FastAPI. Put HTTPS in front of both services for remote access, and expose the Next.js origin to users. Keep the database and media storage persistent and back them up together.
+
+## Current architecture
+
+- Projects, assets and workflows carry a workspace ID; endpoints scope reads and writes to the signed-in user's workspace.
+- Trial has a provisional server-side limit of two projects. There is no checkout, plan upgrade endpoint, or user registration beyond initial setup.
+- Media files are stored on disk, with metadata in SQLite or PostgreSQL. The storage directory and database should remain private.
+- Workflow records are templates with steps, but no execution engine yet. The dashboard marks them as such.
+
+## Next milestones
+
+1. Database migrations, team roles, plan entitlements and usage records.
+2. Script and scene editor; durable queue and idempotent workflow jobs.
+3. FFmpeg rendering and human review.
+4. Official YouTube/Facebook/TikTok integrations and scheduling, subject to each platform's API access.
+5. Encrypted provider credentials and billing.

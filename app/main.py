@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -152,7 +152,8 @@ def workspace_for(request: Request, db):
 
 def same_origin(request: Request):
     origin = request.headers.get("origin")
-    if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+    allowed = {str(request.base_url).rstrip("/"), str(config.get("frontend_origin", "http://localhost:3000")).rstrip("/")}
+    if origin and origin.rstrip("/") not in allowed:
         raise HTTPException(403, "Invalid origin")
 
 
@@ -162,7 +163,7 @@ def public_project(p):
 
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "app" / "index.html")
+    return {"app": "ReelForge Studio API", "ui": "Run the Next.js frontend on port 3000", "docs": "/docs"}
 
 
 @app.get("/api/status")
