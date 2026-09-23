@@ -1,11 +1,8 @@
 """ReelForge Studio: small, self-hosted first slice."""
 import hashlib
 import json
-import mimetypes
-import os
 import re
 import secrets
-import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -206,7 +203,10 @@ def login(data: Credentials, request: Request, response: Response):
 def logout(request: Request, response: Response):
     same_origin(request)
     with Session.begin() as db:
-        db.delete(db.get(LoginSession, hashlib.sha256(request.cookies.get("rf_session", "").encode()).hexdigest())) if request.cookies.get("rf_session") and db.get(LoginSession, hashlib.sha256(request.cookies["rf_session"].encode()).hexdigest()) else None
+        raw = request.cookies.get("rf_session")
+        session = db.get(LoginSession, hashlib.sha256(raw.encode()).hexdigest()) if raw else None
+        if session:
+            db.delete(session)
     response.delete_cookie("rf_session")
     return {"ok": True}
 
@@ -241,7 +241,7 @@ def create_workflow(data: NewWorkflow, request: Request):
     same_origin(request)
     with Session.begin() as db:
         ws = workspace_for(request, db)
-        workflow = Workflow(id=ident(), workspace_id=ws.id, name=data.name.strip())
+        workflow = Workflow(id=ident(), workspace_id=ws.id, name=data.name.strip(), definition=json.dumps(["idea", "script", "scenes", "assets", "voice", "render", "review", "publish"]))
         if not workflow.name:
             raise HTTPException(400, "Name required")
         db.add(workflow)
