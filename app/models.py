@@ -1,6 +1,7 @@
-"""Database models for the initial Alembic schema."""
+"""Database models for the application schema."""
+import json
 from datetime import datetime, timezone
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -56,6 +57,11 @@ class Asset(Base):
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(100))
     bytes: Mapped[int] = mapped_column(Integer)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", name="fk_assets_project_id"), index=True, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id", name="fk_assets_run_id"), index=True, nullable=True)
+    step_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_run_steps.id", name="fk_assets_step_id"), index=True, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -177,3 +183,37 @@ class WorkflowRunStep(Base):
     detail: Mapped[str] = mapped_column(Text, default="")
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkflowJob(Base):
+    """One durable attemptable unit of work for a workflow run step."""
+
+    __tablename__ = "workflow_jobs"
+    __table_args__ = (
+        CheckConstraint("state IN ('queued', 'leased', 'succeeded', 'failed')", name="ck_workflow_jobs_state"),
+        CheckConstraint("attempt_count >= 0", name="ck_workflow_jobs_attempt_count"),
+        UniqueConstraint("logical_key", name="uq_workflow_jobs_logical_key"),
+        Index("ix_workflow_jobs_claim", "state", "available_at", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id"), index=True)
+    step_id: Mapped[str] = mapped_column(ForeignKey("workflow_run_steps.id"), index=True)
+    logical_key: Mapped[str] = mapped_column(String(255))
+    payload_json: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(16), default="queued")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @property
+    def payload(self) -> dict:
+        """Return a fresh copy of the immutable enqueued JSON snapshot."""
+        return json.loads(self.payload_json)

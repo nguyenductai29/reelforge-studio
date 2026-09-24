@@ -2,21 +2,26 @@
 import hashlib
 import json
 import math
+import os
 import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
-from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep
-from app import billing, payments, usage, workflow_engine
+from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
+from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
+from app import auth_security, billing, jobs, payments, publications, usage, workflow_engine
+from app.providers import dola, fal, replicate, runware, runway
+from app.publishers import google_oauth
 
 
 SYSTEM_DEFAULTS = {
@@ -60,7 +65,91 @@ with Session.begin() as db:
                 db.add(WorkspaceSetting(workspace_id=workspace_id, key=key, value=json.dumps(default)))
 app = FastAPI(title="ReelForge Studio")
 MAX_UPLOAD = 100 * 1024 * 1024
+
+
+def upload_preflight(scope):
+    """Authorize uploads before their request bodies are buffered or parsed."""
+    request = Request(scope)
+    same_origin(request)
+    with Session() as db:
+        ws = workspace_for(request, db)
+        active_plan(db, ws)
+
+
+app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_UPLOAD + MULTIPART_OVERHEAD_BYTES,
+                   preflight=upload_preflight)
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "audio/mpeg", "audio/wav", "audio/ogg"}
+VIDEO_PROVIDERS = {"fal": (fal, "FAL_KEY"), "runware": (runware, "RUNWARE_API_KEY"),
+                   "replicate": (replicate, "REPLICATE_API_TOKEN"),
+                   "dola": (dola, "DOLA_API_KEY"), "runway": (runway, "RUNWAYML_API_SECRET")}
+
+
+def video_provider_config_issue(provider_name: str) -> tuple[str, str] | None:
+    """Check operator credentials and the experimental gateway opt-in."""
+    if provider_name == "dola" and os.environ.get("DOLA_EXPERIMENTAL_ENABLED") != "1":
+        return "experimental_disabled", "Dola là provider thử nghiệm; server chưa bật DOLA_EXPERIMENTAL_ENABLED=1."
+    key_name = VIDEO_PROVIDERS[provider_name][1]
+    if not os.environ.get(key_name):
+        return "missing_key", f"Server cần {key_name}."
+    if provider_name == "runway":
+        try:
+            runway.validate_output_hosts(os.environ.get("RUNWAY_OUTPUT_HOSTS"))
+        except runway.ProviderError:
+            return "invalid_config", "Server cần RUNWAY_OUTPUT_HOSTS gồm các hostname media Runway được phép tải."
+    if provider_name == "dola":
+        if not os.environ.get("DOLA_BASE_URL"):
+            return "missing_config", "Server cần DOLA_BASE_URL."
+        try:
+            dola_max_job_age_seconds()
+            with dola.DolaClient(os.environ[key_name]):
+                pass
+        except dola.ProviderError:
+            return "invalid_config", "Cấu hình URL hoặc khóa Dola chưa hợp lệ."
+    return None
+
+
+def video_request_defaults(provider_name: str) -> tuple[str, str, bool | None]:
+    if provider_name == "dola":
+        return "10s", "auto", None
+    if provider_name == "runway":
+        return "8s", "720p", False
+    return "8s", "720p", True
+
+
+def dola_max_job_age_seconds() -> int:
+    try:
+        max_age = int(os.environ.get("DOLA_MAX_JOB_AGE_SECONDS", "7200"))
+    except ValueError as exc:
+        raise dola.ProviderError("invalid_config", "Invalid Dola max job age") from exc
+    if not 60 <= max_age <= 86400:
+        raise dola.ProviderError("invalid_config", "Dola max job age must be 60 to 86400 seconds")
+    return max_age
+
+
+def media_signature_matches(content_type: str, path: Path) -> bool:
+    with path.open("rb") as source:
+        header = source.read(16)
+    signatures = {
+        "image/jpeg": header.startswith(b"\xff\xd8\xff"),
+        "image/png": header.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/webp": header.startswith(b"RIFF") and header[8:12] == b"WEBP",
+        "video/mp4": len(header) >= 12 and header[4:8] == b"ftyp",
+        "video/webm": header.startswith(b"\x1a\x45\xdf\xa3"),
+        "audio/mpeg": header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xff and header[1] & 0xe0 == 0xe0),
+        "audio/wav": header.startswith(b"RIFF") and header[8:12] == b"WAVE",
+        "audio/ogg": header.startswith(b"OggS"),
+    }
+    return signatures.get(content_type, False)
+
+
+def workspace_media_quota():
+    try:
+        quota = int(os.environ.get("WORKSPACE_MEDIA_QUOTA_BYTES", str(1024 * 1024 * 1024)))
+    except ValueError as exc:
+        raise RuntimeError("WORKSPACE_MEDIA_QUOTA_BYTES must be a positive integer") from exc
+    if quota <= 0:
+        raise RuntimeError("WORKSPACE_MEDIA_QUOTA_BYTES must be a positive integer")
+    return quota
 
 
 class Credentials(BaseModel):
@@ -110,18 +199,37 @@ class NewProject(BaseModel):
     topic: str = Field(default="", max_length=3000)
 
 
+class ProjectPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=150)
+    topic: str | None = Field(default=None, max_length=3000)
+
+
 AI_TASKS = {"script", "image", "video", "voice", "music"}
 
 
 class AIToolInput(BaseModel):
     task: str = Field(pattern="^(script|image|video|voice|music)$")
     provider: str = Field(min_length=1, max_length=60, pattern=r"^[a-zA-Z0-9._-]+$")
-    model: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9._:/-]+$")
+    model: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9._:/@-]+$")
     is_enabled: bool = True
 
 
 class StartWorkflowRun(BaseModel):
     project_id: str
+    prompt: str | None = Field(default=None, max_length=3000)
+    tool_id: str | None = None
+
+
+class YouTubeCallbackInput(BaseModel):
+    state: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=1, max_length=4096)
+
+
+class YouTubePublicationInput(BaseModel):
+    run_id: str
+    asset_id: str
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=5000)
 
 
 class NewWorkflow(BaseModel):
@@ -149,10 +257,10 @@ NODE_TYPES = {"idea", "script", "scenes", "image", "video", "assets", "voice", "
 
 
 def default_graph():
-    types = ["idea", "script", "scenes", "image", "voice", "render", "review", "publish"]
-    coords = [(40, 210), (300, 210), (560, 210), (820, 50), (820, 370), (1090, 210), (1350, 210), (1610, 210)]
+    types = ["idea", "video", "review"]
+    coords = [(40, 210), (340, 210), (640, 210)]
     nodes = [{"id": f"n{i}", "type": kind, "x": x, "y": y} for i, (kind, (x, y)) in enumerate(zip(types, coords))]
-    links = [(0, 1), (1, 2), (2, 3), (2, 4), (3, 5), (4, 5), (5, 6), (6, 7)]
+    links = [(0, 1), (1, 2)]
     return {"nodes": nodes, "edges": [{"source": f"n{a}", "target": f"n{b}"} for a, b in links]}
 
 
@@ -319,6 +427,7 @@ def setup(data: Credentials, request: Request, response: Response):
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(data.password) < 12:
         raise HTTPException(400, "Use a valid email and a password of at least 12 characters")
     with Session.begin() as db:
+        auth_security.lock_initial_setup(db)
         if db.scalar(select(func.count()).select_from(User)):
             raise HTTPException(409, "Setup already completed")
         user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=True)
@@ -353,12 +462,27 @@ def register(data: RegisterInput, request: Request, response: Response):
 @app.post("/api/login")
 def login(data: Credentials, request: Request, response: Response):
     same_origin(request)
+    identifier = f"{data.email.strip().lower()}|{request.client.host if request.client else 'unknown'}"
+    blocked = False
+    invalid = False
+    token = None
+    user = None
     with Session.begin() as db:
-        user = db.scalar(select(User).where(User.email == data.email.strip().lower()))
-        if not user or not user.is_active or not check_password(data.password, user.password_hash):
-            raise HTTPException(401, "Invalid credentials")
-        token = secrets.token_urlsafe(48)
-        db.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=7)))
+        if not auth_security.check_login_allowed(db, identifier):
+            blocked = True
+        else:
+            user = db.scalar(select(User).where(User.email == data.email.strip().lower()))
+            if not user or not user.is_active or not check_password(data.password, user.password_hash):
+                auth_security.record_login_failure(db, identifier)
+                invalid = True
+            else:
+                auth_security.clear_login_failures(db, identifier)
+                token = secrets.token_urlsafe(48)
+                db.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=7)))
+    if blocked:
+        raise HTTPException(429, "Too many login attempts; try again later")
+    if invalid:
+        raise HTTPException(401, "Invalid credentials")
     with Session() as db:
         secure_cookies = setting(db, "secure_cookies")
     response.set_cookie("rf_session", token, httponly=True, samesite="strict", secure=secure_cookies, max_age=604800)
@@ -387,7 +511,7 @@ def dashboard(request: Request):
         user = authorize(request, db)
         subscription = db.get(Subscription, ws.id)
         plan = db.get(Plan, subscription.plan_code) if subscription else None
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
 
 
 @app.get("/api/settings")
@@ -683,6 +807,26 @@ def create_project(data: NewProject, request: Request):
         return public_project(project)
 
 
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, data: ProjectPatch, request: Request):
+    same_origin(request)
+    if not data.model_fields_set or any(getattr(data, field) is None for field in data.model_fields_set):
+        raise HTTPException(422, "Provide a title or topic")
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        active_plan(db, ws)
+        project = db.scalar(select(Project).where(Project.id == project_id, Project.workspace_id == ws.id))
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if "title" in data.model_fields_set:
+            project.title = data.title.strip()
+            if not project.title:
+                raise HTTPException(400, "Title required")
+        if "topic" in data.model_fields_set:
+            project.topic = data.topic.strip()
+        return public_project(project)
+
+
 def public_ai_tool(tool):
     return {"id": tool.id, "task": tool.task, "provider": tool.provider, "model": tool.model, "is_enabled": tool.is_enabled}
 
@@ -738,27 +882,195 @@ def delete_ai_tool(tool_id: str, request: Request):
     return Response(status_code=204)
 
 
+def youtube_owner(request: Request, db):
+    ws = workspace_for(request, db)
+    membership = db.get(Membership, (authorize(request, db).id, ws.id))
+    if not membership or membership.role != "owner":
+        raise HTTPException(403, "Workspace owner required")
+    return ws
+
+
+def youtube_oauth_error(exc: google_oauth.OAuthError):
+    status_code = 503 if exc.code == "not_configured" else 403 if exc.code == "forbidden" else 502 if exc.code in {"google_unavailable", "google_token_error", "invalid_response"} else 400
+    raise HTTPException(status_code, str(exc)) from exc
+
+
+def google_http_client():
+    return httpx.Client(timeout=10, follow_redirects=False)
+
+
+@app.get("/api/youtube/connection")
+def youtube_connection(request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        connected = google_oauth.connection_status(db, workspace_id=ws.id)
+        return {"connected": connected is not None, "expires_at": connected.expires_at.isoformat() if connected else None,
+                "scope": connected.scope if connected else None}
+
+
+@app.get("/api/youtube/authorization")
+def youtube_authorization(request: Request):
+    same_origin(request)
+    try:
+        config = google_oauth.GoogleOAuthConfig.from_environment()
+        with Session.begin() as db:
+            ws = youtube_owner(request, db)
+            started = google_oauth.begin_authorization(db, config, workspace_id=ws.id,
+                                                       user_id=authorize(request, db).id)
+        return {"url": started.url, "expires_at": started.expires_at.isoformat()}
+    except google_oauth.OAuthError as exc:
+        youtube_oauth_error(exc)
+
+
+@app.post("/api/youtube/callback")
+def youtube_callback(data: YouTubeCallbackInput, request: Request):
+    same_origin(request)
+    try:
+        config = google_oauth.GoogleOAuthConfig.from_environment()
+        with Session() as db, google_http_client() as client:
+            user = authorize(request, db)
+            result = google_oauth.complete_authorization(db, config, state=data.state,
+                code=data.code, current_user_id=user.id, client=client)
+        return {"connected": True, "workspace_id": result.workspace_id,
+                "expires_at": result.expires_at.isoformat()}
+    except google_oauth.OAuthError as exc:
+        youtube_oauth_error(exc)
+
+
+@app.delete("/api/youtube/connection", status_code=204)
+def youtube_disconnect(request: Request):
+    same_origin(request)
+    with Session() as db:
+        ws = youtube_owner(request, db)
+        google_oauth.disconnect(db, workspace_id=ws.id)
+    return Response(status_code=204)
+
+
+def public_publication(row):
+    return {"id": row.id, "run_id": row.run_id, "asset_id": row.asset_id, "channel": row.channel,
+            "title": row.title, "description": row.description, "state": row.state,
+            "remote_id": row.remote_id, "last_error": row.last_error,
+            "can_retry": publications.can_retry_publication(row),
+            "created_at": row.created_at.isoformat(),
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None}
+
+
+@app.get("/api/youtube/publications")
+def list_youtube_publications(request: Request, run_id: str | None = None):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        query = select(publications.Publication).where(publications.Publication.workspace_id == ws.id,
+                    publications.Publication.channel == "youtube")
+        if run_id:
+            query = query.where(publications.Publication.run_id == run_id)
+        rows = db.scalars(query.order_by(publications.Publication.created_at.desc()).limit(100))
+        return [public_publication(row) for row in rows]
+
+
+@app.post("/api/youtube/publications", status_code=201)
+def create_youtube_publication(data: YouTubePublicationInput, request: Request, response: Response):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = youtube_owner(request, db)
+        active_plan(db, ws)
+        if google_oauth.connection_status(db, workspace_id=ws.id) is None:
+            raise HTTPException(409, "Connect YouTube before uploading")
+        existing = db.scalar(select(publications.Publication).where(
+            publications.Publication.workspace_id == ws.id,
+            publications.Publication.run_id == data.run_id,
+            publications.Publication.channel == "youtube"))
+        try:
+            row = publications.queue_publication(db, workspace_id=ws.id, run_id=data.run_id,
+                asset_id=data.asset_id, channel="youtube", title=data.title.strip(),
+                description=data.description)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if existing:
+            response.status_code = 200
+        return public_publication(row)
+
+
+@app.post("/api/youtube/publications/{publication_id}/retry", status_code=202)
+def retry_youtube_publication(publication_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = youtube_owner(request, db)
+        active_plan(db, ws)
+        try:
+            row = publications.retry_publication(db, workspace_id=ws.id, publication_id=publication_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return public_publication(row)
+
+
+@app.get("/api/youtube/publications/{publication_id}")
+def get_youtube_publication(publication_id: str, request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        row = db.scalar(select(publications.Publication).where(
+            publications.Publication.id == publication_id,
+            publications.Publication.workspace_id == ws.id,
+            publications.Publication.channel == "youtube"))
+        if not row:
+            raise HTTPException(404, "Publication not found")
+        return public_publication(row)
+
+
 @app.get("/api/workflows/{workflow_id}/readiness")
-def workflow_readiness(workflow_id: str, request: Request):
+def workflow_readiness(workflow_id: str, request: Request, tool_id: str | None = None):
     with Session() as db:
         ws = workspace_for(request, db)
         workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
         if not workflow:
             raise HTTPException(404, "Workflow not found")
         graph = parse_graph(workflow.definition)
-        enabled = {tool.task for tool in db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True)))}
+        enabled_tools = list(db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True))))
+        enabled = {tool.task for tool in enabled_tools}
+        balance = db.get(CreditAccount, ws.id).balance
+        quote = video_credit_cost()
+        orientation = workspace_settings(db, ws.id)["video_orientation"]
+        aspect_ratio = {"vertical": "9:16", "horizontal": "16:9"}.get(orientation)
+        video_count = sum(node["type"] == "video" for node in graph["nodes"])
         steps = []
         for node in graph["nodes"]:
             task = node["type"]
-            if task in AI_TASKS:
+            if task == "video":
+                tool = next((tool for tool in enabled_tools if tool.task == "video" and tool.provider in VIDEO_PROVIDERS
+                             and (tool_id is None or tool.id == tool_id)), None)
+                if video_count != 1:
+                    detail, status = "Hiện chỉ hỗ trợ một bước video trong mỗi workflow.", "unsupported_graph"
+                elif not tool:
+                    detail, status = "Chọn model video được hỗ trợ trong Công cụ AI.", "missing_tool"
+                elif issue := video_provider_config_issue(tool.provider):
+                    status, detail = issue
+                elif not aspect_ratio:
+                    detail, status = "Model video chưa hỗ trợ tỷ lệ vuông.", "unsupported_aspect"
+                elif tool.model not in VIDEO_PROVIDERS[tool.provider][0].VIDEO_MODELS:
+                    detail, status = "Model video này chưa được hỗ trợ.", "unsupported_model"
+                elif balance < quote:
+                    detail, status = f"Cần {quote} credits; hiện có {balance}.", "insufficient_credits"
+                else:
+                    detail, status = f"Sẵn sàng tạo clip; dự kiến giữ {quote} credits.", "ready"
+            elif task in AI_TASKS:
                 detail = "Đã chọn model; cần kết nối provider trước khi chạy." if task in enabled else "Chưa chọn công cụ AI cho tác vụ này."
                 status = "needs_connection" if task in enabled else "missing_tool"
-            elif task in {"render", "publish"}:
+            elif task in {"render", "publish", "scenes", "subtitle"}:
                 detail, status = "Cần kết nối dịch vụ thực thi trước khi chạy.", "needs_connection"
             else:
                 detail, status = "Bước này đã có trong sơ đồ.", "configured"
             steps.append({"node_id": node["id"], "task": task, "status": status, "detail": detail})
-        return {"workflow_id": workflow.id, "runnable": False, "steps": steps}
+        return {"workflow_id": workflow.id, "runnable": all(step["status"] in {"ready", "configured"} for step in steps),
+                "credits_required": quote if video_count else 0, "credits_available": balance, "steps": steps}
+
+
+def public_step_output(step):
+    if not step.output:
+        return None
+    output = json.loads(step.output)
+    if isinstance(output, dict):
+        for key in ("submission", "error_count", "video_url"):
+            output.pop(key, None)
+    return output
 
 
 def public_run(run, steps=None):
@@ -769,16 +1081,27 @@ def public_run(run, steps=None):
     if steps is not None:
         result["steps"] = [{"node_id": step.node_id, "node_type": step.node_type,
                             "status": step.status, "detail": step.detail,
-                            "output": json.loads(step.output) if step.output else None}
+                            "output": public_step_output(step)}
                            for step in steps]
     return result
 
 
-def persist_run(db, ws, workflow, project, snapshot, retry_of_id=None):
+def video_credit_cost():
+    try:
+        amount = int(os.environ.get("VIDEO_CREDITS_PER_CLIP", "10"))
+    except ValueError as exc:
+        raise RuntimeError("VIDEO_CREDITS_PER_CLIP must be a positive integer") from exc
+    if not 1 <= amount <= 100000:
+        raise RuntimeError("VIDEO_CREDITS_PER_CLIP must be between 1 and 100000")
+    return amount
+
+
+def persist_run(db, ws, workflow, project, snapshot, retry_of_id=None, prompt_override=None, tool_id=None, frozen_video=None):
     # The graph and result are committed together, even if external nodes block.
     graph = parse_graph(snapshot)
     validate_graph(WorkflowGraph.model_validate(graph))
-    enabled = {t.task for t in db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True)))}
+    tools = list(db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True)).order_by(AITool.created_at, AITool.id)))
+    enabled = {tool.task for tool in tools}
     assets = list(db.scalars(select(Asset).where(Asset.workspace_id == ws.id).order_by(Asset.created_at, Asset.id)))
     now = datetime.now(timezone.utc)
     run = WorkflowRun(id=ident(), workspace_id=ws.id, workflow_id=workflow.id, project_id=project.id,
@@ -786,13 +1109,86 @@ def persist_run(db, ws, workflow, project, snapshot, retry_of_id=None):
     db.add(run)
     db.flush()
     outcomes = workflow_engine.execute_graph(graph, project, assets, enabled)
+    ready_video = [item for item in outcomes if item["node_type"] == "video" and item["status"] == "blocked"
+                   and all(next(outcome for outcome in outcomes if outcome["node_id"] == edge["source"])["status"] == "completed"
+                           for edge in graph["edges"] if edge["target"] == item["node_id"])]
+    video_payload = None
+    if len([item for item in outcomes if item["node_type"] == "video"]) == 1 and len(ready_video) == 1:
+        item = ready_video[0]
+        if frozen_video:
+            provider_name = frozen_video.get("provider")
+            model_id = frozen_video.get("model_id")
+            tool_reference = frozen_video.get("tool_id")
+            prompt = frozen_video.get("prompt", "").strip()
+            aspect_ratio = frozen_video.get("aspect_ratio")
+            defaults = video_request_defaults(provider_name)
+            duration = frozen_video.get("duration", defaults[0])
+            resolution = frozen_video.get("resolution", defaults[1])
+            generate_audio = frozen_video.get("generate_audio", defaults[2])
+            cost = frozen_video.get("credits")
+        else:
+            if tool_id:
+                tool = next((tool for tool in tools if tool.id == tool_id and tool.task == "video" and tool.provider in VIDEO_PROVIDERS), None)
+                if not tool:
+                    raise HTTPException(400, "Selected video tool is unavailable")
+            else:
+                tool = next((tool for tool in tools if tool.task == "video" and tool.provider in VIDEO_PROVIDERS), None)
+            provider_name = tool.provider if tool else None
+            model_id = tool.model if tool else None
+            tool_reference = tool.id if tool else None
+            prompt = (prompt_override if prompt_override is not None else project.topic or project.title).strip()
+            orientation = workspace_settings(db, ws.id)["video_orientation"]
+            aspect_ratio = {"vertical": "9:16", "horizontal": "16:9"}.get(orientation)
+            duration, resolution, generate_audio = video_request_defaults(provider_name)
+            cost = video_credit_cost()
+        if provider_name not in VIDEO_PROVIDERS:
+            item["detail"] = "Chưa chọn model video được hỗ trợ cho bước video."
+        elif issue := video_provider_config_issue(provider_name):
+            item["detail"] = issue[1]
+        elif not prompt:
+            item["detail"] = "Dự án cần có chủ đề hoặc prompt để tạo video."
+        elif not aspect_ratio:
+            item["detail"] = "Model video hiện chưa hỗ trợ tỷ lệ vuông."
+        else:
+            provider_module = VIDEO_PROVIDERS[provider_name][0]
+            request = provider_module.VideoRequest(model_id=model_id, prompt=prompt, aspect_ratio=aspect_ratio,
+                                                   duration=duration, resolution=resolution, generate_audio=generate_audio)
+            try:
+                provider_module.validate_video_request(request)
+            except (dola.ProviderError, fal.ProviderError, runware.ProviderError, replicate.ProviderError,
+                    runway.ProviderError) as exc:
+                item["detail"] = str(exc)
+            else:
+                if not isinstance(cost, int) or not 1 <= cost <= 100000:
+                    raise HTTPException(400, "Invalid video credit quote")
+                try:
+                    usage.post_credit(db, ws.id, -cost, "video_reserve", f"reserve:{run.id}")
+                except ValueError as exc:
+                    raise HTTPException(402, "Not enough credits for this video") from exc
+                item["status"] = "queued"
+                item["detail"] = "Đã xếp hàng tạo video."
+                item["output"] = {"prompt": prompt, "provider": provider_name, "model": model_id}
+                video_payload = {"kind": "video.generate", "provider": provider_name, "tool_id": tool_reference,
+                                 "prompt": prompt, "model_id": model_id,
+                                 "aspect_ratio": aspect_ratio, "duration": request.duration,
+                                 "resolution": request.resolution, "generate_audio": request.generate_audio,
+                                 "credits": cost}
     steps = [WorkflowRunStep(id=ident(), run_id=run.id, node_id=item["node_id"],
               node_type=item["node_type"], position=index, status=item["status"], detail=item["detail"],
-              output=json.dumps(item["output"]) if item["output"] is not None else None, finished_at=now)
+              output=json.dumps(item["output"]) if item["output"] is not None else None,
+              finished_at=now if item["status"] not in {"queued", "running", "skipped"} else None)
              for index, item in enumerate(outcomes)]
     db.add_all(steps)
-    run.status = "completed" if all(item["status"] == "completed" for item in outcomes) else "blocked"
-    run.finished_at = now
+    if video_payload:
+        step = next(step for step in steps if step.node_id == ready_video[0]["node_id"])
+        db.flush()
+        jobs.enqueue_job(db, workspace_id=ws.id, run_id=run.id, step_id=step.id,
+                         logical_key=f"video:{run.id}:{step.id}", payload=video_payload)
+        run.status = "running"
+        run.finished_at = None
+    else:
+        run.status = "completed" if all(item["status"] == "completed" for item in outcomes) else "blocked"
+        run.finished_at = now
     return public_run(run, steps)
 
 
@@ -818,7 +1214,8 @@ def start_workflow_run(workflow_id: str, data: StartWorkflowRun, request: Reques
         project = db.scalar(select(Project).where(Project.id == data.project_id, Project.workspace_id == ws.id))
         if not workflow or not project:
             raise HTTPException(404, "Workflow or project not found")
-        return persist_run(db, ws, workflow, project, workflow.definition)
+        return persist_run(db, ws, workflow, project, workflow.definition,
+                           prompt_override=data.prompt, tool_id=data.tool_id)
 
 
 @app.get("/api/workflow-runs/{run_id}")
@@ -832,22 +1229,57 @@ def get_workflow_run(run_id: str, request: Request):
         return public_run(run, list(steps))
 
 
+@app.post("/api/workflow-runs/{run_id}/approve")
+def approve_workflow_run(run_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        membership = db.get(Membership, (authorize(request, db).id, ws.id))
+        if not membership or membership.role != "owner":
+            raise HTTPException(403, "Workspace owner required")
+        run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id))
+        if not run:
+            raise HTTPException(404, "Workflow run not found")
+        steps = list(db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id).order_by(WorkflowRunStep.position)))
+        reviews = [step for step in steps if step.node_type == "review" and step.status == "awaiting_review"]
+        if run.status != "awaiting_review" or not reviews or not any(step.node_type == "video" and step.status == "completed" for step in steps):
+            raise HTTPException(409, "No finished video awaits review")
+        now = datetime.now(timezone.utc)
+        reviewer = authorize(request, db)
+        for step in reviews:
+            step.status, step.detail, step.finished_at = "completed", "Đã được duyệt để sử dụng.", now
+            step.output = json.dumps({"approved_by": reviewer.id, "approved_at": now.isoformat()})
+        run.status = "completed" if all(step.status == "completed" for step in steps) else "blocked"
+        run.finished_at = now
+        project = db.get(Project, run.project_id)
+        project.status = "approved"
+        return public_run(run, steps)
+
+
 @app.post("/api/workflow-runs/{run_id}/retry", status_code=201)
 def retry_workflow_run(run_id: str, request: Request):
     same_origin(request)
     with Session.begin() as db:
         ws = workspace_for(request, db)
         active_plan(db, ws)
-        original = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id))
+        original = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id).with_for_update())
         if not original:
             raise HTTPException(404, "Workflow run not found")
         if original.status not in {"blocked", "failed"}:
             raise HTTPException(409, "Only blocked or failed runs can be retried")
+        approved_review = db.scalar(select(WorkflowRunStep.id).where(
+            WorkflowRunStep.run_id == original.id,
+            WorkflowRunStep.node_type == "review",
+            WorkflowRunStep.status == "completed"))
+        if approved_review is not None:
+            raise HTTPException(409, "An approved clip cannot be retried; start a new run for a new video")
         workflow = db.scalar(select(Workflow).where(Workflow.id == original.workflow_id, Workflow.workspace_id == ws.id))
         project = db.scalar(select(Project).where(Project.id == original.project_id, Project.workspace_id == ws.id))
         if not workflow or not project:
             raise HTTPException(404, "Workflow or project not found")
-        return persist_run(db, ws, workflow, project, original.graph_snapshot, retry_of_id=original.id)
+        original_job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == original.id).order_by(WorkflowJob.created_at))
+        return persist_run(db, ws, workflow, project, original.graph_snapshot,
+                           retry_of_id=original.id, frozen_video=original_job.payload if original_job else None)
 
 
 @app.post("/api/workflows", status_code=201)
@@ -889,6 +1321,10 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
     with Session.begin() as db:
         ws = workspace_for(request, db)
         active_plan(db, ws)
+        # Serialize quota checks for simultaneous uploads in the same workspace.
+        db.execute(update(Workspace).where(Workspace.id == ws.id).values(name=Workspace.name))
+        stored_bytes = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.workspace_id == ws.id))
+        quota = workspace_media_quota()
         asset_id = ident()
         filename = Path(file.filename or "upload").name[:255]
         target = media_root(db) / ws.id / asset_id
@@ -900,7 +1336,11 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
                     size += len(chunk)
                     if size > MAX_UPLOAD:
                         raise HTTPException(413, "File exceeds 100 MB")
+                    if stored_bytes + size > quota:
+                        raise HTTPException(413, "Workspace media quota reached")
                     out.write(chunk)
+            if not media_signature_matches(content_type, target):
+                raise HTTPException(415, "File contents do not match media type")
             asset = Asset(id=asset_id, workspace_id=ws.id, filename=filename, bytes=size, content_type=content_type)
             db.add(asset)
         except Exception:

@@ -1,0 +1,339 @@
+"""Run video jobs outside request transactions and save private MP4 assets."""
+import argparse
+from dataclasses import asdict
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import time
+import uuid
+
+import httpx
+from sqlalchemy import func, select, update
+
+from app.db import Session
+from app import jobs, usage, workflow_engine
+from app.main import MAX_UPLOAD, dola_max_job_age_seconds, media_root, video_provider_config_issue, workspace_media_quota
+from app.models import Asset, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
+from app.providers import dola, fal, replicate, runware, runway
+
+PROVIDER_CLIENTS = {"fal": (fal, fal.FalQueueClient, "FAL_KEY"),
+                    "runware": (runware, runware.RunwareClient, "RUNWARE_API_KEY"),
+                    "replicate": (replicate, replicate.ReplicateClient, "REPLICATE_API_TOKEN"),
+                    "dola": (dola, dola.DolaClient, "DOLA_API_KEY"),
+                    "runway": (runway, runway.RunwayClient, "RUNWAYML_API_SECRET")}
+PROVIDER_ERRORS = (dola.ProviderError, fal.ProviderError, runware.ProviderError,
+                   replicate.ProviderError, runway.ProviderError)
+DEFINITIVE_SUBMIT_REJECTIONS = frozenset({"invalid_request", "auth_error", "billing_error",
+                                          "not_found", "rate_limited"})
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def video_job_max_age_seconds() -> int:
+    """Bound polling and credit holds when a provider never reaches a final state."""
+    try:
+        seconds = int(os.environ.get("VIDEO_JOB_MAX_AGE_SECONDS", "21600"))
+    except ValueError as exc:
+        raise RuntimeError("VIDEO_JOB_MAX_AGE_SECONDS must be an integer") from exc
+    if not 60 <= seconds <= 86400:
+        raise RuntimeError("VIDEO_JOB_MAX_AGE_SECONDS must be between 60 and 86400")
+    return seconds
+
+
+def _live_lease(db, job_id, token):
+    job = db.get(WorkflowJob, job_id)
+    if not job or job.state != "leased" or job.lease_token != token or not job.lease_expires_at:
+        return None
+    expires = job.lease_expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return job if expires > _now() else None
+
+
+def _output(step):
+    return json.loads(step.output) if step.output else {}
+
+
+def _save_output(step, value):
+    step.output = json.dumps(value, separators=(",", ":"))
+
+
+def _download_video(url: str, target: Path) -> int:
+    size = 0
+    with httpx.Client(follow_redirects=False, timeout=httpx.Timeout(30.0, read=120.0)) as client:
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            if response.status_code != 200 or response.headers.get("content-type", "").split(";")[0] not in {"video/mp4", "application/octet-stream"}:
+                raise ValueError("Provider did not return an MP4 video")
+            with target.open("wb") as handle:
+                for chunk in response.iter_bytes(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD:
+                        raise ValueError("Provider video exceeds 100 MB")
+                    handle.write(chunk)
+    return size
+
+
+def _valid_mp4(path: Path) -> bool:
+    """Reject truncated containers before recording usage (codec checks come later)."""
+    try:
+        file_size = path.stat().st_size
+        if not 32 <= file_size <= MAX_UPLOAD:
+            return False
+        seen_ftyp = seen_moov = seen_mdat = False
+        with path.open("rb") as handle:
+            offset = 0
+            boxes = 0
+            while offset < file_size:
+                if boxes >= 4096 or file_size - offset < 8:
+                    return False
+                header = handle.read(8)
+                if len(header) != 8:
+                    return False
+                box_size = int.from_bytes(header[:4], "big")
+                box_type = header[4:8]
+                header_size = 8
+                if box_size == 1:
+                    large_size = handle.read(8)
+                    if len(large_size) != 8:
+                        return False
+                    box_size = int.from_bytes(large_size, "big")
+                    header_size = 16
+                elif box_size == 0:
+                    box_size = file_size - offset
+                if box_size < header_size or box_size > file_size - offset:
+                    return False
+                payload_size = box_size - header_size
+                if boxes == 0:
+                    if box_type != b"ftyp" or payload_size < 8:
+                        return False
+                    seen_ftyp = True
+                if box_type == b"moov" and payload_size >= 8:
+                    seen_moov = True
+                if box_type == b"mdat" and payload_size > 0:
+                    seen_mdat = True
+                offset += box_size
+                handle.seek(offset)
+                boxes += 1
+        return seen_ftyp and seen_moov and seen_mdat
+    except OSError:
+        return False
+
+
+def _requeue(job_id: str, token: str, *, delay: int, detail: str, error_count: int | None = None):
+    with Session.begin() as db:
+        job = _live_lease(db, job_id, token)
+        if not job:
+            return
+        step = db.get(WorkflowRunStep, job.step_id)
+        step.detail = detail
+        if error_count is not None:
+            output = _output(step)
+            output["error_count"] = error_count
+            _save_output(step, output)
+        jobs.fail_job(db, job_id=job_id, lease_token=token, error=detail, retry_delay_seconds=delay)
+
+
+def _terminal_failure(job_id: str, token: str, detail: str, *, refund: bool):
+    with Session.begin() as db:
+        job = _live_lease(db, job_id, token)
+        if not job or not jobs.fail_job(db, job_id=job_id, lease_token=token, error=detail):
+            return
+        step = db.get(WorkflowRunStep, job.step_id)
+        run = db.get(WorkflowRun, job.run_id)
+        step.status = "failed" if refund else "needs_attention"
+        step.detail = (detail if refund else
+                       f"{detail} Cần đối soát với provider; credit đang được giữ, không tự gửi lại.")[:500]
+        step.finished_at = _now()
+        run.status = step.status
+        run.finished_at = _now()
+        if refund:
+            usage.post_credit(db, job.workspace_id, job.payload["credits"], "video_refund", f"refund:{job.run_id}")
+
+
+def _advance_run(db, run: WorkflowRun):
+    steps = list(db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id).order_by(WorkflowRunStep.position)))
+    by_node = {step.node_id: step for step in steps}
+    graph = json.loads(run.graph_snapshot)
+    for node, dependencies in workflow_engine.ordered_nodes(graph):
+        step = by_node[node["id"]]
+        if step.status != "skipped" or any(by_node[parent].status != "completed" for parent in dependencies):
+            continue
+        if node["type"] == "review":
+            step.status, step.detail = "awaiting_review", "Video đã tạo; cần người dùng duyệt."
+        else:
+            step.status, step.detail = "blocked", "Bước này chưa có bộ thực thi."
+            step.finished_at = _now()
+    states = {step.status for step in steps}
+    if "awaiting_review" in states:
+        run.status, run.finished_at = "awaiting_review", None
+    elif states == {"completed"}:
+        run.status, run.finished_at = "completed", _now()
+    else:
+        run.status, run.finished_at = "blocked", _now()
+
+
+def _store_result(job_id: str, token: str, result, download):
+    asset_id = str(uuid.uuid4())
+    with Session() as db:
+        job = _live_lease(db, job_id, token)
+        if not job:
+            return
+        PROVIDER_CLIENTS[job.payload["provider"]][0].validate_media_url(result.video_url)
+        root = media_root(db)
+        target = root / job.workspace_id / asset_id
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(asset_id + ".part")
+    try:
+        download(result.video_url, partial)
+        size = partial.stat().st_size
+        if not 0 < size <= MAX_UPLOAD or not _valid_mp4(partial):
+            raise ValueError("Provider result is not a valid MP4 or is too large")
+        partial.replace(target)
+        with Session.begin() as db:
+            job = _live_lease(db, job_id, token)
+            if not job or not jobs.complete_job(db, job_id=job_id, lease_token=token):
+                target.unlink(missing_ok=True)
+                return
+            db.execute(update(Workspace).where(Workspace.id == job.workspace_id).values(name=Workspace.name))
+            stored_bytes = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.workspace_id == job.workspace_id))
+            if stored_bytes + size > workspace_media_quota():
+                raise ValueError("Workspace media quota reached")
+            step = db.get(WorkflowRunStep, job.step_id)
+            run = db.get(WorkflowRun, job.run_id)
+            payload = job.payload
+            db.add(Asset(id=asset_id, workspace_id=job.workspace_id, project_id=run.project_id,
+                         run_id=run.id, step_id=step.id, provider=payload["provider"], model=payload["model_id"],
+                         filename=f"video-{asset_id[:8]}.mp4", content_type="video/mp4", bytes=size))
+            output = _output(step)
+            output.pop("submission", None)
+            output.pop("error_count", None)
+            output["asset_id"] = asset_id
+            output["filename"] = f"video-{asset_id[:8]}.mp4"
+            _save_output(step, output)
+            step.status, step.detail, step.finished_at = "completed", "Đã lưu video vào kho media riêng.", _now()
+            if not db.scalar(select(UsageEvent.id).where(UsageEvent.reference == f"video:{step.id}")):
+                db.add(UsageEvent(id=str(uuid.uuid4()), workspace_id=job.workspace_id,
+                                  tool=f"{payload['provider']}/video", units=1, credits=payload["credits"],
+                                  reference=f"video:{step.id}", created_at=_now()))
+            db.flush()
+            _advance_run(db, run)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        raise
+
+
+def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: str | None = None) -> bool:
+    """Claim and advance one job; provider calls never hold a database transaction."""
+    max_age_seconds = video_job_max_age_seconds()
+    worker_id = worker_id or f"video-{os.getpid()}"
+    with Session.begin() as db:
+        claimed = jobs.claim_due_jobs(db, worker_id=worker_id, limit=1, lease_seconds=300,
+                                      logical_key_prefix="video:")
+        if not claimed:
+            return False
+        job = claimed[0]
+        job_id, token, payload, job_created_at = job.id, job.lease_token, job.payload, job.created_at
+        step = db.get(WorkflowRunStep, job.step_id)
+        action = step.status
+        if action == "queued":
+            step.status, step.detail = "submitting", "Đang gửi yêu cầu tạo video."
+        current_output = _output(step)
+    provider_info = PROVIDER_CLIENTS.get(payload.get("provider"))
+    if not provider_info:
+        _terminal_failure(job_id, token, "Provider video không được hỗ trợ.", refund=action == "queued")
+        return True
+    provider_module, provider_client_type, key_name = provider_info
+    created_at = job_created_at if job_created_at.tzinfo else job_created_at.replace(tzinfo=timezone.utc)
+    if (_now() - created_at).total_seconds() > max_age_seconds:
+        _terminal_failure(job_id, token, "Video quá thời gian chờ; kiểm tra provider trước khi tạo lại.", refund=action == "queued")
+        return True
+    if payload["provider"] == "dola":
+        issue = video_provider_config_issue("dola")
+        if issue:
+            _terminal_failure(job_id, token, issue[1], refund=action == "queued")
+            return True
+        if (_now() - created_at).total_seconds() > dola_max_job_age_seconds():
+            _terminal_failure(job_id, token, "Dola quá thời gian chờ; cần kiểm tra gateway trước khi tạo lại.", refund=action == "queued")
+            return True
+    owned_client = client is None
+    if owned_client:
+        key = os.environ.get(key_name)
+        if not key:
+            _terminal_failure(job_id, token, f"Server chưa cấu hình {key_name}.", refund=action == "queued")
+            return True
+        try:
+            client = provider_client_type(key)
+        except PROVIDER_ERRORS:
+            _terminal_failure(job_id, token, "Cấu hình provider video không hợp lệ.", refund=action == "queued")
+            return True
+    try:
+        if action == "queued":
+            try:
+                submission = client.submit(provider_module.VideoRequest(model_id=payload["model_id"], prompt=payload["prompt"],
+                    aspect_ratio=payload["aspect_ratio"], duration=payload["duration"],
+                    resolution=payload["resolution"], generate_audio=payload["generate_audio"]))
+            except Exception as exc:
+                # Only a known pre-submit rejection can release the reservation.
+                rejected = isinstance(exc, PROVIDER_ERRORS) and exc.code in DEFINITIVE_SUBMIT_REJECTIONS
+                detail = (f"Provider từ chối yêu cầu tạo video: {exc.code}" if rejected else
+                          f"Không rõ provider đã nhận yêu cầu: {type(exc).__name__}")
+                _terminal_failure(job_id, token, detail, refund=rejected)
+                return True
+            with Session.begin() as db:
+                job = _live_lease(db, job_id, token)
+                if job:
+                    step = db.get(WorkflowRunStep, job.step_id)
+                    output = _output(step)
+                    output["submission"] = asdict(submission)
+                    _save_output(step, output)
+                    step.status, step.detail = "running", "Provider đang tạo video."
+                    jobs.fail_job(db, job_id=job_id, lease_token=token, error="poll_pending", retry_delay_seconds=poll_seconds)
+            return True
+        if action == "submitting":
+            _terminal_failure(job_id, token, "Lần gửi trước chưa có mã yêu cầu; có thể provider đã nhận.", refund=False)
+            return True
+        if action != "running" or "submission" not in current_output:
+            _terminal_failure(job_id, token, "Trạng thái job video không hợp lệ.", refund=False)
+            return True
+        try:
+            submission = provider_module.Submission(**current_output["submission"])
+            state = client.status(submission)
+            if state.state in {"queued", "running"}:
+                _requeue(job_id, token, delay=poll_seconds, detail="Provider đang tạo video.", error_count=0)
+            elif state.state == "failed":
+                _terminal_failure(job_id, token, f"Provider thất bại: {state.error.code if state.error else 'unknown'}", refund=False)
+            elif state.state == "completed":
+                _store_result(job_id, token, client.result(submission), download or _download_video)
+            else:
+                raise ValueError("Unknown provider state")
+        except Exception as exc:
+            errors = int(current_output.get("error_count", 0)) + 1
+            if errors >= 3 or isinstance(exc, ValueError) or (isinstance(exc, PROVIDER_ERRORS) and not exc.retryable):
+                _terminal_failure(job_id, token, f"Không lấy được video: {type(exc).__name__}", refund=False)
+            else:
+                _requeue(job_id, token, delay=max(poll_seconds, 2), detail="Tạm gián đoạn kết nối provider; sẽ thử lại.", error_count=errors)
+        return True
+    finally:
+        if owned_client:
+            client.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Process ReelForge video jobs")
+    parser.add_argument("--once", action="store_true", help="Process at most one due job")
+    args = parser.parse_args()
+    while True:
+        worked = run_one()
+        if args.once:
+            return
+        if not worked:
+            time.sleep(2)
+
+
+if __name__ == "__main__":
+    main()

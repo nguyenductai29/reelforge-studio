@@ -1,6 +1,6 @@
 # ReelForge Studio
 
-Self-hosted foundation for a short-video production platform. Next.js/React/TypeScript powers the dashboard, while FastAPI/Python serves the API. Current features: first-run admin setup, login, workspace projects and media, an interactive workflow diagram editor, and database-backed settings. Video generation, rendering, publishing, paid billing and automated workflows are **not yet implemented**.
+Self-hosted foundation for a short-video production platform. Next.js/React/TypeScript powers the dashboard, while FastAPI/Python serves the API. The implemented path is project topic → one AI-generated MP4 → manual review → private YouTube upload. Video jobs support fal, Runware, Replicate and direct Runway Dev, plus an opt-in experimental Dola gateway; PostgreSQL stores queue leases, credits, asset lineage and per-channel publication state. Facebook/TikTok upload adapters exist, but account connection, publication jobs and scheduling for those channels are not wired into the app. Multi-scene rendering and analytics are still planned. External provider and social-account calls still need validation with real credentials.
 
 ## Start locally with PostgreSQL
 
@@ -42,7 +42,7 @@ Back up PostgreSQL, pull the new source, stop the API, and run `python -m alembi
 
 Migration `0003_billing_orders` adds optional VND prices to plans and payment orders. Existing subscriptions and data remain unchanged. Install the updated `requirements.txt` before restarting the API.
 
-Migration `0004_credits_usage` creates an account for every existing studio, an append-only credit ledger and usage records. Existing balances start at zero. An order saves its credit award when checkout starts; old pending orders from before this migration have a zero award.
+Migration `0004_credits_usage` creates an account for every existing studio, an append-only credit ledger and usage records. Existing balances start at zero. An order saves its credit award when checkout starts; old pending orders from before this migration have a zero award. Subsequent migrations add AI tools (`0005`), workflow runs (`0006`), durable jobs and asset lineage (`0007`), login protection (`0008`), encrypted YouTube OAuth connections (`0009`) and publication records (`0010`). Always apply `upgrade head` with the matching source before starting the API or workers.
 
 ### VNQR checkout with payOS
 
@@ -57,9 +57,9 @@ Put that `payos` property alongside `database_url` inside the same JSON object. 
 
 The workspace owner can select a higher priced plan under **Gói & thanh toán**. The server freezes the VND price in a payment order, requests a payOS hosted link, and updates the subscription for 30 days only after validating the signed webhook and matching its amount. Repeated callbacks do not extend the subscription again. A return to the website is informational, not proof of payment. Admin changes to a subscription remain manual and bypass checkout; account for them separately. Card checkout requires actual OnePAY merchant integration details; it is not active. Crypto payments are not enabled.
 
-The same page now permits a paid plan to be renewed for another 30 days and can ask payOS for the authoritative status of a pending order when the webhook has not yet arrived. The status becomes **expired** when the end date passes and protected operations stop; no background scheduler is needed for this check. Subscription renewal is manual, not an automatic debit. A confirmed payment grants the credits captured on its order once; admin adjustments are recorded in the credit ledger. The `app.usage.consume` service atomically records future AI/render usage and rejects costs above the available balance, but there is no AI provider or render job wired to it yet. Failed/canceled payments do not grant credits. Refund processing is not automated: reconcile any refund with the payment provider and the admin before changing an existing paid subscription.
+The same page now permits a paid plan to be renewed for another 30 days and can ask payOS for the authoritative status of a pending order when the webhook has not yet arrived. The status becomes **expired** when the end date passes and protected operations stop; no background scheduler is needed for this check. Subscription renewal is manual, not an automatic debit. A confirmed payment grants the credits captured on its order once; admin adjustments are recorded in the credit ledger. A supported video job reserves credits before it enters the queue and records usage after a successful MP4 save. A clear rejection before the provider accepts a task refunds the reservation. If submission or a later result is uncertain, the run becomes **needs_attention**, keeps the reserved credits, and cannot be retried; an operator must reconcile provider charges and use the existing admin credit adjustment if a refund is warranted. Failed/canceled payments do not grant credits. Refund processing is not automated: reconcile any refund with the payment provider and the admin before changing an existing paid subscription.
 
-The system administrator can open **Quản trị** to create a user with a new studio, assign a plan, pause a subscription, disable an account, or edit project and workflow limits. The sign-in screen also offers self-registration after initial admin setup: each new user receives a separate Trial studio. The system admin can turn registration off in System Settings; it is enabled by default. There is no email verification, password recovery or email delivery yet; admin-created initial passwords must be shared through an appropriate channel. An account disabled by the admin loses its existing login sessions. Subscription changes are manual and do not charge anyone. `monthly_credits` is configuration for a future usage engine: credits are not issued, spent or billed yet.
+The system administrator can open **Quản trị** to create a user with a new studio, assign a plan, pause a subscription, disable an account, or edit project and workflow limits. The sign-in screen also offers self-registration after initial admin setup: each new user receives a separate Trial studio. The system admin can turn registration off in System Settings; it is enabled by default. There is no email verification, password recovery or email delivery yet; admin-created initial passwords must be shared through an appropriate channel. An account disabled by the admin loses its existing login sessions. Admin subscription changes are manual and do not charge anyone. A confirmed payOS payment grants the order's captured `monthly_credits` once; the credit ledger records grants, admin adjustments and usage.
 
 ## Settings and data
 
@@ -67,23 +67,84 @@ Application settings are in the database: `system_settings` holds the frontend o
 
 The application accepts the supplied `postgresql://` URL and explicitly selects the installed `psycopg` driver. It removes `uselibpqcompat=true` because psycopg/libpq does not recognize that provider compatibility option; `sslmode=require` remains enabled. The example contains no working password. The migration creates the tables in PostgreSQL’s default `public` schema; no separate schema needs to be created. Future model changes should be tracked with Alembic revisions, rather than `create_all`.
 
-The database URL and Next.js-to-API address are deployment bootstrap details and cannot be stored exclusively in PostgreSQL without a separate service-discovery mechanism. Provider API keys are not accepted or stored yet. When those integrations are added, credentials must be encrypted before storage, with the encryption key kept outside the database.
+The database URL and Next.js-to-API address are deployment bootstrap details and cannot be stored exclusively in PostgreSQL without a separate service-discovery mechanism. payOS keys remain in the private backend bootstrap file. Provider API keys and Google OAuth credentials are read from environment variables; YouTube tokens and resumable upload sessions are encrypted before storage in PostgreSQL with a Fernet key kept outside the database. Back up that key securely alongside the database and media: losing it makes saved connections and upload sessions unreadable.
 
-For remote access, put HTTPS in front of the frontend, set `frontend_origin` and `secure_cookies` in System Settings, and keep the API and PostgreSQL private. Changing the frontend origin may require signing in again on the new address.
+For remote access, put HTTPS in front of the frontend, set `frontend_origin` and `secure_cookies` in System Settings, keep the API and PostgreSQL private, and apply matching request-body and rate limits at the reverse proxy. Changing the frontend origin may require signing in again on the new address.
 
 For an existing instance using `instance/config.json`, the backend reads it if `instance/bootstrap.json` is absent. If tables were created by an older version without Alembic, back up and verify its schema against the initial migration before stamping `python -m alembic stamp head` (stamping does not create or change tables). On a fresh empty database use `upgrade head`, never `stamp head`. Old `storage_dir`, `secure_cookies` and `frontend_origin` values are imported into the database once if settings rows do not exist. The old file can then be replaced with `instance/bootstrap.json` containing only `database_url`. Existing SQLite data must be migrated to PostgreSQL separately; changing the URL does not migrate data.
 
 ## Current architecture and next steps
 
 - Projects, assets, workflows and workspace settings are scoped to the signed-in user's workspace. The first user is the system admin.
-- Active subscriptions enforce the configured project and workflow limits on new records. Plan administration is manual; there is no checkout or credit ledger yet.
-- Workflow diagrams support adding, moving, connecting and removing nodes; the saved graph is validated as an acyclic graph and scoped to a workspace. Old linear workflow templates are displayed as graphs without a schema change. These are **designs only**; no graph execution, AI calls, render, review, publishing or usage/billing are implemented.
-- The dashboard includes clearly marked planning views for AI tools, channels, scheduling and analytics. They do not accept credentials or publish content yet.
+- Active subscriptions enforce the configured project and workflow limits on new records. Workspace owners can buy or renew paid plans through payOS when prices and merchant credentials are configured. Confirmed orders update subscriptions and credit balances; admins can make manual subscription and credit adjustments.
+- Workflow diagrams support adding, moving, connecting and removing nodes; the saved graph is validated as an acyclic graph and scoped to a workspace. Old linear workflow templates are displayed as graphs without a schema change. Starting a workflow persists ordered step outcomes and a graph snapshot. Local `idea` and `assets` nodes complete; one configured supported `video` node queues a job; unsupported nodes are blocked, and their dependents are skipped. See the run details below.
+- Projects can be opened to edit their topic and preview/download generated MP4 assets. The AI tool catalog is persisted per workspace. The Channels panel connects YouTube; approved runs can queue a private YouTube upload and show its status. Calendar and analytics remain planning views.
 
 ### AI tools and workflow readiness
 
-The **Công cụ AI** screen stores task, provider, model, and enabled status per workspace in PostgreSQL. Apply migration `0005_ai_tools` with `python -m alembic upgrade head` before restarting the API. A workflow's `GET /api/workflows/{id}/readiness` reports missing AI choices and provider connections without making provider requests or charging credits. Provider credentials and AI generation are not implemented yet; selecting a model does not enable generation. Modules fit the viewport, with independent scrolling inside data and form panels.
+The **Công cụ AI** screen stores task, provider, model, and enabled status per workspace in PostgreSQL. Apply migration `0005_ai_tools` or later with `python -m alembic upgrade head` before restarting the API. A workflow's `GET /api/workflows/{id}/readiness` checks the selected supported model, its provider key, orientation and credit balance, and flags unsupported steps. This check makes no provider request and charges no credits. Selecting a model in the catalog alone does not start a provider job. Other AI task entries currently store configuration only.
 
 ### Workflow runs (migration 0006)
 
-After `python -m alembic upgrade head`, choose a project on the workflow screen and run a saved graph. The engine orders nodes by dependencies, records a graph snapshot and step outcomes in PostgreSQL, and displays the most recent 30 runs. The `idea` node reads the selected project's title/topic; `assets` lists media in that studio. AI, render, publish, and other unimplemented steps remain blocked with a reason; dependent steps are skipped. A blocked run can be retried using **its original graph snapshot**, producing a new run linked to the old one. No provider call or credit charge occurs in this phase. API routes: `POST/GET /api/workflows/{id}/runs`, `GET /api/workflow-runs/{id}`, and `POST /api/workflow-runs/{id}/retry`.
+After `python -m alembic upgrade head`, choose a project on the workflow screen and run a saved graph. The engine orders nodes by dependencies, records a graph snapshot and step outcomes in PostgreSQL, and displays the most recent 30 runs. The `idea` node reads the selected project's title/topic; `assets` lists media in that studio. A supported `video` node queues work for the separate worker. Render, publish, and other unimplemented graph steps remain blocked with a reason; dependent steps are skipped. A blocked or failed run can be retried using **its original graph snapshot**, producing a new run linked to the old one. Once a clip has been approved, retry is refused even if a later unsupported node left the aggregate run blocked; start a new run to request another video. API routes: `POST/GET /api/workflows/{id}/runs`, `GET /api/workflow-runs/{id}`, and `POST /api/workflow-runs/{id}/retry`.
+
+### One-clip video jobs (migration 0007)
+
+Apply `python -m alembic upgrade head` before starting the API and worker. Fund the workspace balance through a confirmed paid order or an admin credit adjustment. In **Công cụ AI**, enable one of the supported video tools:
+
+| Provider | Model ID | Required environment variable |
+| --- | --- | --- |
+| fal | `fal-ai/veo3.1/fast` | `FAL_KEY` |
+| Runware | `bytedance:seedance@2.5` | `RUNWARE_API_KEY` |
+| Replicate | `google/veo-3.1-fast` | `REPLICATE_API_TOKEN` |
+| Runway Dev | `gen4.5` | `RUNWAYML_API_SECRET` and `RUNWAY_OUTPUT_HOSTS` |
+
+Set the selected provider key in both the API and video worker environments. Set `VIDEO_CREDITS_PER_CLIP` on the API if the default reservation of 10 credits per clip needs changing. This is an internal flat credit quote, not a live provider price; set it to cover your actual provider cost. The workspace video orientation can be vertical (9:16) or horizontal (16:9); square is not supported by this workflow. The API validates the model's declared capabilities before reserving credits. The standard one-clip flow requests an eight-second 720p video, so a provider/model must support those settings. Runway Gen-4.5 text-to-video produces no generated audio. For Runway, set `RUNWAY_OUTPUT_HOSTS` in the API and worker to the exact comma-separated DNS hostnames approved for its signed MP4 output URLs; its CDN hostname is not fixed by the public API contract, so verify the host for your account before enabling production jobs. The worker refuses output from any other host.
+
+To try the separately operated `dola-render-gateway`, set `DOLA_EXPERIMENTAL_ENABLED=1`, `DOLA_API_KEY` and `DOLA_BASE_URL` in both the API and video worker environments, then select provider `dola` with model `seedance-2.5` or `seedance-2.0`. `DOLA_MEDIA_BASE_URL` can pin a separate operator-controlled media origin. Dola requests use ten seconds and provider-selected resolution. `DOLA_MAX_JOB_AGE_SECONDS` defaults to 7200 (allowed 60–86400) and ends a stuck ReelForge job; inspect the gateway before retrying because its browser task may finish later. The gateway's original `/videos` endpoint can be public, so isolate it appropriately and use the private ReelForge copy for playback. This path has fake-HTTP tests but has not been checked with a live Dola account.
+
+New workflows start with `idea → video → review`. Select a project with a title or topic and start a run; a supplied prompt overrides the project's topic. The API freezes the prompt, model, and credit cost on the queued job. Start the worker in a separate terminal or service from the repository root:
+
+```bash
+python -m app.video_worker
+```
+
+The worker polls the selected provider, checks MP4 container structure, saves the result as a private workspace asset linked to the project and run, and leaves the run awaiting manual review. This structural check rejects truncated files; it is not a full codec/decode check. Run details poll for progress and expose the saved asset. After reviewing the clip, the workspace owner can use **Duyệt video** or call `POST /api/workflow-runs/{id}/approve` to complete the review step and mark the project approved. The worker must remain running to advance queued jobs. `VIDEO_JOB_MAX_AGE_SECONDS` in the worker defaults to 21600 (allowed 60–86400); an over-age job ends, but credits stay reserved when the provider may have accepted it. Inspect the provider and reconcile before requesting another video. Approval alone does not publish a video.
+
+### Private YouTube uploads (migrations 0009–0010)
+
+Enable YouTube Data API v3 and register a Google OAuth client with the YouTube upload scope. Register the exact callback URL as an authorized redirect URI; for local development it can be `http://localhost:3000/youtube/callback`, while production needs HTTPS. Set these variables in the API and YouTube worker environments:
+
+| Variable | Purpose |
+| --- | --- |
+| `GOOGLE_OAUTH_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client secret |
+| `GOOGLE_OAUTH_REDIRECT_URI` | Frontend callback URL registered with Google |
+| `REELFORGE_TOKEN_ENCRYPTION_KEY` | Persistent Fernet key for OAuth tokens and resumable upload sessions |
+
+Generate a Fernet key once with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`; store it as a secret and reuse the same value after restarts. Install dependencies and migrate to `head`, then run the YouTube worker as a separate service:
+
+```bash
+python -m app.youtube_worker
+```
+
+The workspace owner connects YouTube in **Kênh đăng tải**, reviews a completed clip in **Chạy & lịch sử**, then chooses **Tải riêng tư lên YouTube**. A fresh OAuth callback must include a refresh token; otherwise it fails without replacing the existing connection. The API creates one publication record and durable upload job for that run/channel. The queued job is tied to that connection; disconnecting and reconnecting requires a new manual action before an upload can proceed. The worker starts a resumable upload, encrypts the session URL, and records the YouTube video ID when the private upload succeeds. Temporary Google failures use bounded retries with backoff. The UI shows queued/uploading/succeeded/error states, without a byte-percentage progress bar. A failed job that never started a resumable upload can be retried manually; an uncertain upload is marked **Cần kiểm tra trên YouTube** and is never sent again automatically. Change visibility in YouTube Studio only after checking the uploaded video. Google project verification, consent and API quota determine whether a real channel can use this flow; repository tests use fake provider/Google responses, not a live channel.
+
+The Facebook Page Reels and TikTok Content Posting HTTP adapters in `app/publishers/` are building blocks only. They have no workspace account connection, publication worker or UI action yet. TikTok's inbox flow requires the creator to finish posting in TikTok and must not be represented as a published post.
+
+### Worker and storage settings
+
+Run `python -m app.video_worker` and `python -m app.youtube_worker` continuously as separate processes. Both support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and video worker; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
+
+If a worker crashes during download, preview abandoned temporary files with `python -m app.media_maintenance`. Run `python -m app.media_maintenance --apply` to remove eligible `.part` files older than 24 hours. The command restricts cleanup to known workspace directories and is a dry run unless `--apply` is supplied.
+
+## Development checks
+
+Install test dependencies into the same Python environment as the API, then run the backend tests:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
+```
+
+From `frontend/`, run `npm ci`, `npm run typecheck`, and `npm run build`. GitHub Actions runs these Python and frontend checks on pushes and pull requests.
