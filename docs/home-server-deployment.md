@@ -655,7 +655,7 @@ systemctl is-active reelforge-video-worker
 journalctl -u reelforge-video-worker -f
 ```
 
-Provider credentials such as `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, or Runway credentials must be supplied to both the API and video worker when those providers are enabled.
+Provider credentials such as `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, Runway credentials, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` must be supplied to the API, the video worker and the text worker alike. A worker that finishes one step also starts the next one: for example, the text worker queues the video step that follows an AI Writer, and blocks it if it cannot see that video provider's key.
 
 Do not put private API keys into Git.
 

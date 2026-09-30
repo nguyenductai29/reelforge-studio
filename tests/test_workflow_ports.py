@@ -207,7 +207,9 @@ class SceneSplitTest(unittest.TestCase):
         scenes = split_scenes(text, max_scenes=4)
         self.assertEqual(len(scenes), 4)
         self.assertEqual(" ".join(s["text"] for s in scenes), text)
-        self.assertEqual(len(split_scenes(" ".join(sentence.format(i) for i in range(5)))), 2)
+        # 80 words at a 16-second target (40 words) make 2 scenes; the 6-second default makes 5.
+        self.assertEqual(len(split_scenes(" ".join(sentence.format(i) for i in range(5)), scene_seconds=16)), 2)
+        self.assertEqual(len(split_scenes(" ".join(sentence.format(i) for i in range(5)))), 5)
 
     def test_too_many_paragraphs_are_merged(self):
         text = "\n\n".join(f"Đoạn {i}." for i in range(10))

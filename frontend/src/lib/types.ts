@@ -36,7 +36,28 @@ export type Graph = { nodes: GraphNode[]; edges: GraphEdge[] };
 /** Typed ports per node type, served by the backend's node registry. */
 export type InputPort = { name: string; accepts: string[]; multiple: boolean };
 export type OutputPort = { name: string; type: string };
-export type NodePorts = { inputs: InputPort[]; outputs: OutputPort[]; requires: string[][] };
+/**
+ * One setting of a node type, as the backend validates it. A value equal to the
+ * default is left out of the node's config; `code` is the error the backend returns.
+ */
+export type ConfigField = {
+  key: string;
+  type: "select" | "integer" | "number" | "text" | "tool";
+  label: string;
+  default: string | number | null;
+  required: boolean;
+  advanced: boolean;
+  code: string;
+  options?: string[];
+  presets?: number[];
+  minimum?: number;
+  maximum?: number;
+  max_length?: number;
+  multiline?: boolean;
+  task?: AiTask;
+  providers?: string[];
+};
+export type NodePorts = { inputs: InputPort[]; outputs: OutputPort[]; requires: string[][]; config: ConfigField[] };
 export type NodeCatalog = { data_types: string[]; node_types: Record<string, NodePorts> };
 export type Workflow = { id: string; name: string; graph: Graph };
 
@@ -91,7 +112,15 @@ export type Run = {
   steps?: RunStep[];
 };
 
-export type ReadinessStep = { node_id: string; task: NodeType; status: string; detail: string };
+export type ReadinessStep = {
+  node_id: string;
+  task: NodeType;
+  status: string;
+  detail: string;
+  /** For invalid settings or inputs: a stable error code and the setting or port it concerns. */
+  code?: string | null;
+  field?: string | null;
+};
 export type Readiness = {
   workflow_id: string;
   runnable: boolean;

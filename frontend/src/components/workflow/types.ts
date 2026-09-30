@@ -57,6 +57,12 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
       return r.missingConfig;
     case "invalid_config":
       return r.invalidConfig;
+    case "invalid_settings":
+      return (step.code && t.config.errors[step.code]) || r.invalidSettings;
+    case "missing_input":
+      return r.missingInput(step.field ? (t.ports[step.field] ?? step.field) : "");
+    case "tool_unavailable":
+      return r.toolUnavailable;
     default:
       return step.detail;
   }

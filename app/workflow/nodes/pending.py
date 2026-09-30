@@ -49,6 +49,10 @@ UNSUPPORTED_DETAIL = "Loại bước này chưa được hỗ trợ."
 class UnsupportedNodeHandler(NodeHandler):
     """Fallback for a type with no registered handler, e.g. in an old snapshot."""
 
+    def validate_config(self, config):
+        # Settings of an unknown type cannot be judged; the step blocks as unsupported instead.
+        pass
+
     def execute(self, context, node, inputs):
         return NodeExecutionResult.blocked(UNSUPPORTED_DETAIL, NodeError(
             "unsupported_node_type", f"No handler is registered for node type {node.get('type')!r}"))

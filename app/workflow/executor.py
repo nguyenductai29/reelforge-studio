@@ -10,7 +10,8 @@ A run is evaluated in passes over the snapshot, in topological order:
 
 A step that did not complete never lets its children run, and a pass never
 rewrites a step that already left the pending state. Every change happens in
-the caller's transaction.
+the caller's transaction. A node whose settings are invalid is blocked with the
+setting's error code before its handler sees it; the rest of the run goes on.
 """
 from dataclasses import dataclass
 import json
@@ -23,8 +24,11 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app import jobs
 from app.models import WorkflowRun, WorkflowRunStep
+from app.workflow.config import ConfigError
 from app.workflow.context import ExecutionContext, NodeInputs, StepState, resolve_node_inputs
 from app.workflow.graph import ordered_nodes
+from app.workflow.nodes.base import INVALID_CONFIG_DETAIL
+from app.workflow.ports import unsatisfied_inputs
 from app.workflow.registry import NodeRegistry, default_registry
 from app.workflow.results import (AWAITING_REVIEW, OPEN_STATUSES, RUNNING, SKIPPED, WAITING_DETAIL, NodeError,
                                   NodeExecutionResult, NodeReadiness, RunRequestError, derive_run_status)
@@ -113,8 +117,19 @@ class WorkflowExecutor:
         return self.advance_run(context)
 
     def readiness(self, context: ExecutionContext) -> list[tuple[dict, NodeReadiness]]:
-        return [(node, self.registry.resolve(node["type"]).readiness(context, node))
-                for node in context.graph["nodes"]]
+        """Pre-run checks per node: settings first, then required inputs, then the handler's own."""
+        return [(node, self._readiness(context, node)) for node in context.graph["nodes"]]
+
+    def _readiness(self, context, node) -> NodeReadiness:
+        handler = self.registry.resolve(node["type"])
+        try:
+            handler.validate_config(node.get("config"))
+        except ConfigError as exc:
+            return NodeReadiness("invalid_settings", INVALID_CONFIG_DETAIL, code=exc.code, field=exc.field)
+        if missing := unsatisfied_inputs(context.graph, self.registry, node):
+            return NodeReadiness("missing_input", handler.missing_input_detail, code="missing_input",
+                                 field=missing[0])
+        return handler.readiness(context, node)
 
     def _inputs(self, context, node, states) -> NodeInputs:
         return resolve_node_inputs(node, context.graph, states, registry=self.registry, context=context)
@@ -123,6 +138,11 @@ class WorkflowExecutor:
         if not inputs.ready:
             return NodeExecutionResult.waiting()
         handler = self.registry.resolve(node["type"])
+        try:
+            handler.validate_config(node.get("config"))
+        except ConfigError as exc:
+            return NodeExecutionResult.blocked(INVALID_CONFIG_DETAIL, NodeError(exc.code, exc.message),
+                                               output={"invalid_setting": exc.field})
         try:
             if missing := handler.missing_inputs(context, inputs):
                 return NodeExecutionResult.blocked(

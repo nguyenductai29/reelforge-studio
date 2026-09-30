@@ -3,10 +3,13 @@ import type { GraphEdge, NodePorts } from "@/lib/types";
 
 export type PortCatalog = Record<string, NodePorts>;
 
-export const NO_PORTS: NodePorts = { inputs: [], outputs: [], requires: [] };
+export const NO_PORTS: NodePorts = { inputs: [], outputs: [], requires: [], config: [] };
 
-export const portsOf = (catalog: PortCatalog, type: string | undefined): NodePorts =>
-  (type && catalog[type]) || NO_PORTS;
+/** A node type's ports and settings; an API from before Phase 3.5 sends no `config`, which reads as none. */
+export const portsOf = (catalog: PortCatalog, type: string | undefined): NodePorts => {
+  const ports = type ? catalog[type] : undefined;
+  return ports ? { ...NO_PORTS, ...ports } : NO_PORTS;
+};
 
 export const portLabel = (t: Dictionary, name: string | null | undefined) => (name ? (t.ports[name] ?? name) : "");
 

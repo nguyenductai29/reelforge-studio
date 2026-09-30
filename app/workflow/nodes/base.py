@@ -1,6 +1,7 @@
 """The contract every node type implements."""
 from typing import Any, Mapping
 
+from app.workflow.config import ConfigField, config_values, validate_config
 from app.workflow.context import ExecutionContext, NodeInputs
 from app.workflow.ports import InputPort, OutputPort
 from app.workflow.results import NodeExecutionResult, NodeReadiness
@@ -8,6 +9,7 @@ from app.workflow.results import NodeExecutionResult, NodeReadiness
 CONFIGURED = NodeReadiness("configured", "Bước này đã có trong sơ đồ.")
 INSUFFICIENT_CREDITS_DETAIL = "Không đủ credits cho bước này."
 MISSING_INPUT_DETAIL = "Chưa có dữ liệu đầu vào bắt buộc cho bước này."
+INVALID_CONFIG_DETAIL = "Cài đặt của bước này không hợp lệ."
 
 
 class NodeHandler:
@@ -16,7 +18,10 @@ class NodeHandler:
     ``inputs`` and ``outputs`` declare the node's typed ports (see
     ``app/workflow/ports.py``); the executor resolves input values from edges,
     config and context before calling ``execute``, and blocks the step instead
-    when a ``requires`` group has no value. ``execute`` runs inside the caller's
+    when a ``requires`` group has no value. ``config_fields`` declare the node's
+    settings (see ``app/workflow/config.py``); the executor blocks a node whose
+    settings are invalid, so handlers read them through ``config_values`` and
+    can rely on every key being present. ``execute`` runs inside the caller's
     transaction once every parent has completed. It must not commit, and it
     should make database changes (such as a credit hold) only after every check
     that can block, because an exception turns the step into ``failed`` without
@@ -33,6 +38,7 @@ class NodeHandler:
     # Each group needs at least one input with a value, e.g. (("prompt", "scenes"),).
     requires: tuple[tuple[str, ...], ...] = ()
     missing_input_detail = MISSING_INPUT_DETAIL
+    config_fields: tuple[ConfigField, ...] = ()
 
     def execute(self, context: ExecutionContext, node: Mapping[str, Any], inputs: NodeInputs) -> NodeExecutionResult:
         raise NotImplementedError
@@ -48,7 +54,10 @@ class NodeHandler:
         """What to show before a run starts; ``context.run`` is ``None`` here."""
         return CONFIGURED
 
-    def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Reject settings this node type does not understand; raise ``ValueError`` with the reason."""
-        if config:
-            raise ValueError("this step type has no settings")
+    def validate_config(self, config: Mapping[str, Any] | None) -> None:
+        """Raise ``ConfigError`` (a ``ValueError``) for settings this node type does not accept."""
+        validate_config(self.config_fields, config)
+
+    def config_values(self, config: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Every setting's effective value, defaults included."""
+        return config_values(self.config_fields, config)

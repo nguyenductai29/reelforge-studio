@@ -206,9 +206,31 @@ def edge_problems(graph: Mapping[str, Any], registry) -> list[str]:
     return problems
 
 
+def unsatisfied_inputs(graph: Mapping[str, Any], registry, node: Mapping[str, Any]) -> list[str]:
+    """Ports of the first ``requires`` group that nothing can fill, judged before a run.
+
+    A port can be filled by a connected edge, a non-empty config setting, or a
+    context fallback such as the project topic (every project has a title).
+    """
+    handler = registry.resolve(node["type"])
+    if not handler.requires:
+        return []
+    bound = {binding.input.name for binding in bind_edges(graph, registry)
+             if binding is not None and binding.target == node["id"]}
+    config = node.get("config") if isinstance(node.get("config"), Mapping) else {}
+    fillable = {port.name for port in handler.inputs
+                if port.name in bound or port.context is not None
+                or (port.config_key and not is_empty(config.get(port.config_key)))}
+    for group in handler.requires:
+        if not fillable.intersection(group):
+            return list(group)
+    return []
+
+
 def describe_node_types(registry) -> dict[str, Any]:
-    """The port catalog the canvas renders handles from."""
+    """The catalog the editor renders from: typed ports for handles, settings for the inspector."""
     return {node_type: {"inputs": [port.describe() for port in handler.inputs],
                         "outputs": [port.describe() for port in handler.outputs],
-                        "requires": [list(group) for group in handler.requires]}
+                        "requires": [list(group) for group in handler.requires],
+                        "config": [field.describe() for field in handler.config_fields]}
             for node_type, handler in sorted(registry.handlers().items())}

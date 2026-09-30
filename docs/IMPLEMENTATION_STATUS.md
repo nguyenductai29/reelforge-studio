@@ -1,7 +1,7 @@
 # ReelForge Studio Implementation Status
 
 > Audit snapshot: branch `feat/studio-foundation`, commit `eb00d8a`, 2026-09-30.
-> Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), and for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)).
+> Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)), and for Phase 3.5, the node configuration inspector (see [Phase 3.5 changes](#phase-35-changes)).
 > Line numbers drift, so items anchor on file and function names.
 
 Each item uses the same fields:
@@ -20,7 +20,7 @@ Each item uses the same fields:
 | API | `app/main.py` (FastAPI, 46 `/api` routes) | Auth, workspace scoping, projects, workflows, runs, assets, AI tool catalog, settings, billing, admin, YouTube OAuth and publications. Run endpoints delegate to the workflow executor. On import, it checks that the DB is migrated and seeds settings. |
 | Database bootstrap | `app/db.py`, `instance/bootstrap.json` | Builds the SQLAlchemy engine from `database_url` (PostgreSQL/psycopg in production, SQLite in tests). |
 | Durable queue | `app/jobs.py`, `workflow_jobs` table | Idempotent enqueue by `logical_key` and lease-fenced claim, complete and fail. Uses `FOR UPDATE SKIP LOCKED` on PostgreSQL and an atomic `UPDATE … RETURNING` on SQLite. |
-| Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `ports.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler, which declares typed input and output ports. Before each handler runs, the executor resolves its inputs from edges, config and project context; the handler returns a standard result. Long work is queued as a durable job (F10, F12). |
+| Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `ports.py`, `config.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler, which declares typed input and output ports and its settings. Before each handler runs, the executor checks the node's settings and resolves its inputs from edges, config and project context; the handler returns a standard result. Long work is queued as a durable job (F10, F12, F13). |
 | Video worker | `app/video_worker.py` (`python -m app.video_worker`) | Claims `video:*` jobs, then submits, polls, downloads and stores a private MP4 asset. It records usage and reports the finished step to the executor, which continues the run. |
 | Video providers | `app/providers/{fal,runware,replicate,runway,dola}.py`, `app/providers/catalog.py` | One text-to-video model per adapter. Each adapter validates the request and checks provider and media URLs (SSRF guard). The catalog is the single provider map (module, client, credential) shared by the API, the video handler and the worker. |
 | Text providers | `app/providers/text/` (`base.py`, `openai.py`, `anthropic.py`, `gemini.py`) | One `TextGenerationProvider` interface; each adapter calls its vendor's HTTP API with `httpx` and returns a normalized `TextResult` (F11). |
@@ -155,6 +155,55 @@ Frontend changes, without layout changes:
 - **Run dialog:** the video prompt now starts empty, so connected inputs are used unless you type a prompt.
 - **Library:** "Chia kịch bản thành cảnh" (`scenes`) is no longer "Sắp có".
 
+### Phase 3.5 changes
+
+Phase 3.5 made node settings editable in the existing inspector (F13). There is no database migration; settings stay in each node's `config`.
+
+New code:
+
+- `app/workflow/config.py`: `ConfigField` (type `select`, `integer`, `number`, `text` or `tool`, with default, options, presets, range, maximum length, `advanced` flag, label key and error `code`), `ConfigError`, `validate_config`, `config_values` and `check_tools`.
+- `config_fields` on every executable handler, replacing the per-handler validator dictionaries of Phase 2.
+- `video_duration_supported` in `app/providers/catalog.py`.
+- Frontend: `frontend/src/components/workflow/node-config.ts` (the same checks as the backend) and `config-fields.tsx` (fields rendered from the schema).
+
+API changes (additive except where noted):
+
+- `GET /api/workflow-node-types` adds `config` (the field list) to each node type.
+- **Changed:** saving invalid settings returns 422 whose `detail` is an object, `{code, field, node_id, message}`, instead of a string. Other 422s keep string details.
+- Saving checks that a `tool_id` names one of the workspace's AI tools with the right task and a supported provider (`unsupported_model`). A disabled tool may be saved; readiness reports it.
+- Readiness steps add `code` and `field`, and three statuses: `invalid_settings`, `missing_input` (a required input that no edge, setting or project topic can fill) and `tool_unavailable`.
+- A run no longer validates settings up front. A node whose stored settings are invalid is blocked with the setting's code (`output.invalid_setting`, `output.error.code`), and the rest of the run continues.
+- `POST /runs` still accepts `prompt` and `tool_id`, but a video step's own `prompt` and `tool_id` settings take precedence.
+- **Fixed:** a retry froze the run's first job, which is a text job when a text branch starts beside the video; the video step of the retry then blocked. It now freezes the `video:` job.
+
+Settings per node:
+
+| Node | Settings (normal mode) | Advanced mode adds |
+| --- | --- | --- |
+| `ai_writer` | language (auto/vi/en/ja), tone (8), platform (5), target duration (30 s–10 min presets, 5–3600 s), brief, instructions, model | temperature, max tokens |
+| `summarize` | length (short/medium/detailed), language, instructions, model | tone, platform, temperature, max tokens |
+| `rewrite` | tone, platform, length (shorter/same/longer), instructions, model | language, temperature, max tokens |
+| `translate` | target language (auto/vi/en/ja), model | instructions, temperature, max tokens |
+| `hook` / `title` / `cta` | count (default 3 / 5 / 3), tone or title style, platform, model | language, instructions, and tone for `title`; temperature, max tokens |
+| `scenes` | target scene duration (default 6 s, 2–60), maximum scenes (default 12, 1–20), visual style (6) | — |
+| `video` | model, aspect ratio (auto/9:16/16:9), clip length (auto/4/6/8 s), prompt override (≤1,000 characters) | — |
+
+Behavior that intentionally changed:
+
+- **Stricter values:** tone, platform, language and target language accept only the listed codes. In Phase 2 they were free text or any language code. A stored value outside the list (possible only through the API) now blocks that node with its code instead of reaching the prompt.
+- **Scene splitter:** defaults to 12 scenes (was 8) and splits any paragraph longer than the target duration at sentence ends. Before, only a script written as one paragraph was split, at about 16 seconds per scene. A visual style adds a short suffix such as "Cinematic style." to each `visual_prompt`.
+- **Prompt wording:** tone and platform are sent as phrases ("YouTube Shorts (vertical, short)"); summaries get a length instruction and titles a style instruction.
+- **Video:** the queued output also records `aspect_ratio` and `duration`.
+- **Handlers without `config_fields`** now have any config rejected at run time as well as on save.
+
+Frontend changes, without layout changes:
+
+- **Inspector:** name and status, then **Connections** (each input port with what feeds it, and the output ports), **Configuration** (fields from the schema), **Result** (video, text or scenes), and the actions. Advanced mode adds the raw keys and port names, the provider and model ID, the model a step used, and the stored settings as JSON. No API keys are sent to the browser.
+- **Editing:** a change marks the workflow unsaved. Choices are one undo step each, and typing in one field is one undo step. Duplicating a node copies its settings.
+- **Validation:** an invalid value shows its message under the field, turns the node to "Cần thiết lập", and blocks **Save** with a toast that selects the step. A 422 from the API selects the step it names.
+- **Run dialog:** the video model and prompt fields were removed (they are node settings now). The dialog lists the saved workflow's readiness problems and the credit estimate.
+- **Readiness:** the new statuses are translated (vi/en/ja), and `invalid_settings` shows the message for its code.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -174,7 +223,7 @@ Frontend changes, without layout changes:
 
 | # | Area | Status | Items |
 | --- | --- | --- | --- |
-| 1 | Workflow graph persistence | Fully implemented, including per-node `config` and edge ports in the API; config has no editing UI | F1, M1 |
+| 1 | Workflow graph persistence | Fully implemented, including per-node `config` (edited in the inspector since Phase 3.5) and edge ports | F1, F13 |
 | 2 | Workflow execution engine | Fully implemented (modular executor and registry); some run semantics still partial | F10, P1 |
 | 2b | Typed data passing between nodes | Fully implemented (ports, legacy fallback, required inputs) | F12 |
 | 3 | Node types | Partial (19 registered; 12 do real work) | P2, U2, U3 |
@@ -210,18 +259,17 @@ Frontend changes, without layout changes:
     - Structure: 1–30 nodes and at most 60 edges, unique node IDs, one of the 19 registered node types, and finite coordinates within ±100 000.
     - Edges: no dangling or self edges, no duplicate edge through the same ports, and no cycles (Kahn's algorithm).
     - Ports (on save only): named ports must exist and have compatible types, and an input that takes one connection gets only one.
-  - **Node settings (Phase 2):** `config` is optional, at most 8,000 characters of JSON, and validated by the node type's handler (`validate_config`). Types without settings reject any config. The canvas keeps `config` when it saves or duplicates a node.
+  - **Node settings:** `config` is optional, at most 8,000 characters of JSON, and validated against the node type's `config_fields` (F13). Types without settings reject any config. The inspector edits it, and the canvas keeps it when it saves or duplicates a node.
   - **Legacy data:** list-form definitions are converted on read. Edges without handles get their default ports when read, saved or run (`workflow_graph`).
   - **Defaults:** a new workflow starts as `idea → video → review`.
   - **Editor:** add, drag, connect (with a client-side cycle check), rename (`label`), duplicate, delete, undo/redo and explicit save. Templates create a workflow and then `PUT` their graph.
   - **Permissions:** only the workspace owner can save; the workflow count is limited by the plan.
 - **Missing:**
-  - A UI to edit node settings (see M1); today only the API sets `config`.
   - Rename and delete endpoints for workflows.
   - Conflict detection: the last save wins across tabs.
   - Version history for definitions. Runs do keep their own `graph_snapshot`.
   - A `GET /api/workflows/{id}` endpoint: the editor finds its workflow inside `/api/dashboard`.
-- **Depends on:** nothing. P1 and M1 build on it.
+- **Depends on:** nothing. P1 and F13 build on it.
 
 ### F2. Workspace isolation (query level)
 
@@ -539,7 +587,8 @@ Frontend changes, without layout changes:
   - **Required inputs:**
     - `requires` groups: for example `scenes` needs `script`, and summarize/rewrite/translate need `text`.
     - A missing input blocks the step with a node-specific message and `output.missing_inputs`.
-    - The video node keeps its own check, because the Run dialog prompt and the project topic can supply its prompt.
+    - The video node keeps its own check, because its prompt override setting and the project topic can supply its prompt.
+    - Readiness runs the same check before a run: a required group that no edge, setting or context fallback can fill reports `missing_input` (Phase 3.5).
   - **Compatibility:**
     - No migration and no version field.
     - Old edges are normalized when read, saved or run.
@@ -556,8 +605,31 @@ Frontend changes, without layout changes:
   - **The video node makes one clip for all scenes;** multi-clip rendering is still open (M2).
   - **No explicit type conversions** (for example, extracting a list of titles from `text`), and no per-field mapping; by design, there is no expression language.
   - **Ports are described by code,** not a versioned schema; renaming a port relies on the tolerant fallback.
-  - **The inspector cannot yet show resolved input values** before a run; it shows incoming edges.
+  - **The inspector cannot yet show resolved input values** before a run; it shows what each input port is connected to.
 - **Depends on:** F10, F1.
+
+### F13. Node configuration (Phase 3.5)
+
+- **Files:**
+  - `app/workflow/config.py`: `ConfigField`, `ConfigError`, `validate_config`, `config_values`, `check_tools`.
+  - `app/workflow/nodes/base.py` (`config_fields`, `validate_config`, `config_values`), `text.py`, `scenes.py`, `video.py`.
+  - `app/workflow/executor.py` (`_evaluate`, `_readiness`), `app/workflow/ports.py` (`unsatisfied_inputs`, `describe_node_types`).
+  - `app/main.py`: `validate_graph`, `config_error`, `update_workflow` (tool check), `workflow_readiness`, `retry_workflow_run`.
+  - Frontend: `frontend/src/components/workflow/node-config.ts`, `config-fields.tsx`, `workflow-editor.tsx` (`Inspector`, `setConfig`, `save`, `RunDialog`), `types.ts` (`readinessText`), `frontend/src/lib/api.ts` (`ApiError.error`), `frontend/src/lib/i18n/{vi,en,ja}.ts` (`config`).
+  - Tests: `tests/test_node_config.py` (17, including one over HTTP).
+- **Current:**
+  - **One schema:** each handler declares `config_fields`. The same list validates saves, blocks invalid nodes at run time, fills defaults for the handler, and is served to the editor, which renders the inspector from it.
+  - **Validation:** on save, 422 with `{code, field, node_id, message}`. Codes include `invalid_language`, `invalid_tone`, `invalid_platform`, `invalid_duration`, `invalid_length`, `invalid_count`, `invalid_style`, `invalid_scene_limit`, `invalid_aspect_ratio`, `invalid_prompt`, `invalid_instructions`, `invalid_temperature`, `invalid_max_tokens`, `unsupported_model`, `unknown_setting` and `invalid_config`. The frontend runs the same checks first.
+  - **Storage:** only values that differ from the default are stored, so untouched nodes keep following the defaults. Old workflows without settings behave as before: first enabled model, workspace language and orientation, provider clip length.
+  - **Snapshots:** a run copies the saved graph, settings included. Retries reuse that snapshot, so edits after the run change neither its history nor its retries (tested over HTTP and in the browser).
+  - **Readiness:** invalid settings, a selected model that is disabled, a clip length the chosen video model does not support, and required inputs that nothing can fill are all reported before a run.
+  - **Models:** a text or video step can pick any enabled workspace tool for its task. Auto picks the first one, as before.
+- **Missing:**
+  - **Viewing a past run shows the current settings:** the inspector edits the workflow, and the API does not return a run's snapshot. The step output shows what a video or text step used (provider, model, aspect ratio, duration, language).
+  - **Settings for placeholder nodes** (script, image, voice, music, subtitle, render, publish) wait for their executors (M2).
+  - **Resolution and audio** of the video request stay at each provider's defaults, and clip lengths are capped at 8 s (see P6).
+  - **Option lists are fixed in code** (for example three languages). Adding one means a backend change and three translations.
+- **Depends on:** F1, F10, F11, F12.
 
 ## Partially Implemented
 
@@ -569,6 +641,8 @@ Frontend changes, without layout changes:
   - Multi-step chains work: text steps run one after another (or side by side on separate branches), each queued when its parents complete.
   - After approval, the steps after `review` are evaluated too. For example, a `publish` node becomes `blocked` by its placeholder.
   - Retry creates a new run from the original snapshot and the frozen video payload. It is allowed only for `blocked` or `failed` runs, and never after approval. Text steps in a retried run are generated and charged again.
+    - The video request is frozen only when the video step starts together with the run. A video step that waits on a text step is built again from the snapshot's settings, with the new text and the current price.
+    - Phase 3.5 fixed the frozen payload when a text branch starts beside the video (it used to freeze the text job).
 - **Missing:**
   - One worker process per job kind (`video`, `text`). There is no shared worker loop or registry of job kinds.
   - At most one video node per workflow: the credit reservation reference is `reserve:<run_id>`, and readiness returns `unsupported_graph`.
@@ -578,7 +652,7 @@ Frontend changes, without layout changes:
   - `approval_required = false` has no effect (U6).
   - Run-level timeouts beyond the video job age limit.
   - Running independent branches in parallel. Each pass is sequential within one transaction.
-- **Depends on:** F10, F3. New executors need a settings UI (M1).
+- **Depends on:** F10, F3. New executors declare their settings with `config_fields` (F13).
 
 ### P2. Node types
 
@@ -591,7 +665,7 @@ Frontend changes, without layout changes:
   | `assets` | `AssetsNodeHandler` | Completes locally | Output lists every workspace asset; ports split it by media kind |
   | `scenes` | `ScenesNodeHandler` | Completes locally, free | Splits a script into `scenes` (Phase 3) |
   | `ai_writer`, `summarize`, `rewrite`, `translate`, `hook`, `title`, `cta` | Text handlers (F11) | Durable text job | Outputs `script` / `summary` / `text` / `hook` / `title` / `cta`, plus `provider`, `model`, `usage`, `language` |
-  | `video` | `VideoNodeHandler` | Durable provider job | At most one per workflow; prompt from a connected prompt or scenes |
+  | `video` | `VideoNodeHandler` | Durable provider job | At most one per workflow; model, aspect ratio, clip length and prompt override are node settings |
   | `review` | `ReviewNodeHandler` | `awaiting_review` when a parent created media, then the approve endpoint; otherwise `blocked` | Always manual |
   | `publish` | `PendingServiceHandler` | Always `blocked` | Publishing is a separate manual flow (P7) |
   | `subtitle`, `render` | `PendingServiceHandler` | Always `blocked` | "No executor" |
@@ -602,9 +676,8 @@ Frontend changes, without layout changes:
   - **Templates:** 4 of 10 have runnable graphs. `social-video`, `youtube-short` and `tiktok-video` are all `idea → video → review`; the fourth is `blank`.
 - **Missing:**
   - Real handlers for 7 types. Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
-  - Settings schemas exist only as `validate_config` code, not in the port catalog.
   - No template uses the text or scenes nodes yet.
-- **Depends on:** F10, P1, M1, P5.
+- **Depends on:** F10, P1, F13, P5.
 
 ### P3. Video generation providers
 
@@ -671,7 +744,8 @@ Frontend changes, without layout changes:
   - **What can run:**
     - A `video` row whose provider is in `VIDEO_PROVIDERS` and whose model is in that adapter's `VIDEO_MODELS`.
     - A `script` ("Text") row whose provider is `openai`, `anthropic` or `gemini`, with any model name the provider accepts (F11).
-  - **Readiness:** each node's handler reports why a workflow cannot run, such as `missing_tool`, `missing_key`, `missing_config`, `invalid_config`, `experimental_disabled`, `unsupported_model`, `unsupported_aspect`, `unsupported_graph`, `insufficient_credits` or `unsupported_node`. `runnable` also requires the balance to cover the total.
+  - **Readiness:** each node's handler reports why a workflow cannot run, such as `missing_tool`, `tool_unavailable`, `missing_key`, `missing_config`, `invalid_config`, `experimental_disabled`, `unsupported_model`, `unsupported_aspect`, `unsupported_graph`, `insufficient_credits` or `unsupported_node`. Before that, the executor reports `invalid_settings` and `missing_input` (F13). `runnable` also requires the balance to cover the total.
+  - **Per-node choice:** text and video steps can name a tool in their `tool_id` setting, picked in the inspector (F13).
   - **Credentials:** provider keys are environment variables set by the operator and shared by all workspaces.
   - **UI:** the models page offers five video and three text presets, and marks image, voice and music "config only".
 - **Missing:**
@@ -679,8 +753,7 @@ Frontend changes, without layout changes:
   - Validation when a tool is saved. An unsupported model is accepted and fails only at readiness or run time (for text, when the provider answers 400/404).
   - Per-workspace credentials (bring your own key).
   - Providers for image, TTS and music.
-  - A picker in the canvas for per-node tool selection. A text node can name a tool in `config.tool_id` through the API; the video model is still chosen for each run.
-- **Depends on:** nothing. M1 and M2 depend on it.
+- **Depends on:** nothing. F13 and M2 depend on it.
 
 ### P6. Credits reservation and usage tracking
 
@@ -701,7 +774,7 @@ Frontend changes, without layout changes:
   - **Text steps** (F11): a flat `TEXT_CREDITS_PER_GENERATION` is held per step (`text-reserve:<step>`), charged by one `UsageEvent` (`text:<step>`, units = total tokens), and refunded on any terminal failure (`text-refund:<step>`). Unlike video, every text failure is refunded, because no output was delivered.
 - **Missing:**
   - Refunds for video when the provider reports a failed generation, or when the submit outcome is unknown. Both end in `needs_attention` with the credits still held, and there is no endpoint or UI to resolve them (R1).
-  - Pricing by model, duration or tokens.
+  - Pricing by model, duration or tokens. Because a clip costs the same whatever its length, the clip-length setting offers only 4, 6 and 8 s (the previous default was 8 s).
   - Trial and monthly grants: a new self-registered workspace starts with 0 credits.
   - Credit expiry.
   - Showing reserved and settled amounts separately in the ledger UI.
@@ -731,9 +804,17 @@ Frontend changes, without layout changes:
 
 ### P8. Tests
 
-- **Files:** `tests/` (28 modules, 213 tests), `.github/workflows/ci.yml`.
+- **Files:** `tests/` (29 modules, 230 tests), `.github/workflows/ci.yml`.
 - **Current:**
   - **Unit tests:** jobs, providers, publishers, OAuth, the body limit, media maintenance, login throttling, the workflow engine, text generation, and typed ports.
+  - **Node settings tests** (`tests/test_node_config.py`, 17, Phase 3.5):
+    - the schema served to the editor, valid settings, and a stable code for each invalid value;
+    - defaults, the tool check, and video clip lengths per model;
+    - settings reaching prompts, models and job payloads for text, scenes and video;
+    - invalid stored settings blocking only their node, without charging;
+    - a disabled model, and readiness for settings, required inputs and credits;
+    - legacy workflows without settings;
+    - one run over HTTP: catalog, save and reload, 422 codes, readiness, the snapshot freezing settings, a retry after edits, the retry payload fix, and the older run-dialog fields.
   - **Port tests** (`tests/test_workflow_ports.py`, 19, Phase 3):
     - legacy edge fallback and explicit source/target handles;
     - several parents feeding one input, and branching;
@@ -758,17 +839,19 @@ Frontend changes, without layout changes:
     - legacy list definitions, pre-executor runs in flight, and one HTTP-level compatibility test.
   - **Integration tests:** each copies `app/` and `migrations/` to a temp directory, migrates a SQLite database with Alembic, and drives the API through `TestClient` in a subprocess. They cover projects, runs, the video worker, Dola, the YouTube flow and checkout.
   - **CI:** runs the backend tests on Python 3.13, and the frontend typecheck and build on Node 20.
-- **Results after Phase 3** (2026-09-30, Windows, Python 3.14.7, Node 22.23.2):
-  - `python -m unittest discover -s tests -v` → **Ran 213 tests, OK (skipped=3).** Earlier runs: 194 after Phase 2, 168 after Phase 1, and 146 before Phase 1, all OK (skipped=3).
+- **Results after Phase 3.5** (2026-09-30, Windows, Python 3.14.7, Node 22.23.2):
+  - `python -m unittest discover -s tests -v` → **Ran 230 tests, OK (skipped=3).** Earlier runs: 213 after Phase 3, 194 after Phase 2, 168 after Phase 1, and 146 before Phase 1, all OK (skipped=3).
+    - Phase 3.5 changed seven older assertions: tone and language values must be listed codes, the 422 detail for settings is an object, prompts spell out tone and platform, the video output records aspect ratio and duration, the test echo handler declares its setting, and the scene-splitting test states its target duration.
     - Phase 3 changed five older assertions: AI Writer outputs are now under `script`, a connected idea beats `config.prompt`, the test source node declares a port, and `scenes` is a real node.
     - `PostgreSQLJobClaimTest.test_locked_job_is_skipped_by_another_worker` was skipped because `REELFORGE_TEST_DATABASE_URL` is not set.
     - `test_rejects_linked_root` and `test_symlinked_file_and_workspace_are_never_followed` were skipped because this Windows user cannot create symlinks.
     - One warning: Starlette's `TestClient` asks for `httpx2`, which is listed in `requirements-dev.txt`.
   - `npm run typecheck` → OK. `npm run build` → OK (Next.js 15.5.26; 23 app pages generated).
+  - **Browser check (Phase 3.5):** a Playwright script, kept outside the repository, drove a production build against a separate API and SQLite database (47 checks passed). It covered the Idea → AI Writer → Scene Splitter → Video → Review workflow: settings, save and reload, undo and redo, duplicate and delete, typed connections, invalid values, advanced mode, the Run dialog, the run snapshot (read from the DB), a retry after later edits, and a legacy list workflow.
   - `npm audit` (first audit) reports 1 high and 1 moderate advisory, both from PostCSS pulled in by `next`. The fix requires Next 16.
 - **Missing:**
   - PostgreSQL in CI. It is the production database, and its `SKIP LOCKED`, `FOR UPDATE` and `ON CONFLICT` code paths are untested.
-  - Frontend unit, component and E2E tests (there is no test script).
+  - Frontend unit, component and E2E tests in the repository (there is no test script; the Phase 3.5 browser check is not committed).
   - Contract tests against live providers, video or text.
   - Tests for non-owner roles and for `PUT /api/settings/system`.
   - A concurrency test on PostgreSQL for two workers finishing sibling steps (the run-row lock is not exercised by SQLite).
@@ -783,9 +866,10 @@ Frontend changes, without layout changes:
   - **Workers:** turn those errors into step or publication states with readable detail.
   - **Node errors:** a handler can return a `failed` result with a `NodeError(code, message, retryable)`, which is stored as `output.error`. An unexpected exception inside a handler becomes a `handler_error` failure on that step. It is logged through `logging.getLogger("app.workflow.executor")`, the first use of `logging` in `app/`.
   - **API:** `HTTPException` with English `detail` strings. Handlers raise `RunRequestError`, which the API turns into the same HTTP status and message.
-  - **Readiness:** returns stable status codes, which the frontend localizes.
+  - **Readiness:** returns stable status codes, which the frontend localizes; settings problems also carry `code` and `field`.
+  - **Settings errors:** a 422 for node settings carries a stable `code`, the `field` and the `node_id`, and the frontend translates by code (F13).
 - **Missing:**
-  - Stable error codes on HTTP responses. The frontend translates by exact text: English `detail` strings through `t.errors.server[...]` and Vietnamese step `detail` strings through `t.details[...]` (see D6).
+  - Stable error codes on other HTTP responses. Except for settings errors, the frontend translates by exact text: English `detail` strings through `t.errors.server[...]` and Vietnamese step `detail` strings through `t.details[...]` (see D6).
   - Logging outside the executor and the text worker, and a log configuration for the API and the other workers. The text worker configures `logging` when run as a program.
   - A global exception handler and request IDs.
   - Configuration errors that still return 500 instead of a clear message:
@@ -798,7 +882,7 @@ Frontend changes, without layout changes:
 
 - **Files:** `app/main.py` (`retry_workflow_run`), `app/video_worker.py`, `app/text_worker.py` (`run_one`, `MAX_ATTEMPTS`), `app/youtube_worker.py` (`_transient_retry_delay`), `app/publications.py` (`can_retry_publication`, `retry_publication`), `app/main.py` (`refresh_payment_order`).
 - **Current:**
-  - **Runs:** `POST /api/workflow-runs/{id}/retry` creates a new run (with `retry_of_id`) from the original snapshot and frozen video payload. Only `blocked` or `failed` runs qualify, and never after approval.
+  - **Runs:** `POST /api/workflow-runs/{id}/retry` creates a new run (with `retry_of_id`) from the original snapshot, settings included, and the frozen video payload (the run's `video:` job). Only `blocked` or `failed` runs qualify, and never after approval.
   - **Text jobs:** retryable provider errors, unexpected worker errors, and expired leases (a worker died mid-call) are retried with backoff 5 s × 2ⁿ, at most 3 attempts. Then the step fails and its credits are refunded. Non-retryable errors fail and refund at once. The step shows `queued` with "will retry" in between.
   - **Video jobs:**
     - Polling requeues the job every 10 s.
@@ -855,7 +939,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 
 - **Files:** `frontend/src/app/ai/{writer,image,video,repurpose,movie-recap}/page.tsx`, `frontend/src/components/reelforge/ai-tool.tsx`.
 - **Current:**
-  - Full prototype layouts. The inputs keep local state only.
+  - Full prototype layouts. The inputs keep local state only. The same settings now work on workflow nodes (F13).
   - The submit buttons are disabled, with a "Sắp có" banner linking to Workflows.
   - `/ai/video` does show real recent runs of workflows that contain a video node, and the real enabled video tools. Its own generate form is still disabled.
 - **Missing:** backend endpoints for standalone writing, image, repurpose or movie-recap generation. None exist.
@@ -868,7 +952,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
   - 41 of the 60 library items show as "Sắp có" and cannot be dragged. Examples: research, movie analysis/recap/review, storyboard, thumbnail, image-to-video, voice clone, audio mixer, crop, overlay, transition, timeline, TikTok, Facebook, Shorts, schedule, and the URL, YouTube and upload inputs. The seven text items became real nodes in Phase 2, and "Chia kịch bản thành cảnh" (`scenes`) became one in Phase 3.
   - 6 of the 10 templates show only a preview diagram: `youtube-video`, `movie-recap`, `movie-review`, `repurpose`, `article-to-video`, `product-video`.
 - **Missing:** backend node types and executors for them.
-- **Depends on:** M1, M2.
+- **Depends on:** F13, M2.
 
 ### U3. Previews for nodes that do not execute
 
@@ -887,7 +971,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
   - Real: editing the title and topic (`PATCH /api/projects/{id}`), and the project's runs, videos and publications.
   - Disabled, "Sắp có": the goal, platform, format, language, tone and duration chips, the audience field, the AI rewrite actions, the storyboard tab, the assistant panel and the "latest script" section.
 - **Missing:** schema fields for the project brief, script storage and an assistant backend.
-- **Depends on:** M1, and M2 (script executor).
+- **Depends on:** F13, and M2 (script executor).
 
 ### U5. Placeholders in settings, channels, publishing, billing, library, media and calendar
 
@@ -911,17 +995,10 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 
 ## Missing
 
-### M1. Per-node settings UI (backend done in Phase 2)
+### M1. Per-node settings UI (done in Phase 3.5)
 
-- **Files to change:** `frontend/src/components/workflow/workflow-editor.tsx` (`Inspector`), `app/workflow/nodes/video.py` (to read `config`).
-- **Current:**
-  - **Backend:** done. `GraphNode.config` is saved, validated by `NodeHandler.validate_config`, included in the run snapshot, and read by the text handlers (`prompt`, `language`, `tone`, `platform`, `duration`, `instructions`, `target_language`, `count`, `max_tokens`, `temperature`, `tool_id`).
-  - **Canvas:** keeps `config` when it saves or duplicates a node, but has no fields to edit it. Text nodes therefore run with defaults: the topic or upstream text, and the workspace language.
-  - **Video:** the model and prompt are still chosen in the Run dialog or the inspector, held only in React state, and sent with `POST /runs`. The aspect ratio comes from the workspace settings.
-- **Missing:**
-  - Inspector fields for each text node's settings, in the existing inspector layout.
-  - Moving the video prompt and model into `config`, and the video handler reading it.
-  - A settings schema the frontend can read (today the rules live only in each handler's `validate_config`).
+- **Current:** done; see F13. The inspector edits every executable node's settings from the schema in `GET /api/workflow-node-types`, and the video model, aspect ratio, clip length and prompt are node settings.
+- **Missing:** showing a past run's snapshot settings in the inspector, and settings for the placeholder nodes (F13).
 - **Depends on:** F10, F11.
 
 ### M2. Executors for script, image, voice, music, subtitle, render and publish
@@ -939,7 +1016,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
   - A publish executor that queues a publication after approval.
   - A price and a job kind for every paid executor.
 - **Depends on:**
-  - M1 (settings UI).
+  - F13 (done: settings declared with `config_fields` appear in the inspector without frontend changes).
   - F10 (done: registry, input resolution, job requests, `finish_step`), plus a generic worker loop for new job kinds (P1).
   - P5 (providers) and P6 (credits).
   - P4, for render inputs and outputs.
@@ -1017,9 +1094,10 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 ### M10. Frontend tests
 
 - **Files to change:** `frontend/package.json` and new test files.
-- **Current:** CI runs only typecheck and build.
+- **Current:** CI runs only typecheck and build. Phase 3.5 was checked with a Playwright script run by hand (P8); it is not in the repository.
 - **Missing:**
-  - Component tests for the editor's status mapping and run actions.
+  - Component tests for the editor's status mapping, run actions and settings fields (`node-config.ts` is pure functions and easy to test).
+  - A committed browser test of the settings flow.
   - An E2E happy path (create → run → approve → publish) against a stubbed API.
 - **Depends on:** nothing.
 
@@ -1030,9 +1108,9 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 | D1 | One 1,202-line module (1,372 before Phase 1) holds 45 routes, business logic and settings access. Run and node logic moved to `app/workflow/` and provider wiring to `app/providers/catalog.py`. | `app/main.py` | Both workers still import `app.main` (for `media_root`, `MAX_UPLOAD` and the quota) and so run its import-time side effects. |
 | D2 | Importing the modules has side effects: the migration check and settings seeding in `app.main`, and the DB URL resolution in `app.db` | `app/main.py` (module level), `app/db.py` | Any import (tests, workers, tooling) needs a configured, migrated database. |
 | D3 | Every video adapter re-declares the same types. The text adapters share one base class (Phase 2). The backend has one provider map per modality, but the frontend repeats both. | `app/providers/*.py`; `app/providers/catalog.py`; `app/providers/text/__init__.py`; `VIDEO_PROVIDERS`, `TEXT_PROVIDERS` and the presets in `frontend/src/app/models/page.tsx` | Adding a provider still means editing the backend and the frontend separately. |
-| D4 | The frontend copies backend constants and hand-writes the API types. Ports are the exception: they come from `GET /api/workflow-node-types` (Phase 3). | `frontend/src/lib/workflow.ts` (`NODE_TYPES`, `EXECUTABLE`, `TEXT_NODES`, `MAX_NODES`), `frontend/src/lib/studio.ts` (`ACCEPTED_UPLOADS`, `MAX_UPLOAD_BYTES`), `frontend/src/lib/types.ts` | Drift goes unnoticed, since nothing is generated from OpenAPI. `EXECUTABLE` could come from the catalog too. |
+| D4 | The frontend copies backend constants and hand-writes the API types. Ports and node settings are the exception: they come from `GET /api/workflow-node-types` (Phases 3 and 3.5). | `frontend/src/lib/workflow.ts` (`NODE_TYPES`, `EXECUTABLE`, `TEXT_NODES`, `MAX_NODES`), `frontend/src/lib/studio.ts` (`ACCEPTED_UPLOADS`, `MAX_UPLOAD_BYTES`), `frontend/src/lib/types.ts` | Drift goes unnoticed, since nothing is generated from OpenAPI. `EXECUTABLE` could come from the catalog too. |
 | D5 | Some models are defined outside `app/models.py` | `app/auth_security.py`, `app/publishers/google_oauth.py`, `app/publications.py` | Complete metadata depends on the imports in `migrations/env.py`. |
-| D6 | The backend returns user-facing Vietnamese text, and the frontend translates it by exact-text lookup | `app/workflow/nodes/*.py`, `app/workflow/executor.py`, `app/main.py`, `app/video_worker.py`; `details` and `errors.server` in `frontend/src/lib/i18n/{vi,en,ja}.ts` | Rewording any backend message silently breaks its translation. `NodeError.code` now gives new failures a stable code, but the frontend does not use it yet. |
+| D6 | The backend returns user-facing Vietnamese text, and the frontend translates it by exact-text lookup | `app/workflow/nodes/*.py`, `app/workflow/executor.py`, `app/main.py`, `app/video_worker.py`; `details` and `errors.server` in `frontend/src/lib/i18n/{vi,en,ja}.ts` | Rewording any backend message silently breaks its translation. `NodeError.code` gives new failures a stable code, but only settings errors and readiness are translated by code so far. |
 | D7 | Endpoints and step outputs are not paginated | `/api/dashboard` returns every project, asset and workflow (with graphs); the `assets` node output embeds every asset (`ExecutionContext.assets` now loads them only when an `assets` node runs) | Cost grows with workspace size for both page loads and runs. |
 | D8 | `attempt_count` increases on every poll, and leases have no heartbeat | `app/jobs.py`, `app/video_worker.py` | Misleading counts, and long downloads get redone. |
 | D9 | Uploads are spooled twice (middleware, then multipart parser), and the workspace row stays locked while the file is written | `app/body_limit.py`, `app/main.py` (`upload_asset`) | Twice the disk I/O, and concurrent uploads to one workspace run one at a time. |
@@ -1044,6 +1122,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 | D15 | Toolchain versions differ between CI and dev | CI uses Python 3.13 and Node 20; this audit ran on Python 3.14 and Node 22. `TestClient` warns unless `httpx2` from `requirements-dev.txt` is installed. | Something can pass in one environment and fail in the other. |
 | D16 | One worker process per job kind, each with its own claim loop, lease and retry code | `app/video_worker.py`, `app/text_worker.py`, `app/youtube_worker.py` | Each new kind adds a systemd unit and another copy of the loop. |
 | D17 | Prompt templates live in Python strings in the handlers | `app/workflow/nodes/text.py` | Changing wording needs a deploy, and templates are not versioned in run snapshots (the built prompt is, inside the job payload). |
+| D18 | Option labels are translated per field label and option value | `config.options` in `frontend/src/lib/i18n/{vi,en,ja}.ts`, `config_fields` in `app/workflow/nodes/*.py` | A new option without a translation shows its raw code; nothing checks that the two sides agree. |
 
 ## Critical Risks
 
@@ -1126,6 +1205,12 @@ If `REELFORGE_TOKEN_ENCRYPTION_KEY` is lost or changed, no stored YouTube connec
 
 All text tests use mocked HTTP or a fake provider. The request and response shapes follow the vendors' public API references. Model names, token limits and reasoning-model behavior still need a smoke test with real keys before users rely on them; for example, reasoning models can spend the whole token budget before writing any text, which surfaces as `empty_output`.
 
+### R13. Every process that advances runs needs every provider key
+
+- **Where:** `app/text_worker.py` and `app/video_worker.py` call `WorkflowExecutor.finish_step`, which starts the next steps in the worker's own process.
+- **Problem:** the next step checks its provider key in that process. For example, the text worker queues the video step after an AI Writer, and blocks it with "Server cần RUNWARE_API_KEY." if only the API and video worker have that key. The Phase 3.5 browser check hit this with a simulated worker.
+- **Direction:** give the API and all workers one shared environment file (the deployment guide now says so), or move provider checks for later steps into the worker that runs them.
+
 ## Recommended Implementation Order
 
 Guiding rules:
@@ -1141,7 +1226,7 @@ Guiding rules:
 | 1 | Credit reconciliation: <br>• an admin endpoint and UI to resolve `needs_attention` runs <br>• a refund policy for provider-reported failures <br>• a quota check before submitting <br>• a trial and monthly grant policy | R1, part of R6, M6 | 0 |
 | 2 | Split `app/main.py` into routers and services without changing behavior <br>• remove the import-time side effects <br>• return stable error codes instead of translating by text | D1, D2, D6, P9 | 0 |
 | 3 | Provider/model registry: <br>• one adapter protocol <br>• one registry used by the API and worker and exposed to the frontend (capabilities, defaults, price) <br>• validate AI tools when they are saved | D3, D4, P5 | 2 |
-| 4 | Per-node configuration. **Backend done in Phase 2:** `config` saved, validated per handler, in the snapshot, read by text nodes. **Still open:** <br>• inspector fields for text-node settings <br>• move the video prompt and model into `config` <br>• a settings schema the frontend can read | M1 | 3 |
+| 4 | Per-node configuration. **Done in Phase 3.5 (F13):** a settings schema served with the ports, inspector fields for every executable node, video model, aspect ratio, clip length and prompt in `config`, validation codes, readiness. **Still open:** <br>• show a past run's snapshot settings <br>• settings for new executors as they land | M1 | 3 |
 | 5 | Engine refactor. **Done in Phase 1 (F10):** executor, registry, handlers, input resolution, job requests, `finish_step`, advancing after approval. **Done in Phase 3 (F12):** typed ports and required inputs. **Still open:** <br>• a generic worker loop for new job kinds <br>• honor `approval_required` <br>• run cancellation <br>• more than one paid node per run | P1, U6, M4 | 4, F3 |
 | 6 | Text generation. **Done in Phase 2 (F11):** OpenAI/Anthropic/Gemini adapters, text worker, and seven text nodes with credits. **Still open:** <br>• a smoke test with live keys (R12) <br>• token-based pricing (R11) <br>• feed upstream text into the video prompt <br>• decide whether `script` becomes a text node <br>• `scenes` with JSON output <br>• text-node templates | Part of M2, U4, R11, R12 | 5, 3, P6 pricing |
 | 7 | Asset lifecycle: <br>• delete and rename <br>• link uploads to projects <br>• ffprobe metadata <br>• a storage abstraction <br>• backups | M5, P4, R6 | 0 |
@@ -1149,8 +1234,8 @@ Guiding rules:
 | 9 | `publish` node executor (queues a publication after approval), then scheduling (`available_at` plus calendar), then TikTok and Facebook connections built on the existing adapters | P7, M3, U5 | 5, F4 |
 | 10 | Teams, roles and workspace switching; account security (password reset, 2FA); full frontend E2E tests | M7, M8, M10 | 2 |
 
-Phase 1 took the engine part of step 5 ahead of steps 2–4, because it did not depend on them. Phase 2 then did most of step 6 and the backend half of step 4, and Phase 3 connected the nodes with typed data. The next highest-value work:
+Phase 1 took the engine part of step 5 ahead of steps 2–4, because it did not depend on them. Phase 2 then did most of step 6 and the backend half of step 4, Phase 3 connected the nodes with typed data, and Phase 3.5 finished step 4. The next highest-value work:
 
 - A live-key smoke test and a pricing decision for text (R11, R12).
-- The inspector fields for text-node settings (step 4).
+- One shared provider environment for the API and all workers (R13).
 - Credit reconciliation for video (step 1). Steps 1–3 can run in parallel once step 0 is in place. Step 7 is independent of steps 3–6 and can start earlier if storage pressure appears in production. Apply to Google, TikTok and Meta for platform API access early, because approval timelines are outside the team's control.

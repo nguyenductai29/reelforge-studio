@@ -58,6 +58,17 @@ def video_request_defaults(provider_name: str | None) -> tuple[str, str, bool | 
     return "8s", "720p", True
 
 
+def video_duration_supported(provider_name: str, model_id: str, duration: str) -> bool:
+    """Whether a model accepts a clip length such as "6s"; models list lengths or give a range."""
+    capabilities = VIDEO_PROVIDERS[provider_name].module.VIDEO_MODELS.get(model_id)
+    if capabilities is None:
+        return False
+    if hasattr(capabilities, "durations"):
+        return duration in capabilities.durations
+    seconds = int(duration.removesuffix("s")) if duration.removesuffix("s").isdigit() else -1
+    return capabilities.min_duration <= seconds <= capabilities.max_duration
+
+
 def dola_max_job_age_seconds() -> int:
     try:
         max_age = int(os.environ.get("DOLA_MAX_JOB_AGE_SECONDS", "7200"))

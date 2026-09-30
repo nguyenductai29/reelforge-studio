@@ -25,7 +25,7 @@ export const keys = {
   runs: ["runs"] as const,
   workflowRuns: (id: string) => ["workflow-runs", id] as const,
   run: (id: string) => ["run", id] as const,
-  readiness: (id: string, toolId: string) => ["readiness", id, toolId] as const,
+  readiness: (id: string) => ["readiness", id] as const,
   usage: ["usage"] as const,
   billing: ["billing"] as const,
   aiTools: ["ai-tools"] as const,
@@ -75,13 +75,11 @@ export function useRun(runId: string | null) {
   });
 }
 
-export function useReadiness(workflowId: string, toolId: string) {
+/** Pre-run checks of the saved workflow; each node's settings choose its model. */
+export function useReadiness(workflowId: string) {
   return useQuery({
-    queryKey: keys.readiness(workflowId, toolId),
-    queryFn: () =>
-      api<Readiness>(
-        `workflows/${encodeURIComponent(workflowId)}/readiness${toolId ? `?tool_id=${encodeURIComponent(toolId)}` : ""}`,
-      ),
+    queryKey: keys.readiness(workflowId),
+    queryFn: () => api<Readiness>(`workflows/${encodeURIComponent(workflowId)}/readiness`),
   });
 }
 

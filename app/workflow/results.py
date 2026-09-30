@@ -130,6 +130,9 @@ class NodeReadiness:
     status: str
     detail: str
     credits: int = 0
+    # For invalid settings: the stable error code and the setting's key (e.g. "invalid_language", "language").
+    code: str | None = None
+    field: str | None = None
 
 
 def produced_asset_ids(output: Mapping[str, Any] | None) -> tuple[str, ...]:

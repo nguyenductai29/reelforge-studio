@@ -20,6 +20,7 @@ from app.models import (AITool, Base, CreditAccount, CreditLedger, Project, User
 from app.workflow import (ExecutionContext, NodeError, NodeExecutionResult, NodeHandler, NodeInputs, NodeRegistry,
                           RunOptions, RunRequestError, StepState, WorkflowExecutor, build_default_registry,
                           default_registry, derive_run_status, parse_graph, resolve_inputs)
+from app.workflow.config import SELECT, ConfigField
 from app.workflow.executor import HANDLER_FAILED_DETAIL
 from app.workflow.nodes import (AssetsNodeHandler, IdeaNodeHandler, PendingAITaskHandler, PendingServiceHandler,
                                 ReviewNodeHandler, ScenesNodeHandler, TextNodeHandler, UnsupportedNodeHandler,
@@ -52,6 +53,8 @@ class EchoHandler(NodeHandler):
     """Copies what it resolved into its output so tests can inspect it."""
 
     node_type = "echo"
+    # Handlers declare their settings; the executor blocks a node with undeclared ones.
+    config_fields = (ConfigField("mode", SELECT, default="quiet", options=("quiet", "loud")),)
 
     def execute(self, context, node, inputs):
         return NodeExecutionResult.completed("echo", {"text": inputs.value("text"), "config": dict(inputs.config),
@@ -316,7 +319,8 @@ class ExecutorTest(DatabaseCase):
         self.assertEqual([s.status for s in steps.values()], ["completed", "queued", "skipped"])
         self.assertEqual(steps["video"].detail, "Đã xếp hàng tạo video.")
         self.assertEqual(json.loads(steps["video"].output),
-                         {"prompt": "Rừng đêm", "provider": "fal", "model": "fal-ai/veo3.1/fast"})
+                         {"prompt": "Rừng đêm", "provider": "fal", "model": "fal-ai/veo3.1/fast",
+                          "aspect_ratio": "9:16", "duration": "8s"})
         with self.Session() as db:
             job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == run.id))
             self.assertEqual(job.logical_key, f"video:{run.id}:{steps['video'].id}")

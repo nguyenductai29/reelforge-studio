@@ -8,6 +8,7 @@ import type { Dictionary } from "./i18n/vi";
 
 export function errorText(error: unknown, t: Dictionary): string {
   if (error instanceof ApiError) {
+    if (error.error) return t.config.errors[error.error.code] ?? error.detail ?? t.errors.validation;
     if (error.detail) return t.errors.server[error.detail] ?? error.detail;
     return error.status === 422 ? t.errors.validation : t.errors.requestFailed(error.status);
   }

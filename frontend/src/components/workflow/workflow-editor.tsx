@@ -16,7 +16,7 @@ import {
   type Connection,
   type Edge,
 } from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -40,7 +40,6 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
@@ -54,7 +53,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FieldLabel, SoonBadge, StatusBadge } from "@/components/reelforge/primitives";
 import { NewProjectDialog } from "@/components/reelforge/new-project-dialog";
-import { api, assetUrl, jsonRequest } from "@/lib/api";
+import { api, ApiError, assetUrl, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -69,7 +68,9 @@ import {
 } from "@/lib/queries";
 import { approvedAsset, isActiveRun } from "@/lib/studio";
 import type {
+  AiTool,
   Graph,
+  NodeConfig,
   NodePorts,
   NodeType,
   Project,
@@ -81,13 +82,16 @@ import type {
 } from "@/lib/types";
 import { EXECUTABLE, MAX_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } from "@/lib/workflow";
 import { kindIcon } from "./kind-icon";
+import { ConfigFields, type ConfigChange, type WorkspaceDefaults } from "./config-fields";
+import { blocksSaving, configErrors, toolChoices, withValue } from "./node-config";
 import { canConnect, edgeId, outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
 import { NodeActionsContext, NodeContext, StudioNodeComponent, type NodeActions } from "./studio-node";
 import { detailText, readinessText, runStatusToNode, type NodeStatus, type StudioNode } from "./types";
 
 const nodeTypes = { studio: StudioNodeComponent };
 const DRAG_TYPE = "application/reelforge";
-const ASPECT = { vertical: "9:16", horizontal: "16:9", square: "1:1" } as const;
+// Aspect ratio a video node set to "auto" gets from the workspace; square has no supported model yet.
+const WORKSPACE_ASPECT = { vertical: "9:16", horizontal: "16:9", square: null } as const;
 
 type Snapshot = { nodes: StudioNode[]; edges: Edge[] };
 
@@ -195,59 +199,17 @@ function NodeLibrary({ onAdd, className }: { onAdd: (type: NodeType) => void; cl
   );
 }
 
-type VideoSettings = {
-  tools: { id: string; provider: string; model: string }[];
-  toolId: string;
-  setToolId: (id: string) => void;
-  prompt: string;
-  setPrompt: (prompt: string) => void;
-};
-
-function VideoFields({ video, idPrefix }: { video: VideoSettings; idPrefix: string }) {
-  const { t } = useI18n();
-  const i = t.editor.inspector;
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <>
-      <div>
-        <FieldLabel>{i.model}</FieldLabel>
-        {video.tools.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            {i.noModel}{" "}
-            <Link href="/models" className="text-primary hover:underline">
-              {i.configureModels}
-            </Link>
-          </p>
-        ) : (
-          <Select value={video.toolId || "auto"} onValueChange={(v) => video.setToolId(v === "auto" ? "" : v)}>
-            <SelectTrigger className="bg-surface" aria-label={i.model}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">{i.modelAuto}</SelectItem>
-              {video.tools.map((tool) => (
-                <SelectItem key={tool.id} value={tool.id}>
-                  {tool.provider} · {tool.model}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-      </div>
-      <div>
-        <FieldLabel htmlFor={`${idPrefix}-prompt`}>{i.prompt}</FieldLabel>
-        <Textarea
-          id={`${idPrefix}-prompt`}
-          rows={4}
-          maxLength={3000}
-          value={video.prompt}
-          onChange={(e) => video.setPrompt(e.target.value)}
-          placeholder={i.promptPlaceholder}
-          className="resize-none bg-surface"
-        />
-      </div>
-    </>
+    <section className="space-y-3 border-t border-border pt-4">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-foreground/80">{title}</p>
+      {children}
+    </section>
   );
 }
+
+/** An edge into the inspected node: the input it feeds, and where it comes from ("AI Writer · Script"). */
+type Incoming = { handle: string | null; from: string };
 
 function Inspector({
   node,
@@ -255,14 +217,17 @@ function Inspector({
   readinessStep,
   readiness,
   run,
-  parents,
+  incoming,
   ports,
   advanced,
-  aspect,
-  video,
+  tools,
+  errors,
+  defaults,
   busy,
   onClose,
   onRename,
+  onConfig,
+  onRemoveSetting,
   onDuplicate,
   onDelete,
   onRun,
@@ -273,15 +238,17 @@ function Inspector({
   readinessStep?: ReadinessStep;
   readiness?: Readiness;
   run?: Run;
-  /** One line per incoming edge, e.g. "Prompt ← AI Writer · Script". */
-  parents: string[];
+  incoming: Incoming[];
   ports: NodePorts;
   advanced: boolean;
-  aspect: string;
-  video: VideoSettings;
+  tools: AiTool[] | undefined;
+  errors: Record<string, string>;
+  defaults: WorkspaceDefaults;
   busy: boolean;
   onClose: () => void;
   onRename: (label: string) => void;
+  onConfig: ConfigChange;
+  onRemoveSetting: (key: string) => void;
   onDuplicate: () => void;
   onDelete: () => void;
   onRun: () => void;
@@ -291,11 +258,14 @@ function Inspector({
   const i = t.editor.inspector;
   const d = node.data;
   const name = t.nodes[d.type].name;
+  // Readiness describes the saved workflow; unsaved settings the backend would reject come first.
   const detail = step
     ? detailText(step.detail, t)
-    : readinessStep && readiness
-      ? readinessText(readinessStep, readiness, t)
-      : null;
+    : blocksSaving(errors)
+      ? t.readiness.invalidSettings
+      : readinessStep && readiness
+        ? readinessText(readinessStep, readiness, t)
+        : null;
   const hint =
     d.type === "idea"
       ? i.ideaHint
@@ -313,7 +283,19 @@ function Inspector({
   const assetId = typeof step?.output?.asset_id === "string" ? step.output.asset_id : null;
   const generatedText = TEXT_NODES.has(d.type) ? outputText(step?.output, ports) : null;
   const scenes = d.type === "scenes" ? outputScenes(step?.output) : null;
-  const tool = video.tools.find((x) => x.id === video.toolId) ?? video.tools[0];
+  const hasResult = Boolean(assetId || generatedText || (scenes && scenes.length));
+  // The model this node will use: its own setting, else the first enabled model for the task.
+  const toolField = ports.config.find((field) => field.type === "tool");
+  const toolId = toolField ? d.config?.[toolField.key] : undefined;
+  const tool = toolField
+    ? typeof toolId === "string"
+      ? tools?.find((item) => item.id === toolId)
+      : toolChoices(toolField, tools ?? [])[0]
+    : undefined;
+  const used =
+    typeof step?.output?.provider === "string" && typeof step.output.model === "string"
+      ? `${step.output.provider} · ${step.output.model}`
+      : null;
 
   return (
     <aside className="absolute inset-y-0 right-0 z-10 flex w-full max-w-sm flex-col border-l border-border bg-sidebar sm:w-80 xl:static">
@@ -370,54 +352,100 @@ function Inspector({
           </div>
         )}
 
-        {d.type === "video" && (
-          <>
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{i.runSettings}</p>
-            <VideoFields video={video} idPrefix="inspector" />
-            <div>
-              <FieldLabel>{i.aspect}</FieldLabel>
-              <div className="flex items-center justify-between gap-2 text-sm">
-                <span className="rounded-lg border border-primary/60 bg-[color-mix(in_oklab,var(--primary)_16%,transparent)] px-3 py-1.5 text-primary">
-                  {aspect}
-                </span>
-                <Link href="/settings" className="text-xs text-muted-foreground hover:text-foreground">
-                  {i.changeInSettings}
-                </Link>
-              </div>
-              <p className="mt-1.5 text-[11px] text-muted-foreground">{i.aspectHint}</p>
+        <Section title={i.connections}>
+          {ports.inputs.length === 0 && ports.outputs.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{i.noPorts}</p>
+          ) : (
+            <div className="space-y-3 rounded-lg border border-border bg-surface p-3 text-xs">
+              {(
+                [
+                  [i.inputsTitle, ports.inputs.map((port) => port.name)],
+                  [i.outputsTitle, ports.outputs.map((port) => port.name)],
+                ] as const
+              ).map(([title, names], group) =>
+                names.length ? (
+                  <div key={title}>
+                    <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">{title}</p>
+                    <ul className="space-y-1">
+                      {names.map((port) => {
+                        const sources = group === 0 ? incoming.filter((e) => e.handle === port).map((e) => e.from) : [];
+                        return (
+                          <li key={port} className="flex justify-between gap-3">
+                            <span className="shrink-0">
+                              {portLabel(t, port)}
+                              {advanced && <span className="ml-1 font-mono text-muted-foreground">{port}</span>}
+                            </span>
+                            {group === 0 && (
+                              <span className={cn("min-w-0 break-words text-right", !sources.length && "text-muted-foreground")}>
+                                {sources.length ? sources.join(", ") : i.notConnected}
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null,
+              )}
             </div>
+          )}
+        </Section>
+
+        {(EXECUTABLE.has(d.type) || ports.config.length > 0) && (
+          <Section title={i.settings}>
+            {ports.config.length ? (
+              <>
+                <ConfigFields
+                  nodeId={node.id}
+                  fields={ports.config}
+                  config={d.config}
+                  errors={errors}
+                  tools={tools}
+                  advanced={advanced}
+                  defaults={defaults}
+                  onChange={onConfig}
+                  onRemoveKey={onRemoveSetting}
+                />
+                <p className="text-[11px] text-muted-foreground">{i.settingsHint}</p>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">{i.noSettings}</p>
+            )}
+          </Section>
+        )}
+
+        {hasResult && (
+          <Section title={i.result}>
             {assetId && (
               <div className="overflow-hidden rounded-lg border border-border bg-black">
                 <video src={assetUrl(assetId)} controls playsInline preload="metadata" className="max-h-72 w-full" />
               </div>
             )}
-          </>
-        )}
-
-        {TEXT_NODES.has(d.type) && generatedText && (
-          <div>
-            <FieldLabel>{i.generatedText}</FieldLabel>
-            <div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
-              {generatedText}
-            </div>
-          </div>
-        )}
-
-        {scenes && scenes.length > 0 && (
-          <div>
-            <FieldLabel>{i.scenesTitle}</FieldLabel>
-            <ol className="max-h-72 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
-              {scenes.map((scene) => (
-                <li key={scene.index} className="flex gap-2">
-                  <span className="shrink-0 font-medium text-primary">{scene.index}</span>
-                  <span className="min-w-0 break-words">
-                    {scene.text}
-                    {scene.duration ? <span className="text-muted-foreground"> · {i.seconds(scene.duration)}</span> : null}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          </div>
+            {generatedText && (
+              <div>
+                <FieldLabel>{i.generatedText}</FieldLabel>
+                <div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
+                  {generatedText}
+                </div>
+              </div>
+            )}
+            {scenes && scenes.length > 0 && (
+              <div>
+                <FieldLabel>{i.scenesTitle}</FieldLabel>
+                <ol className="max-h-72 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
+                  {scenes.map((scene) => (
+                    <li key={scene.index} className="flex gap-2">
+                      <span className="shrink-0 font-medium text-primary">{scene.index}</span>
+                      <span className="min-w-0 break-words">
+                        {scene.text}
+                        {scene.duration ? <span className="text-muted-foreground"> · {i.seconds(scene.duration)}</span> : null}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </Section>
         )}
 
         {d.type === "review" && run?.status === "awaiting_review" && (
@@ -433,13 +461,15 @@ function Inspector({
             {(
               [
                 [i.nodeId, node.id],
-                [i.inputs, parents.length ? parents.join(", ") : i.noInputs],
-                ...(d.type === "video"
+                ...(toolField
                   ? [
                       [i.provider, tool?.provider ?? "—"],
                       [i.modelId, tool?.model ?? "—"],
-                      [i.creditCost, readiness ? t.common.credits(String(readiness.credits_required)) : "—"],
                     ]
+                  : []),
+                ...(used ? [[i.usedModel, used]] : []),
+                ...(d.type === "video"
+                  ? [[i.creditCost, readiness ? t.common.credits(String(readiness.credits_required)) : "—"]]
                   : []),
               ] as [string, string][]
             ).map(([k, v]) => (
@@ -448,6 +478,14 @@ function Inspector({
                 <span className="min-w-0 break-all text-right">{v}</span>
               </div>
             ))}
+            {d.config && (
+              <>
+                <p className="pt-1 text-muted-foreground">{i.settings} · JSON</p>
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-[10px] text-muted-foreground">
+                  {JSON.stringify(d.config, null, 2)}
+                </pre>
+              </>
+            )}
             {step?.output && (
               <>
                 <p className="pt-1 text-muted-foreground">{i.output}</p>
@@ -508,8 +546,7 @@ function RunDialog({
   projects,
   projectId,
   onProject,
-  hasVideo,
-  video,
+  issues,
   readiness,
   busy,
   onStart,
@@ -519,15 +556,14 @@ function RunDialog({
   projects: Project[];
   projectId: string;
   onProject: (id: string) => void;
-  hasVideo: boolean;
-  video: VideoSettings;
+  /** Pre-run problems of the saved workflow, one line per step. */
+  issues: string[];
   readiness?: Readiness;
   busy: boolean;
   onStart: () => void;
 }) {
   const { t } = useI18n();
   const r = t.editor.runDialog;
-  const videoStep = readiness?.steps.find((s) => s.task === "video");
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
@@ -565,14 +601,20 @@ function RunDialog({
               </Select>
             )}
           </div>
-          {hasVideo && <VideoFields video={video} idPrefix="run" />}
-          {readiness && (hasVideo || readiness.credits_required > 0) && (
-            <div className="rounded-lg border border-border bg-surface p-3 text-xs text-muted-foreground">
-              {hasVideo && videoStep && <p>{readinessText(videoStep, readiness, t)}</p>}
-              <p className={cn(hasVideo && videoStep && "mt-1")}>
-                {r.credits(readiness.credits_required, readiness.credits_available)}
-              </p>
+          {issues.length > 0 && (
+            <div className="rounded-lg border border-warning/40 bg-[color-mix(in_oklab,var(--warning)_10%,transparent)] p-3 text-xs">
+              <p className="mb-1 font-medium">{r.issues}</p>
+              <ul className="space-y-1 text-muted-foreground">
+                {issues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
             </div>
+          )}
+          {readiness && readiness.credits_required > 0 && (
+            <p className="rounded-lg border border-border bg-surface p-3 text-xs text-muted-foreground">
+              {r.credits(readiness.credits_required, readiness.credits_available)}
+            </p>
           )}
         </div>
         <DialogFooter>
@@ -663,7 +705,8 @@ function Editor({
   const { data } = useDashboard();
   const projects = data?.projects ?? [];
   const settings = useSettings().data;
-  const videoTools = (useAiTools().data ?? []).filter((tool) => tool.task === "video" && tool.is_enabled);
+  // Every workspace tool, for the model fields; undefined while loading (model checks then wait).
+  const tools = useAiTools().data;
 
   const [nodes, setNodes, onNodesChange] = useNodesState<StudioNode>(toNodes(workflow.graph));
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(toEdges(workflow.graph));
@@ -676,12 +719,9 @@ function Editor({
   const [busy, setBusy] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId);
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "");
-  const [toolId, setToolId] = useState("");
-  // Empty means the video step uses its connected input or the project topic; a typed prompt overrides both.
-  const [prompt, setPrompt] = useState("");
   const { screenToFlowPosition } = useReactFlow();
 
-  const readiness = useReadiness(workflow.id, toolId).data;
+  const readiness = useReadiness(workflow.id).data;
   const runQuery = useRun(selectedRunId);
   const run = runQuery.data;
 
@@ -689,6 +729,8 @@ function Editor({
   const future = useRef<Snapshot[]>([]);
   const latest = useRef({ nodes, edges });
   latest.current = { nodes, edges };
+  // The node setting being typed into; its keystrokes share one undo step.
+  const typing = useRef<string | null>(null);
 
   // A run that just finished may have produced media and changed credits.
   const previousStatus = useRef<string | undefined>(undefined);
@@ -703,12 +745,14 @@ function Editor({
   const snapshot = useCallback(() => {
     past.current.push(structuredClone(latest.current));
     future.current = [];
+    typing.current = null;
     setDirty(true);
   }, []);
 
   const undo = () => {
     const prev = past.current.pop();
     if (!prev) return;
+    typing.current = null;
     future.current.push(structuredClone(latest.current));
     setNodes(prev.nodes);
     setEdges(prev.edges);
@@ -717,6 +761,7 @@ function Editor({
   const redo = () => {
     const next = future.current.pop();
     if (!next) return;
+    typing.current = null;
     past.current.push(structuredClone(latest.current));
     setNodes(next.nodes);
     setEdges(next.edges);
@@ -773,6 +818,16 @@ function Editor({
       },
     }),
     [setEdges, setNodes, snapshot, t],
+  );
+
+  // Settings only change in memory; the Save button sends them with the rest of the graph.
+  const setConfig = useCallback(
+    (id: string, update: (config: NodeConfig | null | undefined) => NodeConfig | null, typingKey: string | null) => {
+      if (typingKey === null || typing.current !== typingKey) snapshot();
+      typing.current = typingKey;
+      setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data: { ...n.data, config: update(n.data.config) } } : n)));
+    },
+    [setNodes, snapshot],
   );
 
   const typeOf = useCallback(
@@ -839,7 +894,18 @@ function Editor({
     [addNode, screenToFlowPosition],
   );
 
+  const selectNode = (id: string) => setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === id })));
+
   async function save(): Promise<boolean> {
+    // The backend rejects invalid settings too; checking here points at the step to fix.
+    const invalid = latest.current.nodes.find((n) =>
+      blocksSaving(configErrors(portsOf(catalog, n.data.type).config, n.data.config, tools)),
+    );
+    if (invalid) {
+      toast.error(t.editor.invalidSettings(invalid.data.label || t.nodes[invalid.data.type].name));
+      selectNode(invalid.id);
+      return false;
+    }
     setSaving(true);
     try {
       const graph: Graph = {
@@ -868,6 +934,8 @@ function Editor({
       return true;
     } catch (error) {
       showError(error);
+      const nodeId = error instanceof ApiError ? error.error?.nodeId : null;
+      if (nodeId) selectNode(nodeId);
       return false;
     } finally {
       setSaving(false);
@@ -884,7 +952,7 @@ function Editor({
     try {
       const created = await api<Run>(
         `workflows/${encodeURIComponent(workflow.id)}/runs`,
-        jsonRequest("POST", { project_id: projectId, prompt: prompt.trim() || null, tool_id: toolId || null }),
+        jsonRequest("POST", { project_id: projectId }),
       );
       client.setQueryData(keys.run(created.id), created);
       setSelectedRunId(created.id);
@@ -916,17 +984,23 @@ function Editor({
 
   const stepById = useMemo(() => new Map((run?.steps ?? []).map((s) => [s.node_id, s])), [run]);
   const readinessById = useMemo(() => new Map((readiness?.steps ?? []).map((s) => [s.node_id, s])), [readiness]);
+  const errorsById = useMemo(
+    () => new Map(nodes.map((n) => [n.id, configErrors(portsOf(catalog, n.data.type).config, n.data.config, tools)])),
+    [catalog, nodes, tools],
+  );
 
   const statusOf = useCallback(
     (id: string): NodeStatus => {
       const step = stepById.get(id);
       if (step) return runStatusToNode[step.status];
       if (run) return "idle";
+      // Unsaved settings the backend would reject show before readiness catches up.
+      if (blocksSaving(errorsById.get(id) ?? {})) return "attention";
       const ready = readinessById.get(id);
       if (!ready) return "idle";
       return ready.status === "ready" || ready.status === "configured" ? "ready" : "attention";
     },
-    [readinessById, run, stepById],
+    [errorsById, readinessById, run, stepById],
   );
 
   const displayNodes = useMemo(
@@ -958,18 +1032,24 @@ function Editor({
   const selected = nodes.filter((n) => n.selected);
   const inspected = selected.length === 1 ? displayNodes.find((n) => n.id === selected[0]!.id)! : null;
   const completed = (run?.steps ?? []).filter((s) => s.status === "completed").length;
-  const hasVideo = nodes.some((n) => n.data.type === "video");
   const approvedId = approvedAsset(run);
   const orientation = settings?.workspace.video_orientation ?? "vertical";
-  const video: VideoSettings = { tools: videoTools, toolId, setToolId, prompt, setPrompt };
+  const defaults: WorkspaceDefaults = {
+    language: settings?.workspace.default_language ?? "vi",
+    aspect: WORKSPACE_ASPECT[orientation],
+  };
+  const nodeName = (id: string) => {
+    const found = nodes.find((n) => n.id === id);
+    return found ? found.data.label || t.nodes[found.data.type].name : id;
+  };
+  const issues =
+    readiness?.steps
+      .filter((s) => s.status !== "ready" && s.status !== "configured")
+      .map((s) => `${nodeName(s.node_id)}: ${readinessText(s, readiness, t)}`) ?? [];
   const nodeContext = useMemo(
     () => ({ assetCount: data?.assets.length ?? 0, vertical: orientation !== "horizontal", catalog }),
     [catalog, data?.assets.length, orientation],
   );
-  const selectProject = (id: string) => {
-    setProjectId(id);
-    setPrompt(projects.find((p) => p.id === id)?.topic ?? "");
-  };
 
   return (
     <NodeActionsContext.Provider value={actions}>
@@ -1145,24 +1225,41 @@ function Editor({
                 readinessStep={run ? undefined : readinessById.get(inspected.id)}
                 readiness={readiness}
                 run={run}
-                parents={edges
+                incoming={edges
                   .filter((e) => e.target === inspected.id)
-                  .map((e) => {
-                    const parent = nodes.find((n) => n.id === e.source);
-                    const from = parent ? parent.data.label || t.nodes[parent.data.type].name : e.source;
-                    const origin = e.sourceHandle ? `${from} · ${portLabel(t, e.sourceHandle)}` : from;
-                    return e.targetHandle ? `${portLabel(t, e.targetHandle)} ← ${origin}` : origin;
-                  })}
+                  .map((e) => ({
+                    handle: e.targetHandle ?? null,
+                    from: e.sourceHandle ? `${nodeName(e.source)} · ${portLabel(t, e.sourceHandle)}` : nodeName(e.source),
+                  }))}
                 ports={portsOf(catalog, inspected.data.type)}
                 advanced={advanced}
-                aspect={ASPECT[orientation]}
-                video={video}
+                tools={tools}
+                errors={errorsById.get(inspected.id) ?? {}}
+                defaults={defaults}
                 busy={busy}
                 onClose={() => setNodes((ns) => ns.map((n) => ({ ...n, selected: false })))}
                 onRename={(label) => {
                   setDirty(true);
                   setNodes((ns) => ns.map((n) => (n.id === inspected.id ? { ...n, data: { ...n.data, label } } : n)));
                 }}
+                onConfig={(field, value, keystroke) =>
+                  setConfig(
+                    inspected.id,
+                    (config) => withValue(config, field, value),
+                    keystroke ? `${inspected.id}:${field.key}` : null,
+                  )
+                }
+                onRemoveSetting={(key) =>
+                  setConfig(
+                    inspected.id,
+                    (config) => {
+                      const next = { ...(config ?? {}) };
+                      delete next[key];
+                      return Object.keys(next).length ? next : null;
+                    },
+                    null,
+                  )
+                }
                 onDuplicate={() => actions.onDuplicate(inspected.id)}
                 onDelete={() => actions.onDelete(inspected.id)}
                 onRun={() => void openRun()}
@@ -1183,9 +1280,8 @@ function Editor({
           onOpenChange={setRunOpen}
           projects={projects}
           projectId={projectId}
-          onProject={selectProject}
-          hasVideo={hasVideo}
-          video={video}
+          onProject={setProjectId}
+          issues={issues}
           readiness={readiness}
           busy={busy}
           onStart={() => void startRun()}

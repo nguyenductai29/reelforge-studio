@@ -26,6 +26,7 @@ from app.providers.catalog import video_provider_config_issue  # noqa: F401
 from app.publishers import google_oauth
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
                           parse_graph)
+from app.workflow.config import ConfigError, check_tools
 from app.workflow.nodes import ReviewNodeHandler
 from app.workflow.ports import DATA_TYPES, describe_node_types, edge_problems, normalize_edges
 
@@ -223,7 +224,6 @@ class WorkflowGraph(BaseModel):
 
 # A saved graph may contain any type with a registered handler (app/workflow/registry.py).
 NODE_TYPES = default_registry.node_types
-MAX_NODE_CONFIG_CHARS = 8000
 
 
 def workflow_graph(definition: str) -> dict:
@@ -239,28 +239,35 @@ def default_graph():
     return {"nodes": nodes, "edges": [{"source": f"n{a}", "target": f"n{b}"} for a, b in links]}
 
 
-def validate_graph(graph: WorkflowGraph, *, check_ports: bool = True):
-    """Reject malformed graphs. Port names are checked only when editing; stored snapshots are bound tolerantly."""
+def config_error(node_id: str, exc: ConfigError) -> HTTPException:
+    """422 whose detail carries a stable code, e.g. {"code": "invalid_language", "field": "language", ...}."""
+    return HTTPException(422, {**exc.as_dict(), "node_id": node_id,
+                               "message": f"Invalid settings for step {node_id}: {exc.message}"})
+
+
+def validate_graph(graph: WorkflowGraph, *, editing: bool = True):
+    """Reject malformed graphs.
+
+    Port names and node settings are checked only when editing. A stored
+    snapshot is bound tolerantly, and a node whose settings became invalid is
+    blocked when the run reaches it (app/workflow/executor.py).
+    """
     ids = [node.id for node in graph.nodes]
     if len(ids) != len(set(ids)):
         raise HTTPException(422, "Duplicate node ID")
     if any(node.type not in NODE_TYPES or not math.isfinite(node.x) or not math.isfinite(node.y) or abs(node.x) > 100000 or abs(node.y) > 100000 for node in graph.nodes):
         raise HTTPException(422, "Invalid node type or position")
-    for node in graph.nodes:
-        if not node.config:
-            continue
+    for node in graph.nodes if editing else ():
         try:
-            if len(json.dumps(node.config)) > MAX_NODE_CONFIG_CHARS:
-                raise ValueError("settings are too large")
             default_registry.resolve(node.type).validate_config(node.config)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(422, f"Invalid settings for step {node.id}: {exc}") from exc
+        except ConfigError as exc:
+            raise config_error(node.id, exc) from exc
     links = [(edge.source, edge.target) for edge in graph.edges]
     # Two nodes may be joined more than once, through different ports.
     wiring = [(edge.source, edge.sourceHandle, edge.target, edge.targetHandle) for edge in graph.edges]
     if len(wiring) != len(set(wiring)) or any(a not in ids or b not in ids or a == b for a, b in links):
         raise HTTPException(422, "Invalid or duplicate connection")
-    if check_ports and (problems := edge_problems(graph.model_dump(), default_registry)):
+    if editing and (problems := edge_problems(graph.model_dump(), default_registry)):
         raise HTTPException(422, f"Invalid connection: {problems[0]}")
     pending = {key: 0 for key in ids}
     onward = {key: [] for key in ids}
@@ -1007,7 +1014,8 @@ def workflow_readiness(workflow_id: str, request: Request, tool_id: str | None =
         context = ExecutionContext(db, workspace=ws, graph=parse_graph(workflow.definition),
                                    options=RunOptions(tool_id=tool_id))
         checks = default_executor.readiness(context)
-        steps = [{"node_id": node["id"], "task": node["type"], "status": check.status, "detail": check.detail}
+        steps = [{"node_id": node["id"], "task": node["type"], "status": check.status, "detail": check.detail,
+                  "code": check.code, "field": check.field}
                  for node, check in checks]
         required = sum(check.credits for _, check in checks)
         return {"workflow_id": workflow.id,
@@ -1041,7 +1049,7 @@ def public_run(run, steps=None):
 
 def persist_run(db, ws, workflow, project, snapshot, retry_of_id=None, prompt_override=None, tool_id=None, frozen_video=None):
     # The graph, steps, credit hold and queued jobs are committed together, even if nodes block.
-    validate_graph(WorkflowGraph.model_validate(parse_graph(snapshot)), check_ports=False)
+    validate_graph(WorkflowGraph.model_validate(parse_graph(snapshot)), editing=False)
     # The snapshot records which port each edge feeds, so the run's data flow is inspectable later.
     graph = workflow_graph(snapshot)
     now = datetime.now(timezone.utc)
@@ -1155,7 +1163,10 @@ def retry_workflow_run(run_id: str, request: Request):
         project = db.scalar(select(Project).where(Project.id == original.project_id, Project.workspace_id == ws.id))
         if not workflow or not project:
             raise HTTPException(404, "Workflow or project not found")
-        original_job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == original.id).order_by(WorkflowJob.created_at))
+        # Only the video request is frozen; text jobs (keyed "text:") are generated again.
+        original_job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == original.id,
+                                                           WorkflowJob.logical_key.like("video:%"))
+                                 .order_by(WorkflowJob.created_at))
         return persist_run(db, ws, workflow, project, original.graph_snapshot,
                            retry_of_id=original.id, frozen_video=original_job.payload if original_job else None)
 
@@ -1186,6 +1197,13 @@ def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
         workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
         if not workflow:
             raise HTTPException(404, "Workflow not found")
+        # Model settings must name one of this workspace's AI tools; keys never leave the server.
+        tools = {tool.id: tool for tool in db.scalars(select(AITool).where(AITool.workspace_id == ws.id))}
+        for node in graph.nodes:
+            try:
+                check_tools(default_registry.resolve(node.type).config_fields, node.config, tools)
+            except ConfigError as exc:
+                raise config_error(node.id, exc) from exc
         stored = normalize_edges(graph.model_dump(), default_registry)
         workflow.definition = json.dumps(stored)
         return {"id": workflow.id, "name": workflow.name, "graph": stored}
@@ -1193,7 +1211,7 @@ def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
 
 @app.get("/api/workflow-node-types")
 def workflow_node_types(request: Request):
-    """Each node type's typed input and output ports, for the canvas's connection handles."""
+    """Each node type's typed ports (the canvas's handles) and settings (the inspector's fields)."""
     with Session() as db:
         workspace_for(request, db)
     return {"data_types": list(DATA_TYPES), "node_types": describe_node_types(default_registry)}

@@ -160,7 +160,7 @@ class TextNodeTest(unittest.TestCase):
         payload = self.job_payload(run_id, "writer")
         self.assertEqual((payload["provider"], payload["model"], payload["language"], payload["credits"]),
                          ("openai", "gpt-4.1-mini", "en", 1))
-        for expected in ("in English", "Brief: Giới thiệu rừng đêm", "Tone: cinematic.", "Platform: youtube.",
+        for expected in ("in English", "Brief: Giới thiệu rừng đêm", "Tone: cinematic.", "Platform: YouTube (long-form).",
                          "about 60 seconds", "150 words"):
             self.assertIn(expected, payload["prompt"])
 
@@ -207,10 +207,12 @@ class TextNodeTest(unittest.TestCase):
     def test_rewrite_uses_upstream_text_and_style_instructions(self):
         self.fund(1)
         run_id = self.start(chain(("source", "source"),
-                                  ("rewrite", "rewrite", {"instructions": "câu ngắn, giọng hào hứng", "tone": "friendly"})),
+                                  ("rewrite", "rewrite", {"instructions": "câu ngắn, giọng hào hứng", "tone": "casual",
+                                                          "length": "shorter"})),
                             registry=with_source())
         prompt = self.job_payload(run_id, "rewrite")["prompt"]
-        for expected in ("Rewrite the text below in Vietnamese", "Style: câu ngắn, giọng hào hứng.", "Tone: friendly.",
+        for expected in ("Rewrite the text below in Vietnamese", "Style: câu ngắn, giọng hào hứng.",
+                         "Tone: casual and conversational.", "noticeably shorter",
                          "Nội dung gốc về rừng đêm."):
             self.assertIn(expected, prompt)
         self.assertNotIn("Additional instructions", prompt)
@@ -351,9 +353,9 @@ class TextNodeTest(unittest.TestCase):
 
     def test_settings_are_validated_per_node_type(self):
         writer = default_registry.resolve("ai_writer")
-        writer.validate_config({"prompt": "x", "language": "vi", "tone": "calm", "platform": "tiktok",
+        writer.validate_config({"prompt": "x", "language": "vi", "tone": "cinematic", "platform": "tiktok",
                                 "duration": 30, "temperature": 0.7, "max_tokens": 512, "tool_id": "tool-1"})
-        default_registry.resolve("translate").validate_config({"target_language": "pt-BR"})
+        default_registry.resolve("translate").validate_config({"target_language": "ja"})
         default_registry.resolve("hook").validate_config({"count": 10})
         bad = [("ai_writer", {"voice": "x"}), ("ai_writer", {"duration": 2}), ("ai_writer", {"language": "Vietnamese"}),
                ("ai_writer", {"prompt": "x" * 3001}), ("summarize", {"prompt": "x"}), ("hook", {"count": 11}),
@@ -401,7 +403,8 @@ assert saved.json()["graph"]["nodes"][1]["config"] == {"tone":"cinematic","durat
 listed = next(w for w in client.get("/api/dashboard").json()["workflows"] if w["id"] == workflow)
 assert listed["graph"]["nodes"][1]["config"] == {"tone":"cinematic","duration":45}
 bad = client.put(f"/api/workflows/{workflow}", json={**graph, "nodes":[{**graph["nodes"][1], "config":{"duration":1}}], "edges":[]})
-assert bad.status_code == 422 and "duration" in bad.json()["detail"], bad.text
+assert bad.status_code == 422 and bad.json()["detail"]["code"] == "invalid_duration", bad.text
+assert bad.json()["detail"]["field"] == "duration" and bad.json()["detail"]["node_id"] == "writer"
 assert client.put(f"/api/workflows/{workflow}", json={"nodes":[{**graph["nodes"][0], "config":{"x":1}}], "edges":[]}).status_code == 422
 readiness = client.get(f"/api/workflows/{workflow}/readiness").json()
 assert [s["status"] for s in readiness["steps"]] == ["configured", "missing_tool", "missing_tool"], readiness
