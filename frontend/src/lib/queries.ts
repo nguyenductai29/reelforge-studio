@@ -10,6 +10,7 @@ import type {
   NodeCatalog,
   Publication,
   Readiness,
+  ReconciliationPage,
   Run,
   Settings,
   Usage,
@@ -33,6 +34,7 @@ export const keys = {
   publications: ["youtube", "publications"] as const,
   settings: ["settings"] as const,
   admin: ["admin"] as const,
+  reconciliation: ["admin", "reconciliation"] as const,
   nodeTypes: ["workflow-node-types"] as const,
 };
 
@@ -113,6 +115,13 @@ export function useSettings() {
 
 export function useAdmin(enabled: boolean) {
   return useQuery({ queryKey: keys.admin, queryFn: () => api<AdminOverview>("admin"), enabled });
+}
+
+export function useReconciliation(status: "pending" | "resolved", offset: number, limit = 50) {
+  return useQuery({
+    queryKey: [...keys.reconciliation, status, offset, limit],
+    queryFn: () => api<ReconciliationPage>(`admin/reconciliation?status=${status}&limit=${limit}&offset=${offset}`),
+  });
 }
 
 /** Refreshes everything a finished run can change: runs, media, credits. */

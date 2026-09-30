@@ -167,7 +167,12 @@ class TextNodeTest(unittest.TestCase):
         provider = FakeProvider("A night in the forest…")
         self.assertTrue(self.work(provider))
         self.assertEqual(provider.calls[0]["model"], "gpt-4.1-mini")
-        self.assertEqual(self.output(run_id, "writer"),
+        output = self.output(run_id, "writer")
+        progress = output.pop("provider_job")
+        self.assertTrue(progress["submission_succeeded"])
+        self.assertIsNotNone(progress["submission_started_at"])
+        self.assertIsNotNone(progress["submitted_at"])
+        self.assertEqual(output,
                          {"script": "A night in the forest…", "provider": "openai", "model": "gpt-4.1-mini",
                           "usage": {"input_tokens": 40, "output_tokens": 60, "total_tokens": 100}, "language": "en"})
         self.assertEqual(self.steps(run_id)["writer"].status, "completed")
@@ -275,7 +280,7 @@ class TextNodeTest(unittest.TestCase):
             self.assertEqual(db.scalar(select(WorkflowJob.state)), "failed")
             self.assertEqual(sorted(db.scalars(select(CreditLedger.reason))), ["text_refund", "text_reserve"])
 
-    def test_transient_errors_retry_then_succeed_or_refund(self):
+    def test_rate_limit_rejections_retry_then_succeed_or_refund(self):
         self.fund(2)
         run_id = self.start(chain(("writer", "ai_writer")))
         provider = FakeProvider(TextProviderError("rate_limited", "slow down", retryable=True), "Xong")
@@ -287,7 +292,7 @@ class TextNodeTest(unittest.TestCase):
         self.assertEqual(self.balance(), 1)
 
         run_id = self.start(chain(("writer", "ai_writer")))
-        outage = TextProviderError("provider_unavailable", "down", retryable=True)
+        outage = TextProviderError("rate_limited", "slow down", retryable=True)
         provider = FakeProvider(outage, outage, outage)
         for _ in range(3):
             self.work(provider)
@@ -296,15 +301,18 @@ class TextNodeTest(unittest.TestCase):
         self.assertEqual(len(provider.calls), 3)
         self.assertEqual(self.balance(), 1)
 
-    def test_a_worker_that_died_mid_call_is_retried(self):
+    def test_a_worker_that_died_mid_call_requires_reconciliation(self):
         self.fund(1)
         run_id = self.start(chain(("writer", "ai_writer")))
         with self.Session.begin() as db:
             job = jobs.claim_due_jobs(db, worker_id="crashed", lease_seconds=60)[0]
             db.get(WorkflowRunStep, job.step_id).status = "running"
             job.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-        self.work(FakeProvider("Viết lại từ đầu"))
-        self.assertEqual(self.output(run_id, "writer")["script"], "Viết lại từ đầu")
+        provider = FakeProvider("Viết lại từ đầu")
+        self.work(provider)
+        self.assertEqual(self.steps(run_id)["writer"].status, "needs_attention")
+        self.assertEqual(self.output(run_id, "writer")["error"]["code"], "submission_unknown")
+        self.assertEqual(provider.calls, [])
         self.assertEqual(self.balance(), 0)
 
     def test_missing_api_key_blocks_or_refunds(self):

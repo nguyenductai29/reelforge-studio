@@ -98,8 +98,48 @@ export type RunStep = {
   node_type: NodeType;
   status: RunStatus;
   detail: string;
-  output: Record<string, unknown> | null;
+  output: (Record<string, unknown> & { reconciliation?: ReconciliationSummary }) | null;
 };
+
+export type ReconciliationSummary = {
+  status: "confirmed_charge" | "refunded";
+  reconciled_at: string;
+  credits: number;
+};
+
+export type ReconciliationItem = {
+  step_id: string;
+  run_id: string;
+  job_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  user_email: string;
+  workflow_id: string;
+  workflow_name: string;
+  node_id: string;
+  node_type: string;
+  provider: string;
+  model: string;
+  remote_request_id: string | null;
+  credits: number;
+  created_at: string;
+  stage: string | null;
+  submitted_at: string | null;
+  last_polled_at: string | null;
+  last_provider_status: string | null;
+  submission_succeeded: boolean;
+  error_category: string | null;
+  error_message: string;
+  has_asset: boolean;
+  asset_ids: string[];
+  reconciliation_status: "pending" | ReconciliationSummary["status"];
+  reconciled_at: string | null;
+  reconciled_by: string | null;
+  reconciled_by_email: string | null;
+  note: string | null;
+};
+
+export type ReconciliationPage = { items: ReconciliationItem[]; total: number };
 
 export type Run = {
   id: string;

@@ -20,6 +20,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { EmptyState, FieldLabel, PageHeader, StatCard, StatusBadge } from "@/components/reelforge/primitives";
+import { Reconciliation } from "@/components/reelforge/reconciliation";
 import { api, jsonRequest } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
@@ -173,7 +174,7 @@ export default function AdminPage() {
 
       <Tabs defaultValue="users">
         <TabsList className="h-auto flex-wrap">
-          {(["users", "create", "studios", "plans"] as const).map((key) => (
+          {(["users", "create", "studios", "plans", "reconciliation"] as const).map((key) => (
             <TabsTrigger key={key} value={key}>
               {a.tabs[key]}
             </TabsTrigger>
@@ -391,6 +392,9 @@ export default function AdminPage() {
               />
             ))}
           </div>
+        </TabsContent>
+        <TabsContent value="reconciliation" className="mt-5">
+          <Reconciliation />
         </TabsContent>
       </Tabs>
 

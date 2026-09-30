@@ -9,10 +9,10 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import func, inspect, select, update
@@ -21,7 +21,8 @@ from sqlalchemy.exc import IntegrityError
 from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import auth_security, billing, payments, publications, usage
+from app import auth_security, billing, payments, publications, reconciliation, usage
+from app.models import CreditReconciliation
 # Re-exported: existing callers import video_provider_config_issue from app.main.
 from app.providers.catalog import video_provider_config_issue  # noqa: F401
 from app.publishers import google_oauth
@@ -148,6 +149,10 @@ class PlanInput(BaseModel):
 
 class CheckoutInput(BaseModel):
     plan_code: str = Field(pattern="^(standard|pro)$")
+
+
+class ReconciliationInput(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class CreditAdjustment(BaseModel):
@@ -693,6 +698,39 @@ def adjust_credits(workspace_id: str, data: CreditAdjustment, request: Request):
         return {"balance": balance}
 
 
+@app.get("/api/admin/reconciliation")
+def list_credit_reconciliation(request: Request, status: Literal["pending", "resolved"] = "pending",
+                               limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0)):
+    with Session() as db:
+        admin_for(request, db)
+        return reconciliation.list_items(db, status=status, limit=limit, offset=offset)
+
+
+def resolve_credit_reconciliation(step_id, data, request, decision):
+    same_origin(request)
+    try:
+        with Session.begin() as db:
+            admin = admin_for(request, db)
+            admin_id = admin.id
+            item, changed = reconciliation.reconcile(db, step_id=step_id, decision=decision,
+                                                      admin_user_id=admin_id, note=data.note)
+    except reconciliation.ReconciliationError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    if changed:
+        reconciliation.log_resolution(item, admin_id)
+    return item
+
+
+@app.post("/api/admin/reconciliation/{step_id}/confirm-charge")
+def confirm_reconciliation_charge(step_id: str, data: ReconciliationInput, request: Request):
+    return resolve_credit_reconciliation(step_id, data, request, "confirmed_charge")
+
+
+@app.post("/api/admin/reconciliation/{step_id}/refund")
+def refund_reconciliation(step_id: str, data: ReconciliationInput, request: Request):
+    return resolve_credit_reconciliation(step_id, data, request, "refunded")
+
+
 @app.get("/api/admin")
 def admin_overview(request: Request):
     with Session() as db:
@@ -1038,7 +1076,7 @@ def public_step_output(step):
         return None
     output = json.loads(step.output)
     if isinstance(output, dict):
-        for key in ("submission", "error_count", "video_url"):
+        for key in ("submission", "error_count", "video_url", "provider_job"):
             output.pop(key, None)
     return output
 
@@ -1162,6 +1200,18 @@ def retry_workflow_run(run_id: str, request: Request):
             raise HTTPException(404, "Workflow run not found")
         if original.status not in {"blocked", "failed"}:
             raise HTTPException(409, "Only blocked or failed runs can be retried")
+        unresolved = db.scalar(select(WorkflowRunStep.id).where(
+            WorkflowRunStep.run_id == original.id, WorkflowRunStep.status == "needs_attention"))
+        confirmed = db.scalar(select(CreditReconciliation.step_id).join(
+            WorkflowRunStep, CreditReconciliation.step_id == WorkflowRunStep.id).where(
+            WorkflowRunStep.run_id == original.id, CreditReconciliation.decision == "confirmed_charge"))
+        if unresolved or confirmed:
+            raise HTTPException(409, "Resolve uncertain paid steps before starting another generation")
+        refunded = db.scalar(select(CreditReconciliation.step_id).join(
+            WorkflowRunStep, CreditReconciliation.step_id == WorkflowRunStep.id).where(
+            WorkflowRunStep.run_id == original.id, CreditReconciliation.decision == "refunded"))
+        if refunded and db.scalar(select(Asset.id).where(Asset.run_id == original.id)):
+            raise HTTPException(409, "A reconciled run with generated media cannot be retried; start a new run")
         approved_review = db.scalar(select(WorkflowRunStep.id).where(
             WorkflowRunStep.run_id == original.id,
             WorkflowRunStep.node_type == "review",

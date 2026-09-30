@@ -4,6 +4,8 @@
 > Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)), for Phase 3.5, the node configuration inspector (see [Phase 3.5 changes](#phase-35-changes)), and for Phase 3.6, runtime hardening and live smoke-test tooling (see [Phase 3.6 changes](#phase-36-changes) and [Live Provider Verification](#live-provider-verification)).
 > Line numbers drift, so items anchor on file and function names.
 
+> Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
+
 Each item uses the same fields:
 
 - **Files**: where the behavior lives.
@@ -17,7 +19,7 @@ Each item uses the same fields:
 
 | Component | Entry point | Role |
 | --- | --- | --- |
-| API | `app/main.py` (FastAPI, 46 `/api` routes) | Auth, workspace scoping, projects, workflows, runs, assets, AI tool catalog, settings, billing, admin, YouTube OAuth and publications. Run endpoints delegate to the workflow executor. On import, it checks that the DB is migrated and seeds settings. |
+| API | `app/main.py` (FastAPI, 49 `/api` routes) | Auth, workspace scoping, projects, workflows, runs, assets, AI tool catalog, settings, billing, admin reconciliation, YouTube OAuth and publications. Run endpoints delegate to the workflow executor. On import, it checks that the DB is migrated and seeds settings. |
 | Database bootstrap | `app/db.py`, `instance/bootstrap.json` | Builds the SQLAlchemy engine from `database_url` (PostgreSQL/psycopg in production, SQLite in tests). |
 | Durable queue | `app/jobs.py`, `workflow_jobs` table | Idempotent enqueue by `logical_key` and lease-fenced claim, complete and fail. Uses `FOR UPDATE SKIP LOCKED` on PostgreSQL and an atomic `UPDATE … RETURNING` on SQLite. |
 | Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `ports.py`, `config.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler, which declares typed input and output ports and its settings. Before each handler runs, the executor checks the node's settings and resolves its inputs from edges, config and project context; the handler returns a standard result. Long work is queued as a durable job (F10, F12, F13). |
@@ -34,12 +36,12 @@ Each item uses the same fields:
 
 ### Data model
 
-Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0010.
+Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0011.
 
 - **Tenancy:** `users`, `login_sessions`, `workspaces`, `memberships(role)`, `workspace_settings`, `system_settings`, `auth_login_attempts`.
 - **Content:** `projects`, `assets` (with lineage `project_id`, `run_id`, `step_id`, `provider`, `model`), `workflows` (graph JSON in `definition`).
 - **Execution:** `workflow_runs` (with `graph_snapshot`), `workflow_run_steps` (per-node `status`, `detail` and JSON `output`), `workflow_jobs`.
-- **Money:** `plans`, `subscriptions`, `payment_orders`, `credit_accounts`, `credit_ledger`, `usage_events`.
+- **Money:** `plans`, `subscriptions`, `payment_orders`, `credit_accounts`, `credit_ledger`, `usage_events`, `credit_reconciliations`.
 - **AI configuration:** `ai_tools`.
 - **Publishing:** `youtube_oauth_states`, `youtube_connections`, `publications`.
 
@@ -246,6 +248,23 @@ Phase 3.6 added no product feature and no migration. It makes the existing pipel
 - **Refactors without behavior change:** the MP4 download, validation and new duration read (`mvhd`) moved to `app/video_files.py`, so the smoke test does not need the database.
 - **Docs:** `docs/LIVE_PROVIDER_SMOKE_TEST.md` (setup, pre-flight, smoke tests, the full workflow test with expected node states, costs, troubleshooting, timeouts), the README (process start-up sequence), and the deployment guide (§4.1 runtime file).
 
+### Phase 3.7 changes
+
+Phase 3.7 adds explicit system-admin resolution of uncertain paid steps. Existing ledger and usage references remain unchanged; no new AI capabilities, pricing or provider integrations are added.
+
+- **Accounting/service:** `app/reconciliation.py` validates workspace/run/step/job/reservation relationships, locks the run then account, and atomically appends usage or an exact refund plus one final decision. Same-decision requests return the original record; conflicting decisions return 409. Finalized usage cannot be refunded and refunded reservations cannot be charged. Resolution never calls the provider or debits a second time.
+- **Schema:** migration `0011_credit_reconciliation` adds only `credit_reconciliations`. A step primary key, unique job/reservation references and decision/amount checks enforce one outcome. It retains actor, time, amount and optional note; application APIs cannot edit/delete history. Existing records are preserved; legacy attention steps need no backfill.
+- **API:** `GET /api/admin/reconciliation` (`status=pending|resolved`, `limit=1..100`, `offset`), `POST /api/admin/reconciliation/{step_id}/confirm-charge`, and `POST /api/admin/reconciliation/{step_id}/refund`. Posts accept `{note?: string}` (max 1,000 characters), require system-admin authorization and same-origin validation.
+- **Evidence:** `app/provider_progress.py` and the workers persist safe stage, remote ID, submission timestamps, last poll/state and structured error categories in step output. The admin API uses an explicit projection; credentials, raw payloads/responses and URLs remain private. Missing legacy facts are unknown.
+- **Storage:** before the first video submit, recorded workspace bytes at/above quota cause failure/refund without provider submission. Final quota and MP4 validation remain. This does not predict generated size or reserve disk space.
+- **Provider policy:** definitive pre-acceptance rejection refunds remain. All current video adapters require manual evidence for post-acceptance failure/cancellation; no generic `failed` state proves free work. See the provider table in `CREDIT_RECONCILIATION.md`.
+- **Text:** deterministic rejection refunds and rate-limit retries remain. Timeouts, network/5xx/invalid responses, empty/content-filtered successful responses, and a worker reclaimed mid-call now require reconciliation rather than retry/refund. Happy-path text usage is unchanged.
+- **Run/retry:** refund changes the step to `failed` and recomputes aggregate run state. Retry creates a fresh run/job/reservation only when there is no unresolved/confirmed-charge step, generated asset or approved review. Confirm charge leaves the historical step in `needs_attention` with a separate resolved marker; no success or asset is invented, and retry is blocked.
+- **UI:** a Reconciliation tab in the existing Admin page provides pending/history lists, safe details and confirmed actions with optional notes. Regular users see operator-review/confirmed/refunded messages in vi/en/ja, without accounting controls.
+- **Audit/logging:** immutable application decision rows plus post-commit `reconciliation_charge_confirmed` / `reconciliation_refunded` events with admin/workspace/run/step/job/credits/provider identifiers.
+- **Tests:** `tests/test_reconciliation.py` covers API/auth, exact amounts, duplicate/opposite decisions including concurrency, prior usage/refunds, generic text reservations, legacy metadata, retry/asset guards and preservation of all existing tables across 0010→0011. `tests/test_reconciliation_workers.py` covers preflight, provider facts, uncertainty, deterministic refunds, sibling aggregation and stale workers. Existing text tests reflect the deliberate uncertainty-policy changes.
+- **Validation (2026-09-30):** `python -m unittest discover -s tests -v` passed: 274 tests, 5 skipped (two opt-in live tests, one PostgreSQL test without a disposable test URL, two Windows symlink tests). `npm run typecheck` and `npm run build` passed in `frontend/`; `git diff --check` passed. Independent review findings on billed empty text, malformed legacy metadata and run/account lock ordering were fixed and verified. No live paid provider requests or live database migrations were performed. PostgreSQL concurrency still needs validation on a disposable PostgreSQL instance; SQLite tests cover concurrent admin decisions and emitted worker lock order.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -274,10 +293,10 @@ Phase 3.6 added no product feature and no migration. It makes the existing pipel
 | 3 | Node types | Partial (19 registered; 12 do real work) | P2, U2, U3 |
 | 4 | Job architecture | Fully implemented (core) | F3 |
 | 5 | Video generation providers | Partial | P3 |
-| 5b | Text generation providers | Fully implemented for OpenAI, Anthropic and Gemini (mocked; not verified with live keys) | F11 |
-| 6 | Asset/media persistence | Partial | P4 |
+| 5b | Text generation providers | Fully implemented; Gemini live-verified by the operator, other providers mock-tested | F11 |
+| 6 | Asset/media persistence | Partial; pre-submit full-quota check added in Phase 3.7 | P4 |
 | 7 | AI tool/provider configuration | Partial | P5 |
-| 8 | Credits reservation and usage tracking | Partial (text: hold, charge, refund; video: R1 still open) | P6, F11, M6, R1 |
+| 8 | Credits reservation and usage tracking | Hold, usage, refund and manual reconciliation implemented; pricing/grants remain open | P6, F11, M6, R1 |
 | 9 | Publishing architecture | Partial | P7, M3 |
 | 10 | YouTube integration | Fully implemented (private uploads) | F4 |
 | 11 | Frontend API integration | Fully implemented | F7 |
@@ -291,21 +310,21 @@ Phase 3.6 added no product feature and no migration. It makes the existing pipel
 
 ## Live Provider Verification
 
-No provider has been verified against its live API yet. The Phase 3.6 run had no provider credentials: this machine's process, user and machine environments hold no provider key, and there is no `.env.runtime`. The tooling is ready (`python -m app.provider_check`, `python -m app.smoke_test text|video --live`, docs/LIVE_PROVIDER_SMOKE_TEST.md), but no live request was sent. **Live provider test not executed because credentials were not available.**
+The operator confirmed successful live Gemini text generation, Runway `gen4.5` video generation and `Idea → AI Writer → Scene Splitter → Video → Review` before the Phase 3.7 handoff. This supersedes the earlier no-credentials audit snapshot. Exact run IDs, timings, token counts, Gemini model and execution dates were not provided; they are not inferred here. Phase 3.7 does not repeat those paid calls.
 
 | Provider | Modality | Model | Mock tested | Live verified | Date | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | OpenAI | text | `gpt-4.1-mini` (smoke default) | yes | no | — | Mock tested only |
 | Anthropic | text | `claude-haiku-4-5-20251001` (smoke default) | yes | no | — | Mock tested only |
-| Gemini | text | `gemini-2.5-flash` | yes | no | — | Mock tested only |
+| Gemini | text | Exact live model not supplied (`gemini-2.5-flash` is the smoke default) | yes | yes, operator-confirmed | Not supplied | Text generation passed |
 | fal | video | `fal-ai/veo3.1/fast` | yes | no | — | Mock tested only |
 | Runware | video | `bytedance:seedance@2.5` | yes | no | — | Mock tested only |
 | Replicate | video | `google/veo-3.1-fast` | yes | no | — | Mock tested only |
-| Runway Dev | video | `gen4.5` | yes | no | — | Mock tested only |
+| Runway Dev | video | `gen4.5` | yes | yes, operator-confirmed | Not supplied | Video generation and full workflow passed |
 | Dola (experimental) | video | `seedance-2.0`, `seedance-2.5` | yes | no | — | Mock tested only; out of scope |
 | YouTube Data API | publishing | — | yes | no | — | Mock tested only |
 
-"Mock tested" means the adapter's request shape, response parsing, error mapping and timeouts are covered offline with `httpx.MockTransport` or fake clients, and the workflow path is covered with fake providers. None of these providers is production-ready until it passes a live smoke test. When one does, record here the date, the model, the command run and its result: latency and tokens for text; job ID, duration, size and elapsed time for video.
+"Mock tested" means the adapter's request shape, response parsing, error mapping and timeouts are covered offline with `httpx.MockTransport` or fake clients, and the workflow path is covered with fake providers. Additional providers still require live verification. Preserve the exact date/model/command and latency/tokens or job ID/duration/size when further operator evidence becomes available.
 
 ## Fully Implemented
 
@@ -492,9 +511,9 @@ No provider has been verified against its live API yet. The Phase 3.6 run had no
 
 ### F9. Database migrations
 
-- **Files:** `migrations/versions/0001_initial.py` … `0010_publications.py`, `migrations/env.py`, `alembic.ini`, `app/db.py`.
+- **Files:** `migrations/versions/0001_initial.py` … `0011_credit_reconciliation.py`, `migrations/env.py`, `alembic.ini`, `app/db.py`.
 - **Current:**
-  - A linear chain from 0001 to 0010, all with downgrades.
+  - A linear chain from 0001 to 0011, all with downgrades.
   - Data backfills for plans and subscriptions (0002) and credit accounts (0004).
   - 0007 uses batch `ALTER` so it also runs on SQLite.
   - `env.py` imports the tables defined outside `models.py`, so the metadata is complete.
@@ -569,8 +588,8 @@ No provider has been verified against its live API yet. The Phase 3.6 run had no
     - Anthropic uses `anthropic-version: 2023-06-01`, and JSON mode through the system prompt.
     - Gemini uses the `x-goog-api-key` header (never the URL), rejects model names that could change the URL path, sets `responseMimeType` for JSON, and skips thought parts.
   - **Errors:** stable codes.
-    - Not retryable: `invalid_request`, `auth_error`, `billing_error`, `not_found`, `content_blocked` (refusals and safety blocks), `empty_output` (token limit reached before any text), `provider_response`, `missing_key`, `unsupported_provider`.
-    - Retryable: `rate_limited`, `provider_unavailable` (5xx/529), `timeout`, `transport_error`.
+    - Deterministic rejection/configuration errors include `invalid_request`, `authentication_error`, `billing_error`, `not_found`, `missing_key`, `unsupported_provider`.
+    - The worker only automatically retries `rate_limited`; provider retryability flags do not prove a paid request is safe to send again. `provider_unavailable`, `timeout`, `network_error`, `invalid_response`, `content_rejected` and `empty_output` require reconciliation (Phase 3.7).
     - Messages never include the key or a response body.
   - **Selection and keys:**
     - Text nodes use the first enabled AI tool with task `script` (shown as "Text") and provider `openai`, `anthropic` or `gemini`, or the tool named by the node's `config.tool_id`. The model string is passed through, not allow-listed.
@@ -593,19 +612,18 @@ No provider has been verified against its live API yet. The Phase 3.6 run had no
     - closes the job;
     - records a `UsageEvent`, or refunds the hold;
     - saves the output through `finish_step`, so downstream steps run.
-    - A generation has no side effect besides its cost, so transient errors, and workers that died mid-call, are retried: backoff 5 s × 2ⁿ, at most 3 attempts.
+    - Rate-limit rejections retry with backoff 5 s × 2ⁿ, at most 3 attempts. Other ambiguous errors and workers that died mid-call keep credits held for reconciliation.
   - **Credits:**
     - A flat `TEXT_CREDITS_PER_GENERATION` (default 1, range 1–100 000) is held when the step is queued (`text-reserve:<step>`).
     - On success, one `UsageEvent` (`text:<step>`, tool `<provider>/text`, units = total tokens) records the charge.
-    - On any terminal failure, the hold is refunded (`text-refund:<step>`).
+    - Deterministic terminal failures refund (`text-refund:<step>`). Uncertain outcomes require an audited charge/refund decision.
     - The ledger never goes negative. Not enough credits rejects a run at start (402 "Not enough credits for this step"), or blocks a later step with `insufficient_credits`.
   - **Frontend:**
     - The AI library items `aiWriter`, `summarize`, `rewrite`, `translate`, `generateHook`, `generateTitle` and `generateCta` add these nodes.
     - The canvas shows queued/running/completed/failed from the run steps (5 s polling), with a four-line text preview.
     - The inspector shows the full text.
 - **Missing:**
-  - Verification with live keys. All tests use mocked HTTP or a fake provider.
-  - A settings UI for prompt, language, tone and so on (M1). Today settings are set through the API only.
+  - Live verification for providers other than operator-confirmed Gemini; automated tests use mocked HTTP or a fake provider. The settings inspector is implemented in Phase 3.5 (M1).
   - Token-based pricing. The flat price ignores output length, so `max_tokens` (up to 8,192 per node) bounds provider cost per credit.
   - Streaming, prompt caching, per-workspace keys, per-provider rate limits, and moderation of generated text before it is used downstream.
   - The existing `script` node still uses its placeholder. It could reuse `TextNodeHandler`, but switching it would start charging existing workflows, so it was left for a decision.
@@ -767,7 +785,7 @@ No provider has been verified against its live API yet. The Phase 3.6 run had no
   - Square output: `video_orientation = square` blocks the run.
   - More than one model per provider, and per-model pricing.
   - Webhooks: the worker only polls, every 10 s.
-  - Checks with live credentials: the smoke test exists (Phase 3.6), but no provider has passed it yet (see Live Provider Verification).
+  - Checks with live credentials for the remaining providers; Gemini and Runway passed according to the operator (see Live Provider Verification).
   - Codec and duration inspection (for example with ffprobe).
   - Cancelling a job on the provider side.
 - **Depends on:** F3, P6. F4 depends on it.
@@ -832,12 +850,12 @@ No provider has been verified against its live API yet. The Phase 3.6 run had no
 - **Current:**
   - **Ledger:** one balance per workspace, updated under a row lock, plus an append-only ledger. Each entry has a unique `reference`, so posting the same entry twice has no effect.
   - **Reservation:** a video run reserves a flat `VIDEO_CREDITS_PER_CLIP` (default 10) as `reserve:<run_id>`, in the same transaction as the run and its job. If the balance is too low, the API returns HTTP 402.
-  - **Refunds:** only when the provider definitely rejected the request before accepting it (`refund:<run_id>`, once).
+  - **Refunds:** safe pre-submit failures/definitive rejection automatically, or an explicit audited admin reconciliation (`refund:<run_id>`, once).
   - **Charging:** the reservation itself is the charge. A successful run adds one `UsageEvent` (`video:<step_id>`).
   - **Retries:** a retry reserves again under the new run ID, at the original frozen price.
-  - **Text steps** (F11): a flat `TEXT_CREDITS_PER_GENERATION` is held per step (`text-reserve:<step>`), charged by one `UsageEvent` (`text:<step>`, units = total tokens), and refunded on any terminal failure (`text-refund:<step>`). Unlike video, every text failure is refunded, because no output was delivered.
+  - **Text steps** (F11): a flat `TEXT_CREDITS_PER_GENERATION` is held per step (`text-reserve:<step>`) and finalized by one `UsageEvent` (`text:<step>`, units = total tokens on success). Deterministic failures refund (`text-refund:<step>`); uncertain outcomes require reconciliation since Phase 3.7.
 - **Missing:**
-  - Refunds for video when the provider reports a failed generation, or when the submit outcome is unknown. Both end in `needs_attention` with the credits still held, and there is no endpoint or UI to resolve them (R1).
+  - Automatic authoritative provider billing reconciliation; Phase 3.7 supplies a manual audited resolution flow for uncertain charges (R1).
   - Pricing by model, duration or tokens. Because a clip costs the same whatever its length, the clip-length setting offers only 4, 6 and 8 s (the previous default was 8 s).
   - Trial and monthly grants: a new self-registered workspace starts with 0 credits.
   - Credit expiry.
@@ -959,7 +977,7 @@ No provider has been verified against its live API yet. The Phase 3.6 run had no
 - **Files:** `app/main.py` (`retry_workflow_run`), `app/video_worker.py`, `app/text_worker.py` (`run_one`, `MAX_ATTEMPTS`), `app/youtube_worker.py` (`_transient_retry_delay`), `app/publications.py` (`can_retry_publication`, `retry_publication`), `app/main.py` (`refresh_payment_order`).
 - **Current:**
   - **Runs:** `POST /api/workflow-runs/{id}/retry` creates a new run (with `retry_of_id`) from the original snapshot, settings included, and the frozen video payload (the run's `video:` job). Only `blocked` or `failed` runs qualify, and never after approval.
-  - **Text jobs:** retryable provider errors, unexpected worker errors, and expired leases (a worker died mid-call) are retried with backoff 5 s × 2ⁿ, at most 3 attempts. Then the step fails and its credits are refunded. Non-retryable errors fail and refund at once. The step shows `queued` with "will retry" in between.
+  - **Text jobs:** definitive rate-limit rejections retry with backoff 5 s × 2ⁿ, at most 3 attempts, then refund. Deterministic failures refund at once. Uncertain requests and reclaimed running leases require reconciliation and are not automatically sent again (Phase 3.7).
   - **Video jobs:**
     - Polling requeues the job every 10 s.
     - Temporary status or result errors are retried until three errors happen in a row.
@@ -970,7 +988,7 @@ No provider has been verified against its live API yet. The Phase 3.6 run had no
     - A manual retry is allowed only when no bytes could have been sent.
   - **Payments:** a manual refresh reconciles pending orders.
 - **Missing:**
-  - Retrying a `needs_attention` run. It is not allowed, and nothing else resolves it (R1).
+  - Retrying an unresolved or confirmed-charge `needs_attention` run remains intentionally prohibited. After an admin refund, safe asset-free runs can use the existing retry endpoint (R1).
   - Retrying a single step.
   - A lease heartbeat: a download that takes longer than the 300 s lease is thrown away and redone.
   - Jitter in backoff.
@@ -1131,10 +1149,8 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 ### M6. Credit reconciliation and grants
 
 - **Files to change:** `app/usage.py`, `app/video_worker.py`, `app/main.py` (admin routes), `frontend/src/app/admin/page.tsx`.
-- **Current:** `needs_attention` runs keep their credits reserved. Credits arrive only through a payment or a manual admin adjustment.
+- **Current:** Phase 3.7 adds admin reconciliation/history, exact refunds, charge confirmation and provider uncertainty policy. Other credits arrive through payment or a manual admin adjustment.
 - **Missing:**
-  - An admin endpoint and UI to resolve `needs_attention` runs, by refunding or confirming the charge.
-  - A policy for provider-reported failures.
   - A scheduled job for monthly and trial grants.
   - A pricing table per model.
 - **Depends on:** P6.
@@ -1202,7 +1218,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 
 ## Critical Risks
 
-### R1. Credits stay reserved on `needs_attention` video runs
+### R1. Uncertain paid jobs hold credits (resolution added in Phase 3.7)
 
 - **Where:** `app/video_worker.py`, every call to `_terminal_failure(..., refund=False)`:
   - The provider reports that generation `failed`.
@@ -1213,9 +1229,9 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 - **Effect:**
   - The run and step become `needs_attention` and the reserved credits are kept.
   - The run cannot be retried: retry accepts only `blocked` or `failed`.
-  - No endpoint or UI resolves it; an admin can only post a manual credit adjustment.
+  - System admins can now resolve it using an audited refund or charge confirmation in Admin → Reconciliation. Old unresolved incidents are included when their reservation is valid.
   - Ordinary provider failures, such as a content-moderation rejection or an outage, take this path.
-- **Direction:** M6, plus checking the quota before submitting.
+- **Mitigation:** Phase 3.7 implements M6 reconciliation and the pre-submit quota check. Provider evidence and timely operator review remain required; storage can still fill after preflight.
 
 ### R2. Anyone can claim the first admin account
 
@@ -1270,18 +1286,18 @@ If `REELFORGE_TOKEN_ENCRYPTION_KEY` is lost or changed, no stored YouTube connec
 ### R11. Text credits are not tied to provider cost
 
 - **Where:** `app/providers/text/__init__.py` (`text_credit_cost`), `app/workflow/nodes/text.py`, `app/text_worker.py`.
-- **Problem:** a text step costs a flat `TEXT_CREDITS_PER_GENERATION` (default 1), whatever the model, the prompt length (up to 60,000 characters of upstream text) or `max_tokens` (up to 8,192). A transient failure can call the provider up to 3 times for one charge, and every terminal failure is refunded.
+- **Problem:** a text step costs a flat `TEXT_CREDITS_PER_GENERATION` (default 1), whatever the model, prompt length (up to 60,000 characters) or `max_tokens` (up to 8,192). Phase 3.7 limits automatic retries to definitive rate-limit rejections and reconciles ambiguous results; it does not implement token-based pricing.
 - **Effect:** with an expensive model (for example the Claude Opus preset) and the default price of 1, provider spend can exceed what credits recover.
 - **Direction:**
   - Set the price per deployment, and alert on provider spend.
   - Move to token-based settlement: reserve a maximum, charge from `usage` (already recorded as the event's units), refund the difference.
   - Rate-limit text jobs per workspace.
 
-### R12. No provider is verified with live keys
+### R12. Additional providers still require live verification
 
 All text and video tests use mocked HTTP or fake clients. The request and response shapes follow the vendors' public API references. Model names, token limits, reasoning-model behavior, video durations, result URLs and download hosts still need a smoke test with real keys before users rely on them. For example, reasoning models can spend the whole token budget before writing any text, which surfaces as `empty_output`, and a provider may serve results from a host the adapter does not allow.
 
-The smoke tests exist since Phase 3.6, but they have not been run: no credentials were available (see Live Provider Verification).
+The operator confirmed Gemini, Runway `gen4.5` and the complete text-to-video review workflow before Phase 3.7. Other providers still need live tests (see Live Provider Verification).
 
 ### R13. Every process that advances runs needs every provider key
 
@@ -1302,7 +1318,7 @@ Guiding rules:
 | Step | Work | Resolves | Depends on |
 | --- | --- | --- | --- |
 | 0 | Operational hardening: <br>• structured logging in the API and workers (**done for workflow execution and the text and video workers in Phase 3.6**) <br>• a PostgreSQL service in CI with `REELFORGE_TEST_DATABASE_URL` <br>• `alembic check` in CI <br>• an enforced production checklist: `create-admin` before exposure, HTTPS origin, `secure_cookies`, forwarded-IP handling for the throttle <br>• frontend smoke tests for the editor's status mapping | R2–R5, R9, D12, part of M10 | — |
-| 1 | Credit reconciliation: <br>• an admin endpoint and UI to resolve `needs_attention` runs <br>• a refund policy for provider-reported failures <br>• a quota check before submitting <br>• a trial and monthly grant policy | R1, part of R6, M6 | 0 |
+| 1 | **Credit reconciliation done in Phase 3.7:** admin API/UI and audit history, conservative provider policy and pre-submit quota check. **Still open/out of phase scope:** trial and monthly grants, complex pricing | R1, part of R6, M6 | 0 |
 | 2 | Split `app/main.py` into routers and services without changing behavior <br>• remove the import-time side effects <br>• return stable error codes instead of translating by text | D1, D2, D6, P9 | 0 |
 | 3 | Provider/model registry: <br>• one adapter protocol <br>• one registry used by the API and worker and exposed to the frontend (capabilities, defaults, price) <br>• validate AI tools when they are saved | D3, D4, P5 | 2 |
 | 4 | Per-node configuration. **Done in Phase 3.5 (F13):** a settings schema served with the ports, inspector fields for every executable node, video model, aspect ratio, clip length and prompt in `config`, validation codes, readiness. **Still open:** <br>• show a past run's snapshot settings <br>• settings for new executors as they land | M1 | 3 |
@@ -1315,5 +1331,5 @@ Guiding rules:
 
 Phase 1 took the engine part of step 5 ahead of steps 2–4, because it did not depend on them. Phase 2 then did most of step 6 and the backend half of step 4, Phase 3 connected the nodes with typed data, Phase 3.5 finished step 4, and Phase 3.6 added the runtime environment, logs and smoke tooling. The next highest-value work:
 
-- Run the live smoke tests with one real text provider and one real video provider, then the full workflow test (R12), and record the results under Live Provider Verification. Decide text pricing (R11) with the measured token counts.
-- Credit reconciliation for video (step 1). Steps 1–3 can run in parallel once step 0 is in place. Step 7 is independent of steps 3–6 and can start earlier if storage pressure appears in production. Apply to Google, TikTok and Meta for platform API access early, because approval timelines are outside the team's control.
+- Preserve the operator-confirmed Gemini/Runway/full-workflow live results; verify additional providers when requested (R12). Complex text pricing (R11) remains outside Phase 3.7.
+- Deploy migration 0011 and use the reconciliation procedure for existing attention incidents. Step 1's reconciliation work is complete; grants/pricing remain separate. Further capabilities require a new phase.

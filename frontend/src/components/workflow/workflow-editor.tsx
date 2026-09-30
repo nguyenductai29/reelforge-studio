@@ -1033,6 +1033,18 @@ function Editor({
   const inspected = selected.length === 1 ? displayNodes.find((n) => n.id === selected[0]!.id)! : null;
   const completed = (run?.steps ?? []).filter((s) => s.status === "completed").length;
   const approvedId = approvedAsset(run);
+  const hasConfirmedCharge = run?.steps?.some((step) => step.output?.reconciliation?.status === "confirmed_charge");
+  const hasRefund = run?.steps?.some((step) => step.output?.reconciliation?.status === "refunded");
+  const hasUnresolvedCredits = run?.steps?.some((step) => step.status === "needs_attention" && !step.output?.reconciliation);
+  const refundedWithMedia = hasRefund && (
+    data?.assets.some((asset) => asset.run_id === run?.id) ||
+    run?.steps?.some((step) =>
+      (typeof step.output?.asset_id === "string" && Boolean(step.output.asset_id)) ||
+      (Array.isArray(step.output?.asset_ids) && step.output.asset_ids.length > 0),
+    )
+  );
+  const canRetryRun = run && ["blocked", "failed"].includes(run.status) &&
+    !approvedId && !hasConfirmedCharge && !hasUnresolvedCredits && !refundedWithMedia;
   const orientation = settings?.workspace.video_orientation ?? "vertical";
   const defaults: WorkspaceDefaults = {
     language: settings?.workspace.default_language ?? "vi",
@@ -1134,7 +1146,7 @@ function Editor({
                       <Check className="size-3.5" /> {t.editor.runs.approve}
                     </Button>
                   )}
-                  {["blocked", "failed"].includes(run.status) && !approvedId && (
+                  {canRetryRun && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -1167,9 +1179,11 @@ function Editor({
                   >
                     <X className="size-3.5" />
                   </Button>
-                  {run.status === "needs_attention" && (
+                  {run.status === "needs_attention" && (!hasConfirmedCharge || hasUnresolvedCredits) && (
                     <p className="w-full text-warning">{t.editor.runs.needsAttention}</p>
                   )}
+                  {hasConfirmedCharge && <p className="w-full text-warning">{t.editor.runs.chargeConfirmed}</p>}
+                  {hasRefund && <p className="w-full text-muted-foreground">{t.editor.runs.creditsRefunded}</p>}
                 </div>
               )}
               <ReactFlow

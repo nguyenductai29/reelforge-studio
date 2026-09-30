@@ -15,12 +15,13 @@ from app.db import Session
 from app import jobs, usage
 from app.logs import log_event, payload_summary
 from app.main import MAX_UPLOAD, media_root, workspace_media_quota
-from app.models import Asset, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
+from app.models import Asset, CreditReconciliation, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
 from app.providers.catalog import PROVIDER_ERRORS, VIDEO_PROVIDERS, dola_max_job_age_seconds, video_provider_config_issue
 from app.providers.errors import error_category
+from app.provider_progress import provider_progress, safe_error_code, step_output
 from app.runtime_env import start_process
 from app.video_files import download_video, valid_mp4
-from app.workflow import ExecutionContext, NodeExecutionResult, default_executor
+from app.workflow import ExecutionContext, NodeError, NodeExecutionResult, default_executor
 
 # Submit errors that prove the provider did not accept the job, so its credits can be refunded.
 DEFINITIVE_SUBMIT_REJECTIONS = frozenset({"invalid_request", "authentication_error", "billing_error",
@@ -59,6 +60,11 @@ def _live_lease(db, job_id, token):
     job = db.get(WorkflowJob, job_id)
     if not job or job.state != "leased" or job.lease_token != token or not job.lease_expires_at:
         return None
+    if db.get(CreditReconciliation, job.step_id) is not None:
+        return None
+    step = db.get(WorkflowRunStep, job.step_id)
+    if step.status not in {"queued", "submitting", "running"}:
+        return None
     expires = job.lease_expires_at
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
@@ -66,7 +72,7 @@ def _live_lease(db, job_id, token):
 
 
 def _output(step):
-    return json.loads(step.output) if step.output else {}
+    return step_output(step)
 
 
 def _save_output(step, value):
@@ -96,24 +102,39 @@ def _requeue(job_id: str, token: str, *, delay: int, detail: str, error_count: i
 
 
 def _terminal_failure(job_id: str, token: str, detail: str, *, refund: bool, code: str | None = None):
+    code = safe_error_code(code, fallback="worker_error" if refund else "provider_failed")
     with Session.begin() as db:
         job = _live_lease(db, job_id, token)
         if not job or not jobs.fail_job(db, job_id=job_id, lease_token=token, error=detail):
             return
         step = db.get(WorkflowRunStep, job.step_id)
-        run = db.get(WorkflowRun, job.run_id)
-        step.status = "failed" if refund else "needs_attention"
-        step.detail = (detail if refund else
+        # Reconciliation and sibling workers always lock run before credit account.
+        run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == job.run_id).with_for_update())
+        status = "failed" if refund else "needs_attention"
+        detail = (detail if refund else
                        f"{detail} Cần đối soát với provider; credit đang được giữ, không tự gửi lại.")[:500]
-        step.finished_at = _now()
-        run.status = step.status
-        run.finished_at = _now()
+        output = provider_progress(_output(step), stage=status)
         fields = _job_fields(job.id, job.payload, run_id=job.run_id, step_id=job.step_id, workspace_id=job.workspace_id)
-        log_event(logger, "job_failed", level=logging.WARNING, **fields, status=step.status, refund=refund,
+        log_event(logger, "job_failed", level=logging.WARNING, **fields, status=status, refund=refund,
                   error_code=code, category=error_category(code) if code else None)
         if refund:
             usage.post_credit(db, job.workspace_id, job.payload["credits"], "video_refund", f"refund:{job.run_id}")
             log_event(logger, "credit_refunded", **fields, credits=job.payload["credits"], reference=f"refund:{job.run_id}")
+        default_executor.finish_step(ExecutionContext.for_run(db, run, now=_now()), step,
+                                     NodeExecutionResult(status, detail, output,
+                                                         error=NodeError(code, detail, False, error_category(code))))
+
+
+def _record_progress(job_id, token, **facts):
+    with Session.begin() as db:
+        job = _live_lease(db, job_id, token)
+        if not job:
+            return False
+        step = db.get(WorkflowRunStep, job.step_id)
+        if step.status not in {"submitting", "running"}:
+            return False
+        _save_output(step, provider_progress(_output(step), **facts))
+        return True
 
 
 def _store_result(job_id: str, token: str, result, download):
@@ -139,17 +160,18 @@ def _store_result(job_id: str, token: str, result, download):
             if not job or not jobs.complete_job(db, job_id=job_id, lease_token=token):
                 target.unlink(missing_ok=True)
                 return
+            run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == job.run_id).with_for_update())
             db.execute(update(Workspace).where(Workspace.id == job.workspace_id).values(name=Workspace.name))
             stored_bytes = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.workspace_id == job.workspace_id))
             if stored_bytes + size > workspace_media_quota():
                 raise ValueError("Workspace media quota reached")
             step = db.get(WorkflowRunStep, job.step_id)
-            run = db.get(WorkflowRun, job.run_id)
             payload = job.payload
             db.add(Asset(id=asset_id, workspace_id=job.workspace_id, project_id=run.project_id,
                          run_id=run.id, step_id=step.id, provider=payload["provider"], model=payload["model_id"],
                          filename=f"video-{asset_id[:8]}.mp4", content_type="video/mp4", bytes=size))
             output = _output(step)
+            provider_progress(output, stage="completed", status="completed")
             output.pop("submission", None)
             output.pop("error_count", None)
             output["asset_id"] = asset_id
@@ -191,17 +213,31 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
         action = step.status
         log_event(logger, "job_claimed", **fields, worker_id=worker_id, step_status=action,
                   attempt=job.attempt_count)
+        if action not in {"queued", "submitting", "running"} or db.get(CreditReconciliation, step.id) is not None:
+            jobs.fail_job(db, job_id=job_id, lease_token=token, error="invalid_step_state")
+            return True
+        storage_full = False
         if action == "queued":
+            stored_bytes = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(
+                Asset.workspace_id == job.workspace_id))
+            storage_full = stored_bytes >= workspace_media_quota()
             step.status, step.detail = "submitting", "Đang gửi yêu cầu tạo video."
+            _save_output(step, provider_progress(_output(step), stage="preflight"))
         current_output = _output(step)
+    if storage_full:
+        _terminal_failure(job_id, token, "Kho media của workspace đã đầy; đã hoàn credits.",
+                          refund=True, code="storage_limit_exceeded")
+        return True
     provider = VIDEO_PROVIDERS.get(payload.get("provider"))
     if not provider:
-        _terminal_failure(job_id, token, "Provider video không được hỗ trợ.", refund=action == "queued")
+        _terminal_failure(job_id, token, "Provider video không được hỗ trợ.", refund=action == "queued",
+                          code="unsupported_provider")
         return True
     provider_module, provider_client_type, key_name = provider.module, provider.client_type, provider.key_env
     created_at = job_created_at if job_created_at.tzinfo else job_created_at.replace(tzinfo=timezone.utc)
     if (_now() - created_at).total_seconds() > max_age_seconds:
-        _terminal_failure(job_id, token, "Video quá thời gian chờ; kiểm tra provider trước khi tạo lại.", refund=action == "queued")
+        _terminal_failure(job_id, token, "Video quá thời gian chờ; kiểm tra provider trước khi tạo lại.",
+                          refund=action == "queued", code="job_expired")
         return True
     if payload["provider"] == "dola":
         issue = video_provider_config_issue("dola")
@@ -225,6 +261,8 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
     started = time.monotonic()
     try:
         if action == "queued":
+            if not _record_progress(job_id, token, stage="submitting", started=True):
+                return True
             log_event(logger, "provider_request_started", **fields, operation="submit", request=payload_summary(payload))
             try:
                 submission = client.submit(provider_module.VideoRequest(model_id=payload["model_id"], prompt=payload["prompt"],
@@ -234,9 +272,10 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
                 _provider_failed(fields, "submit", exc, started)
                 # Only a known pre-submit rejection can release the reservation.
                 rejected = isinstance(exc, PROVIDER_ERRORS) and exc.code in DEFINITIVE_SUBMIT_REJECTIONS
-                detail = (f"Provider từ chối yêu cầu tạo video: {exc.code}" if rejected else
-                          f"Không rõ provider đã nhận yêu cầu: {type(exc).__name__}")
-                _terminal_failure(job_id, token, detail, refund=rejected, code=getattr(exc, "code", None))
+                code = safe_error_code(getattr(exc, "code", None), fallback="submission_unknown")
+                detail = ("Provider từ chối yêu cầu tạo video; đã hoàn credits." if rejected else
+                          "Không rõ provider đã nhận yêu cầu tạo video.")
+                _terminal_failure(job_id, token, detail, refund=rejected, code=code)
                 return True
             log_event(logger, "provider_request_completed", **fields, operation="submit",
                       provider_job_id=getattr(submission, "request_id", None),
@@ -247,19 +286,26 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
                     step = db.get(WorkflowRunStep, job.step_id)
                     output = _output(step)
                     output["submission"] = asdict(submission)
+                    provider_progress(output, stage="submitted", accepted=True, status="queued",
+                                      request_id=getattr(submission, "request_id", None))
                     _save_output(step, output)
                     step.status, step.detail = "running", "Provider đang tạo video."
                     jobs.fail_job(db, job_id=job_id, lease_token=token, error="poll_pending", retry_delay_seconds=poll_seconds)
             return True
         if action == "submitting":
-            _terminal_failure(job_id, token, "Lần gửi trước chưa có mã yêu cầu; có thể provider đã nhận.", refund=False)
+            _terminal_failure(job_id, token, "Lần gửi trước chưa có mã yêu cầu; có thể provider đã nhận.",
+                              refund=False, code="submission_unknown")
             return True
         if action != "running" or "submission" not in current_output:
             _terminal_failure(job_id, token, "Trạng thái job video không hợp lệ.", refund=False)
             return True
         try:
             submission = provider_module.Submission(**current_output["submission"])
+            if not _record_progress(job_id, token, stage="polling", polled=True):
+                return True
             state = client.status(submission)
+            if not _record_progress(job_id, token, stage="polling", status=state.state):
+                return True
             failure = state.error if state.state == "failed" else None
             log_event(logger, "provider_request_completed", **fields, operation="status", state=state.state,
                       provider_job_id=getattr(submission, "request_id", None),
@@ -268,9 +314,9 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
                          if failure else {}))
             if state.state in {"queued", "running"}:
                 _requeue(job_id, token, delay=poll_seconds, detail="Provider đang tạo video.", error_count=0)
-            elif state.state == "failed":
-                code = state.error.code if state.error else "provider_failed"
-                _terminal_failure(job_id, token, f"Provider thất bại: {state.error.code if state.error else 'unknown'}",
+            elif state.state in {"failed", "cancelled"}:
+                code = safe_error_code(state.error.code if state.error else "provider_failed")
+                _terminal_failure(job_id, token, "Provider báo video thất bại; cần kiểm tra phí xử lý.",
                                   refund=False, code=code)
             elif state.state == "completed":
                 _store_result(job_id, token, client.result(submission), download or _download_video)

@@ -215,12 +215,12 @@ These tests incur provider charges; this repository does not know your prices.
 | --- | --- |
 | **401 / `authentication_error`** | The key is wrong, revoked or for another provider. Compare the fingerprint from `app.provider_check` with the key you expect. Look for quotes or whitespace in `.env.runtime`; the check reports a key containing spaces as invalid. |
 | **402 / `billing_error`** | The provider account has no credit or no billing set up. |
-| **429 / `rate_limited`** | Wait, then retry once. A text step is attempted up to 3 times by itself (retrying after 5 s, then 10 s). A video submit is never retried automatically: the step fails, its credits are refunded, and you use **Retry**. |
+| **429 / `rate_limited`** | Wait, then retry once. A rate-limited text step is attempted up to 3 times by itself (retrying after 5 s, then 10 s). Other uncertain paid outcomes require [reconciliation](CREDIT_RECONCILIATION.md). A video submit is never retried automatically: the step fails, its credits are refunded, and you use **Retry**. |
 | **Unsupported model** (`unsupported_model`, or `invalid_request` / HTTP 404 from the provider) | Text: check the exact model name for your account. Video: each adapter accepts only the models in the table above. In a workflow, readiness shows "Model video này chưa được hỗ trợ" before running. |
 | **Empty text output** (`empty_output`) | Reasoning models spend tokens before answering. Raise `--max-tokens`, or raise **Max tokens** on the node in Advanced mode. |
 | **Provider timeout** (`timeout`) | Text requests wait at most 120 s (connect 10 s). Video API calls wait 10 s each. A timed-out **submit** is `submission_unknown`: the provider may have accepted the job, so it is not retried and its credits stay held (the step shows it needs checking). Check the provider dashboard before trying again. |
 | **Video job stuck** | The step stays Running while the provider works. The worker polls every 10 s and gives up after `VIDEO_JOB_MAX_AGE_SECONDS` (default 6 h). Look for `provider_request_completed` events with `operation: status` in the video worker log: a changing `state` means the provider is progressing. No events at all means the video worker is not running. |
-| **Download failed** | The result URL host must be one the adapter allows (for Runway, one of `RUNWAY_OUTPUT_HOSTS`), the response must be `video/mp4` under 100 MB, and the file must be a complete MP4. Such failures end the step as needing attention, and the credits stay held until an administrator resolves them. |
+| **Download failed** | The result URL host must be one the adapter allows (for Runway, one of `RUNWAY_OUTPUT_HOSTS`), the response must be `video/mp4` under 100 MB, and the file must be a complete MP4. Such failures end the step as needing attention, and the credits stay held until a system administrator resolves them in **Admin → Reconciliation** ([procedure](CREDIT_RECONCILIATION.md)). |
 | **Workspace has insufficient credits** | The run is rejected with HTTP 402 when it starts, or a later step shows "Không đủ credits cho bước này." Add credits on the Admin page, then start a new run or retry. |
 | **Worker not running** | Steps stay **Queued** with no `job_claimed` event. Start `python -m app.text_worker` / `python -m app.video_worker`; `--once` processes a single job. |
 | **Wrong environment in one process** | A step blocks with "Server cần …_KEY", or the text step works while the video step (queued by the text worker) blocks. Compare the `process_started` lines of the API and every worker: `env_file` and the key fingerprints must match. Restart the process that differs. |
@@ -232,7 +232,7 @@ Logs are JSON lines on stderr, one per event: `workflow_run_started`, `workflow_
 | Call | Limit |
 | --- | --- |
 | Text provider request (OpenAI, Anthropic, Gemini) | connect 10 s; read, write and pool 120 s |
-| Text job | at most 3 attempts, backoff 5 s × 2ⁿ; worker lease 300 s |
+| Text job | at most 3 attempts for rate-limit rejections, backoff 5 s × 2ⁿ; uncertain calls are not resubmitted; worker lease 300 s |
 | Video provider API call (fal, Runware, Replicate, Runway, Dola) | 10 s for connect, read, write and pool |
 | Video polling | every 10 s; 3 failed polls in a row end the job; at most `VIDEO_JOB_MAX_AGE_SECONDS` (default 21600 s), Dola `DOLA_MAX_JOB_AGE_SECONDS` (default 7200 s); lease 300 s |
 | Video download | connect 30 s; each read 120 s; at most 100 MB |

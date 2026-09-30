@@ -217,3 +217,21 @@ class WorkflowJob(Base):
     def payload(self) -> dict:
         """Return a fresh copy of the immutable enqueued JSON snapshot."""
         return json.loads(self.payload_json)
+
+
+class CreditReconciliation(Base):
+    """One final, append-only operator decision for a reserved paid step."""
+
+    __tablename__ = "credit_reconciliations"
+    __table_args__ = (
+        CheckConstraint("decision IN ('confirmed_charge', 'refunded')", name="ck_reconciliation_decision"),
+        CheckConstraint("credits > 0", name="ck_reconciliation_credits"),
+    )
+    step_id: Mapped[str] = mapped_column(ForeignKey("workflow_run_steps.id"), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("workflow_jobs.id"), unique=True)
+    reservation_id: Mapped[str] = mapped_column(ForeignKey("credit_ledger.id"), unique=True)
+    decision: Mapped[str] = mapped_column(String(24))
+    credits: Mapped[int] = mapped_column(Integer)
+    reconciled_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    reconciled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
