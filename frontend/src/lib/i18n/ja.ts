@@ -608,6 +608,8 @@ export const ja: Dictionary = {
     "Trạng thái job video không hợp lệ.": "動画ジョブの状態が正しくありません。",
     "Provider video không được hỗ trợ.": "この動画プロバイダーはサポートされていません。",
     "Cấu hình provider video không hợp lệ.": "動画プロバイダーの設定が正しくありません。",
+    "Loại bước này chưa được hỗ trợ.": "この種類のステップはサポートされていません。",
+    "Bước gặp lỗi khi thực thi.": "このステップの実行中にエラーが発生しました。",
   },
   library: {
     title: "コンテンツライブラリ",

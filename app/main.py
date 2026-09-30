@@ -19,9 +19,13 @@ from sqlalchemy.exc import IntegrityError
 from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import auth_security, billing, jobs, payments, publications, usage, workflow_engine
-from app.providers import dola, fal, replicate, runware, runway
+from app import auth_security, billing, payments, publications, usage
+# Re-exported: existing callers import video_provider_config_issue from app.main.
+from app.providers.catalog import video_provider_config_issue  # noqa: F401
 from app.publishers import google_oauth
+from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
+                          parse_graph)
+from app.workflow.nodes import ReviewNodeHandler
 
 
 SYSTEM_DEFAULTS = {
@@ -79,51 +83,6 @@ def upload_preflight(scope):
 app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_UPLOAD + MULTIPART_OVERHEAD_BYTES,
                    preflight=upload_preflight)
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "audio/mpeg", "audio/wav", "audio/ogg"}
-VIDEO_PROVIDERS = {"fal": (fal, "FAL_KEY"), "runware": (runware, "RUNWARE_API_KEY"),
-                   "replicate": (replicate, "REPLICATE_API_TOKEN"),
-                   "dola": (dola, "DOLA_API_KEY"), "runway": (runway, "RUNWAYML_API_SECRET")}
-
-
-def video_provider_config_issue(provider_name: str) -> tuple[str, str] | None:
-    """Check operator credentials and the experimental gateway opt-in."""
-    if provider_name == "dola" and os.environ.get("DOLA_EXPERIMENTAL_ENABLED") != "1":
-        return "experimental_disabled", "Dola là provider thử nghiệm; server chưa bật DOLA_EXPERIMENTAL_ENABLED=1."
-    key_name = VIDEO_PROVIDERS[provider_name][1]
-    if not os.environ.get(key_name):
-        return "missing_key", f"Server cần {key_name}."
-    if provider_name == "runway":
-        try:
-            runway.validate_output_hosts(os.environ.get("RUNWAY_OUTPUT_HOSTS"))
-        except runway.ProviderError:
-            return "invalid_config", "Server cần RUNWAY_OUTPUT_HOSTS gồm các hostname media Runway được phép tải."
-    if provider_name == "dola":
-        if not os.environ.get("DOLA_BASE_URL"):
-            return "missing_config", "Server cần DOLA_BASE_URL."
-        try:
-            dola_max_job_age_seconds()
-            with dola.DolaClient(os.environ[key_name]):
-                pass
-        except dola.ProviderError:
-            return "invalid_config", "Cấu hình URL hoặc khóa Dola chưa hợp lệ."
-    return None
-
-
-def video_request_defaults(provider_name: str) -> tuple[str, str, bool | None]:
-    if provider_name == "dola":
-        return "10s", "auto", None
-    if provider_name == "runway":
-        return "8s", "720p", False
-    return "8s", "720p", True
-
-
-def dola_max_job_age_seconds() -> int:
-    try:
-        max_age = int(os.environ.get("DOLA_MAX_JOB_AGE_SECONDS", "7200"))
-    except ValueError as exc:
-        raise dola.ProviderError("invalid_config", "Invalid Dola max job age") from exc
-    if not 60 <= max_age <= 86400:
-        raise dola.ProviderError("invalid_config", "Dola max job age must be 60 to 86400 seconds")
-    return max_age
 
 
 def media_signature_matches(content_type: str, path: Path) -> bool:
@@ -204,9 +163,6 @@ class ProjectPatch(BaseModel):
     topic: str | None = Field(default=None, max_length=3000)
 
 
-AI_TASKS = {"script", "image", "video", "voice", "music"}
-
-
 class AIToolInput(BaseModel):
     task: str = Field(pattern="^(script|image|video|voice|music)$")
     provider: str = Field(min_length=1, max_length=60, pattern=r"^[a-zA-Z0-9._-]+$")
@@ -255,7 +211,8 @@ class WorkflowGraph(BaseModel):
     edges: list[GraphEdge] = Field(max_length=60)
 
 
-NODE_TYPES = {"idea", "script", "scenes", "image", "video", "assets", "voice", "music", "subtitle", "render", "review", "publish"}
+# A saved graph may contain any type with a registered handler (app/workflow/registry.py).
+NODE_TYPES = default_registry.node_types
 
 
 def default_graph():
@@ -264,15 +221,6 @@ def default_graph():
     nodes = [{"id": f"n{i}", "type": kind, "x": x, "y": y} for i, (kind, (x, y)) in enumerate(zip(types, coords))]
     links = [(0, 1), (1, 2)]
     return {"nodes": nodes, "edges": [{"source": f"n{a}", "target": f"n{b}"} for a, b in links]}
-
-
-def parse_graph(definition):
-    value = json.loads(definition)
-    if isinstance(value, list):
-        # Compatibility for workflows created before visual editing existed.
-        nodes = [{"id": f"n{i}", "type": "assets" if kind == "assets" else kind, "x": i * 260, "y": 180} for i, kind in enumerate(value)]
-        return {"nodes": nodes, "edges": [{"source": f"n{i}", "target": f"n{i+1}"} for i in range(len(nodes)-1)]}
-    return value
 
 
 def validate_graph(graph: WorkflowGraph):
@@ -1026,44 +974,14 @@ def workflow_readiness(workflow_id: str, request: Request, tool_id: str | None =
         workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
         if not workflow:
             raise HTTPException(404, "Workflow not found")
-        graph = parse_graph(workflow.definition)
-        enabled_tools = list(db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True))))
-        enabled = {tool.task for tool in enabled_tools}
-        balance = db.get(CreditAccount, ws.id).balance
-        quote = video_credit_cost()
-        orientation = workspace_settings(db, ws.id)["video_orientation"]
-        aspect_ratio = {"vertical": "9:16", "horizontal": "16:9"}.get(orientation)
-        video_count = sum(node["type"] == "video" for node in graph["nodes"])
-        steps = []
-        for node in graph["nodes"]:
-            task = node["type"]
-            if task == "video":
-                tool = next((tool for tool in enabled_tools if tool.task == "video" and tool.provider in VIDEO_PROVIDERS
-                             and (tool_id is None or tool.id == tool_id)), None)
-                if video_count != 1:
-                    detail, status = "Hiện chỉ hỗ trợ một bước video trong mỗi workflow.", "unsupported_graph"
-                elif not tool:
-                    detail, status = "Chọn model video được hỗ trợ trong Công cụ AI.", "missing_tool"
-                elif issue := video_provider_config_issue(tool.provider):
-                    status, detail = issue
-                elif not aspect_ratio:
-                    detail, status = "Model video chưa hỗ trợ tỷ lệ vuông.", "unsupported_aspect"
-                elif tool.model not in VIDEO_PROVIDERS[tool.provider][0].VIDEO_MODELS:
-                    detail, status = "Model video này chưa được hỗ trợ.", "unsupported_model"
-                elif balance < quote:
-                    detail, status = f"Cần {quote} credits; hiện có {balance}.", "insufficient_credits"
-                else:
-                    detail, status = f"Sẵn sàng tạo clip; dự kiến giữ {quote} credits.", "ready"
-            elif task in AI_TASKS:
-                detail = "Đã chọn model; cần kết nối provider trước khi chạy." if task in enabled else "Chưa chọn công cụ AI cho tác vụ này."
-                status = "needs_connection" if task in enabled else "missing_tool"
-            elif task in {"render", "publish", "scenes", "subtitle"}:
-                detail, status = "Cần kết nối dịch vụ thực thi trước khi chạy.", "needs_connection"
-            else:
-                detail, status = "Bước này đã có trong sơ đồ.", "configured"
-            steps.append({"node_id": node["id"], "task": task, "status": status, "detail": detail})
+        context = ExecutionContext(db, workspace=ws, graph=parse_graph(workflow.definition),
+                                   options=RunOptions(tool_id=tool_id))
+        checks = default_executor.readiness(context)
+        steps = [{"node_id": node["id"], "task": node["type"], "status": check.status, "detail": check.detail}
+                 for node, check in checks]
         return {"workflow_id": workflow.id, "runnable": all(step["status"] in {"ready", "configured"} for step in steps),
-                "credits_required": quote if video_count else 0, "credits_available": balance, "steps": steps}
+                "credits_required": sum(check.credits for _, check in checks),
+                "credits_available": context.credit_balance, "steps": steps}
 
 
 def public_step_output(step):
@@ -1089,110 +1007,23 @@ def public_run(run, steps=None):
     return result
 
 
-def video_credit_cost():
-    try:
-        amount = int(os.environ.get("VIDEO_CREDITS_PER_CLIP", "10"))
-    except ValueError as exc:
-        raise RuntimeError("VIDEO_CREDITS_PER_CLIP must be a positive integer") from exc
-    if not 1 <= amount <= 100000:
-        raise RuntimeError("VIDEO_CREDITS_PER_CLIP must be between 1 and 100000")
-    return amount
-
-
 def persist_run(db, ws, workflow, project, snapshot, retry_of_id=None, prompt_override=None, tool_id=None, frozen_video=None):
-    # The graph and result are committed together, even if external nodes block.
+    # The graph, steps, credit hold and queued jobs are committed together, even if nodes block.
     graph = parse_graph(snapshot)
     validate_graph(WorkflowGraph.model_validate(graph))
-    tools = list(db.scalars(select(AITool).where(AITool.workspace_id == ws.id, AITool.is_enabled.is_(True)).order_by(AITool.created_at, AITool.id)))
-    enabled = {tool.task for tool in tools}
-    assets = list(db.scalars(select(Asset).where(Asset.workspace_id == ws.id).order_by(Asset.created_at, Asset.id)))
     now = datetime.now(timezone.utc)
     run = WorkflowRun(id=ident(), workspace_id=ws.id, workflow_id=workflow.id, project_id=project.id,
                       retry_of_id=retry_of_id, graph_snapshot=json.dumps(graph), status="running", created_at=now)
     db.add(run)
     db.flush()
-    outcomes = workflow_engine.execute_graph(graph, project, assets, enabled)
-    ready_video = [item for item in outcomes if item["node_type"] == "video" and item["status"] == "blocked"
-                   and all(next(outcome for outcome in outcomes if outcome["node_id"] == edge["source"])["status"] == "completed"
-                           for edge in graph["edges"] if edge["target"] == item["node_id"])]
-    video_payload = None
-    if len([item for item in outcomes if item["node_type"] == "video"]) == 1 and len(ready_video) == 1:
-        item = ready_video[0]
-        if frozen_video:
-            provider_name = frozen_video.get("provider")
-            model_id = frozen_video.get("model_id")
-            tool_reference = frozen_video.get("tool_id")
-            prompt = frozen_video.get("prompt", "").strip()
-            aspect_ratio = frozen_video.get("aspect_ratio")
-            defaults = video_request_defaults(provider_name)
-            duration = frozen_video.get("duration", defaults[0])
-            resolution = frozen_video.get("resolution", defaults[1])
-            generate_audio = frozen_video.get("generate_audio", defaults[2])
-            cost = frozen_video.get("credits")
-        else:
-            if tool_id:
-                tool = next((tool for tool in tools if tool.id == tool_id and tool.task == "video" and tool.provider in VIDEO_PROVIDERS), None)
-                if not tool:
-                    raise HTTPException(400, "Selected video tool is unavailable")
-            else:
-                tool = next((tool for tool in tools if tool.task == "video" and tool.provider in VIDEO_PROVIDERS), None)
-            provider_name = tool.provider if tool else None
-            model_id = tool.model if tool else None
-            tool_reference = tool.id if tool else None
-            prompt = (prompt_override if prompt_override is not None else project.topic or project.title).strip()
-            orientation = workspace_settings(db, ws.id)["video_orientation"]
-            aspect_ratio = {"vertical": "9:16", "horizontal": "16:9"}.get(orientation)
-            duration, resolution, generate_audio = video_request_defaults(provider_name)
-            cost = video_credit_cost()
-        if provider_name not in VIDEO_PROVIDERS:
-            item["detail"] = "Chưa chọn model video được hỗ trợ cho bước video."
-        elif issue := video_provider_config_issue(provider_name):
-            item["detail"] = issue[1]
-        elif not prompt:
-            item["detail"] = "Dự án cần có chủ đề hoặc prompt để tạo video."
-        elif not aspect_ratio:
-            item["detail"] = "Model video hiện chưa hỗ trợ tỷ lệ vuông."
-        else:
-            provider_module = VIDEO_PROVIDERS[provider_name][0]
-            request = provider_module.VideoRequest(model_id=model_id, prompt=prompt, aspect_ratio=aspect_ratio,
-                                                   duration=duration, resolution=resolution, generate_audio=generate_audio)
-            try:
-                provider_module.validate_video_request(request)
-            except (dola.ProviderError, fal.ProviderError, runware.ProviderError, replicate.ProviderError,
-                    runway.ProviderError) as exc:
-                item["detail"] = str(exc)
-            else:
-                if not isinstance(cost, int) or not 1 <= cost <= 100000:
-                    raise HTTPException(400, "Invalid video credit quote")
-                try:
-                    usage.post_credit(db, ws.id, -cost, "video_reserve", f"reserve:{run.id}")
-                except ValueError as exc:
-                    raise HTTPException(402, "Not enough credits for this video") from exc
-                item["status"] = "queued"
-                item["detail"] = "Đã xếp hàng tạo video."
-                item["output"] = {"prompt": prompt, "provider": provider_name, "model": model_id}
-                video_payload = {"kind": "video.generate", "provider": provider_name, "tool_id": tool_reference,
-                                 "prompt": prompt, "model_id": model_id,
-                                 "aspect_ratio": aspect_ratio, "duration": request.duration,
-                                 "resolution": request.resolution, "generate_audio": request.generate_audio,
-                                 "credits": cost}
-    steps = [WorkflowRunStep(id=ident(), run_id=run.id, node_id=item["node_id"],
-              node_type=item["node_type"], position=index, status=item["status"], detail=item["detail"],
-              output=json.dumps(item["output"]) if item["output"] is not None else None,
-              finished_at=now if item["status"] not in {"queued", "running", "skipped"} else None)
-             for index, item in enumerate(outcomes)]
-    db.add_all(steps)
-    if video_payload:
-        step = next(step for step in steps if step.node_id == ready_video[0]["node_id"])
-        db.flush()
-        jobs.enqueue_job(db, workspace_id=ws.id, run_id=run.id, step_id=step.id,
-                         logical_key=f"video:{run.id}:{step.id}", payload=video_payload)
-        run.status = "running"
-        run.finished_at = None
-    else:
-        run.status = "completed" if all(item["status"] == "completed" for item in outcomes) else "blocked"
-        run.finished_at = now
-    return public_run(run, steps)
+    context = ExecutionContext(db, workspace=ws, project=project, run=run, graph=graph, now=now,
+                               options=RunOptions(prompt_override=prompt_override, tool_id=tool_id,
+                                                  frozen_video=frozen_video))
+    try:
+        progress = default_executor.start_run(context)
+    except RunRequestError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    return public_run(run, progress.steps)
 
 
 @app.get("/api/workflows/{workflow_id}/runs")
@@ -1260,13 +1091,12 @@ def approve_workflow_run(run_id: str, request: Request):
         now = datetime.now(timezone.utc)
         reviewer = authorize(request, db)
         for step in reviews:
-            step.status, step.detail, step.finished_at = "completed", "Đã được duyệt để sử dụng.", now
-            step.output = json.dumps({"approved_by": reviewer.id, "approved_at": now.isoformat()})
-        run.status = "completed" if all(step.status == "completed" for step in steps) else "blocked"
-        run.finished_at = now
+            ReviewNodeHandler.approve(step, reviewer_id=reviewer.id, now=now)
+        # Steps after the review can now run; the run settles as completed or blocked.
+        progress = default_executor.advance_run(ExecutionContext.for_run(db, run, now=now))
         project = db.get(Project, run.project_id)
         project.status = "approved"
-        return public_run(run, steps)
+        return public_run(run, progress.steps)
 
 
 @app.post("/api/workflow-runs/{run_id}/retry", status_code=201)

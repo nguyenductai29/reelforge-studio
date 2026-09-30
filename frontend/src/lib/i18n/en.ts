@@ -613,6 +613,8 @@ export const en: Dictionary = {
     "Trạng thái job video không hợp lệ.": "The video job is in an invalid state.",
     "Provider video không được hỗ trợ.": "This video provider isn't supported.",
     "Cấu hình provider video không hợp lệ.": "The video provider configuration is invalid.",
+    "Loại bước này chưa được hỗ trợ.": "This step type isn't supported.",
+    "Bước gặp lỗi khi thực thi.": "This step hit an error while running.",
   },
   library: {
     title: "Content Library",

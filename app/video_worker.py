@@ -12,18 +12,12 @@ import httpx
 from sqlalchemy import func, select, update
 
 from app.db import Session
-from app import jobs, usage, workflow_engine
-from app.main import MAX_UPLOAD, dola_max_job_age_seconds, media_root, video_provider_config_issue, workspace_media_quota
+from app import jobs, usage
+from app.main import MAX_UPLOAD, media_root, workspace_media_quota
 from app.models import Asset, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
-from app.providers import dola, fal, replicate, runware, runway
+from app.providers.catalog import PROVIDER_ERRORS, VIDEO_PROVIDERS, dola_max_job_age_seconds, video_provider_config_issue
+from app.workflow import ExecutionContext, NodeExecutionResult, default_executor
 
-PROVIDER_CLIENTS = {"fal": (fal, fal.FalQueueClient, "FAL_KEY"),
-                    "runware": (runware, runware.RunwareClient, "RUNWARE_API_KEY"),
-                    "replicate": (replicate, replicate.ReplicateClient, "REPLICATE_API_TOKEN"),
-                    "dola": (dola, dola.DolaClient, "DOLA_API_KEY"),
-                    "runway": (runway, runway.RunwayClient, "RUNWAYML_API_SECRET")}
-PROVIDER_ERRORS = (dola.ProviderError, fal.ProviderError, runware.ProviderError,
-                   replicate.ProviderError, runway.ProviderError)
 DEFINITIVE_SUBMIT_REJECTIONS = frozenset({"invalid_request", "auth_error", "billing_error",
                                           "not_found", "rate_limited"})
 
@@ -154,35 +148,13 @@ def _terminal_failure(job_id: str, token: str, detail: str, *, refund: bool):
             usage.post_credit(db, job.workspace_id, job.payload["credits"], "video_refund", f"refund:{job.run_id}")
 
 
-def _advance_run(db, run: WorkflowRun):
-    steps = list(db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id).order_by(WorkflowRunStep.position)))
-    by_node = {step.node_id: step for step in steps}
-    graph = json.loads(run.graph_snapshot)
-    for node, dependencies in workflow_engine.ordered_nodes(graph):
-        step = by_node[node["id"]]
-        if step.status != "skipped" or any(by_node[parent].status != "completed" for parent in dependencies):
-            continue
-        if node["type"] == "review":
-            step.status, step.detail = "awaiting_review", "Video đã tạo; cần người dùng duyệt."
-        else:
-            step.status, step.detail = "blocked", "Bước này chưa có bộ thực thi."
-            step.finished_at = _now()
-    states = {step.status for step in steps}
-    if "awaiting_review" in states:
-        run.status, run.finished_at = "awaiting_review", None
-    elif states == {"completed"}:
-        run.status, run.finished_at = "completed", _now()
-    else:
-        run.status, run.finished_at = "blocked", _now()
-
-
 def _store_result(job_id: str, token: str, result, download):
     asset_id = str(uuid.uuid4())
     with Session() as db:
         job = _live_lease(db, job_id, token)
         if not job:
             return
-        PROVIDER_CLIENTS[job.payload["provider"]][0].validate_media_url(result.video_url)
+        VIDEO_PROVIDERS[job.payload["provider"]].module.validate_media_url(result.video_url)
         root = media_root(db)
         target = root / job.workspace_id / asset_id
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -213,14 +185,15 @@ def _store_result(job_id: str, token: str, result, download):
             output.pop("error_count", None)
             output["asset_id"] = asset_id
             output["filename"] = f"video-{asset_id[:8]}.mp4"
-            _save_output(step, output)
-            step.status, step.detail, step.finished_at = "completed", "Đã lưu video vào kho media riêng.", _now()
             if not db.scalar(select(UsageEvent.id).where(UsageEvent.reference == f"video:{step.id}")):
                 db.add(UsageEvent(id=str(uuid.uuid4()), workspace_id=job.workspace_id,
                                   tool=f"{payload['provider']}/video", units=1, credits=payload["credits"],
                                   reference=f"video:{step.id}", created_at=_now()))
             db.flush()
-            _advance_run(db, run)
+            # Records the step and lets its children (e.g. review) run.
+            default_executor.finish_step(ExecutionContext.for_run(db, run, now=_now()), step,
+                                         NodeExecutionResult.completed("Đã lưu video vào kho media riêng.", output,
+                                                                       asset_ids=(asset_id,)))
     except Exception:
         partial.unlink(missing_ok=True)
         target.unlink(missing_ok=True)
@@ -243,11 +216,11 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
         if action == "queued":
             step.status, step.detail = "submitting", "Đang gửi yêu cầu tạo video."
         current_output = _output(step)
-    provider_info = PROVIDER_CLIENTS.get(payload.get("provider"))
-    if not provider_info:
+    provider = VIDEO_PROVIDERS.get(payload.get("provider"))
+    if not provider:
         _terminal_failure(job_id, token, "Provider video không được hỗ trợ.", refund=action == "queued")
         return True
-    provider_module, provider_client_type, key_name = provider_info
+    provider_module, provider_client_type, key_name = provider.module, provider.client_type, provider.key_env
     created_at = job_created_at if job_created_at.tzinfo else job_created_at.replace(tzinfo=timezone.utc)
     if (_now() - created_at).total_seconds() > max_age_seconds:
         _terminal_failure(job_id, token, "Video quá thời gian chờ; kiểm tra provider trước khi tạo lại.", refund=action == "queued")
