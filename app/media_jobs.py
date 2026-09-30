@@ -1,10 +1,12 @@
-"""Durable child jobs for image and video steps: one paid provider operation per job.
+"""Durable child jobs for image, video and voice steps: one paid provider operation per job.
 
 A step that makes several files queues one job per operation (one image, or
-one scene's image or clip; see app/workflow/nodes/media.py), each with its own
-credit reservation. A worker advances one job at a time through
+one scene's image, clip or narration; see app/workflow/nodes/media.py), each
+with its own credit reservation. A worker advances one job at a time through
 submit → poll → download → validate → store, keeping that job's facts under
-``step.output["jobs"][<job_id>]``:
+``step.output["jobs"][<job_id>]``. A provider that answers with the file itself
+(``MediaKind.generate``, e.g. text-to-speech) skips polling and downloading:
+generate → validate → store.
 
 * ``status``: queued, submitting, running, then succeeded, failed or needs_attention;
 * ``scene_index``, ``operation``, and the stored ``assets`` once it succeeded;
@@ -69,12 +71,15 @@ class MediaKind:
     max_age_seconds: Callable[[dict], int]         # per payload: a provider may allow less time
     config_issue: Callable[[str], tuple[str, str] | None]
     open_client: Callable[[dict], Any]
-    submit: Callable[[Any, dict], dict]            # JSON-safe submission with a "request_id"
-    status: Callable[[Any, dict, dict], Any]       # (client, payload, submission) → .state and .error
-    result_urls: Callable[[Any, dict, dict], list[str]]
-    validate_url: Callable[[Any, dict, str], None]  # SSRF guard for each output URL
-    download: Callable[[str, Path], int]
     inspect: Callable[[Path, dict], tuple[str, str, dict]]  # content type, extension, extra entry fields
+    # Asynchronous providers: submit, then poll and download each output URL.
+    submit: Callable[[Any, dict], dict] | None = None             # JSON-safe submission with a "request_id"
+    status: Callable[[Any, dict, dict], Any] | None = None        # (client, payload, submission) → .state and .error
+    result_urls: Callable[[Any, dict, dict], list[str]] | None = None
+    validate_url: Callable[[Any, dict, str], None] | None = None  # SSRF guard for each output URL
+    download: Callable[[str, Path], int] | None = None
+    # Synchronous providers: one call returns the files' bytes and the remote request ID, if any.
+    generate: Callable[[Any, dict], tuple[list[bytes], str | None]] | None = None
     errors: tuple[type[BaseException], ...] = (ProviderError,)
 
 
@@ -223,7 +228,9 @@ def advance(kind: MediaKind, claimed: Claimed, *, client=None, download=None, po
             return
     started = time.monotonic()
     try:
-        if action == "queued":
+        if action == "queued" and kind.generate is not None:
+            _generate(kind, claimed, client, started)
+        elif action == "queued":
             _submit(kind, claimed, client, started, poll_seconds)
         elif action == "submitting":
             _terminal(kind, claimed, "Lần gửi trước chưa có mã yêu cầu; có thể provider đã nhận.", refund=False,
@@ -280,6 +287,34 @@ def _submit(kind, claimed, client, started, poll_seconds):
             _save(live.step, live.output)
             jobs.fail_job(db, job_id=claimed.job_id, lease_token=claimed.token, error="poll_pending",
                           retry_delay_seconds=poll_seconds)
+
+
+def _generate(kind, claimed, client, started):
+    """One synchronous provider call; its files are stored at once, never requested twice."""
+    fields, payload = claimed.fields, claimed.payload
+    if not _progress(claimed, stage="submitting", started=True):
+        return
+    log_event(logger, "provider_request_started", **fields, operation="generate", request=payload_summary(payload))
+    try:
+        blobs, request_id = kind.generate(client, payload)
+    except Exception as exc:  # noqa: BLE001 - classified below
+        _provider_failed(fields, "generate", exc, started)
+        rejected = isinstance(exc, kind.errors) and getattr(exc, "code", None) in DEFINITIVE_SUBMIT_REJECTIONS
+        code = safe_error_code(getattr(exc, "code", None), fallback="submission_unknown")
+        detail = ("Provider từ chối yêu cầu; đã hoàn credits." if rejected else
+                  "Không rõ provider đã xử lý yêu cầu.")
+        _terminal(kind, claimed, detail, refund=rejected, code=code, category=getattr(exc, "category", None))
+        return
+    log_event(logger, "provider_request_completed", **fields, operation="generate", provider_job_id=request_id,
+              latency_ms=round((time.monotonic() - started) * 1000))
+    if not _progress(claimed, stage="submitted", accepted=True, status="completed", request_id=request_id):
+        return
+    try:
+        _store_files(kind, claimed, [lambda path, blob=blob: path.write_bytes(blob) for blob in blobs or []])
+    except Exception as exc:  # noqa: BLE001 - the provider already answered, so its credits are held
+        _provider_failed(fields, "store", exc, started)
+        _terminal(kind, claimed, "Không lưu được kết quả từ provider.", refund=False,
+                  code=getattr(exc, "code", None) or ("invalid_response" if isinstance(exc, ValueError) else "worker_error"))
 
 
 def _poll(kind, claimed, client, started, poll_seconds, download):
@@ -350,26 +385,33 @@ def _terminal(kind, claimed, detail, *, refund: bool, code: str | None, category
 
 
 def _store(kind, claimed, client, urls, download):
-    payload, fields = claimed.payload, claimed.fields
     if not urls:
+        raise ValueError("The provider returned no file")
+    for url in urls:
+        kind.validate_url(client, claimed.payload, url)
+    _store_files(kind, claimed, [lambda path, url=url: download(url, path) for url in urls])
+
+
+def _store_files(kind, claimed, writers: list[Callable[[Path], Any]]):
+    """Write each file to ``<asset_id>.part``, check it, then record every asset and settle the step."""
+    payload, fields = claimed.payload, claimed.fields
+    if not writers:
         raise ValueError("The provider returned no file")
     with Session() as db:
         live = _live(db, claimed.job_id, claimed.token, lock=False)
         if not live:
             return
         root = media_root(db) / live.job.workspace_id
-    for url in urls:
-        kind.validate_url(client, payload, url)
     root.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     stored = []
     started = time.monotonic()
     try:
-        for url in urls:
+        for write in writers:
             asset_id = str(uuid.uuid4())
             partial = root / f"{asset_id}.part"
             paths.append(partial)
-            download(url, partial)
+            write(partial)
             size = partial.stat().st_size
             content_type, extension, extra = kind.inspect(partial, payload)
             target = root / asset_id

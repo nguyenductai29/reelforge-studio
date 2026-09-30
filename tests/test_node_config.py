@@ -28,7 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 KEYS = {"OPENAI_API_KEY": "sk-test", "FAL_KEY": "fal-test", "RUNWARE_API_KEY": "rw-test",
         "TEXT_CREDITS_PER_GENERATION": "1", "VIDEO_CREDITS_PER_CLIP": "10"}
 SCRIPT = "Cảnh 1: Rừng đêm tĩnh lặng.\n\nCảnh 2: Một con cú bay qua.\n\nCảnh 3: Bình minh lên."
-EXECUTABLE = ("ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta", "scenes", "image", "video")
+EXECUTABLE = ("ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta", "scenes", "image", "video",
+              "voice", "subtitle")
 
 
 def node(node_id, node_type, config=None):

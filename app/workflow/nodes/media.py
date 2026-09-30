@@ -1,4 +1,4 @@
-"""Shared by the image and video handlers: one paid provider operation per scene or image.
+"""Shared by the image, video and voice handlers: one paid provider operation per scene or file.
 
 A step that makes several files queues one durable job per operation, with its
 own logical key (``<kind>:<step>:<operation>``) and its own credit references:
@@ -8,7 +8,7 @@ own logical key (``<kind>:<step>:<operation>``) and its own credit references:
 * ``<kind>-refund:<step>:<operation>``: when the provider definitely did not accept it.
 
 The operation is ``scene:<n>`` in scene mode, ``image:<n>`` for the n-th image
-of one prompt, or ``single`` for one video clip. Credits for every operation are
+of one prompt, or ``single`` for one video clip or narration. Credits for every operation are
 reserved together, after a check that the balance covers all of them, so a step
 never holds part of its cost and the balance never goes negative. The workers
 (app/media_jobs.py) settle the step once every job has finished.
@@ -44,8 +44,13 @@ def clip(text) -> str:
     return text if len(text) <= MAX_PROMPT_CHARS else text[:MAX_PROMPT_CHARS].rsplit(" ", 1)[0]
 
 
-def scene_operations(scenes) -> list[Operation]:
-    """One operation per scene with a prompt: its ``visual_prompt``, else its ``text``.
+def normalize(text) -> str:
+    """Text with its whitespace collapsed, never cut (a narration must not lose words)."""
+    return " ".join(text.split()) if isinstance(text, str) else ""
+
+
+def scene_operations(scenes, keys=("visual_prompt", "text"), shorten=clip) -> list[Operation]:
+    """One operation per scene with a prompt: the first of ``keys`` it has (``visual_prompt``, else ``text``).
 
     The scene's own index is kept; a missing or repeated index (for example when
     two scene lists are joined) falls back to the scene's position.
@@ -54,7 +59,7 @@ def scene_operations(scenes) -> list[Operation]:
     for position, scene in enumerate(scenes if isinstance(scenes, list) else [], 1):
         if not isinstance(scene, Mapping):
             continue
-        prompt = clip(scene.get("visual_prompt")) or clip(scene.get("text"))
+        prompt = next((text for text in (shorten(scene.get(key)) for key in keys) if text), "")
         if not prompt:
             continue
         index = scene.get("index")

@@ -3,12 +3,13 @@
     python -m app.smoke_test text  --live [--provider openai] [--model gpt-4.1-mini] [--max-tokens 256]
     python -m app.smoke_test video --live [--provider runware] [--model …] [--aspect 16:9] [--timeout 900]
     python -m app.smoke_test image --live [--provider runway] [--model gen4_image] [--aspect 1:1] [--timeout 300]
+    python -m app.smoke_test voice --live [--provider gemini] [--model gemini-2.5-flash-preview-tts] [--voice Kore]
     python -m app.smoke_test run-report <run_id>
 
-``text``, ``video`` and ``image`` call the provider directly, with the cheapest request
+``text``, ``video``, ``image`` and ``voice`` call the provider directly, with the cheapest request
 the adapter accepts, and never touch the database or workspace media. They run
 only with ``--live`` or ``REELFORGE_LIVE_TESTS=1`` set in the shell; the runtime
-file cannot turn them on. Video and image files are saved under
+file cannot turn them on. Video, image and audio files are saved under
 ``instance/smoke-tests/`` (git-ignored), never in workspace media.
 
 ``run-report`` makes no provider call: it reads a workflow run from the
@@ -28,13 +29,15 @@ import sys
 import time
 
 from app.logs import scrub
+from app.audio_files import inspect_audio
 from app.image_files import download_image, inspect_image
-from app.provider_check import (check_image, check_text, check_video, describe, safe_console, smoke_image_settings,
-                                smoke_video_settings)
+from app.provider_check import (check_image, check_text, check_video, check_voice, describe, safe_console,
+                                smoke_image_settings, smoke_video_settings)
 from app.providers.image import ImageRequest, create_image_provider
 from app.providers.catalog import PROVIDER_ERRORS, VIDEO_PROVIDERS
 from app.providers.errors import ProviderError
 from app.providers.text import create_text_provider
+from app.providers.voice import VOICE_PROVIDERS, VoiceRequest, create_voice_provider
 from app.runtime_env import ROOT, load_runtime_env
 from app.video_files import download_video, mp4_duration_seconds, valid_mp4
 
@@ -42,6 +45,7 @@ TEXT_PROMPT = "Write one short sentence explaining why consistent posting helps 
 TEXT_SYSTEM_PROMPT = "Answer in one plain sentence."
 VIDEO_PROMPT = "A cinematic sunrise over a quiet mountain lake, slow camera movement."
 IMAGE_PROMPT = "A small red paper boat on a calm blue lake, soft morning light."
+VOICE_TEXT = "Xin chào! This is a short ReelForge narration test."
 OUTPUT_DIR = ROOT / "instance" / "smoke-tests"
 PREVIEW_CHARS = 160
 # What to try first for each error category.
@@ -252,6 +256,53 @@ def smoke_image(*, provider=None, model=None, prompt=IMAGE_PROMPT, aspect=None, 
     return 0
 
 
+def smoke_voice(*, provider=None, model=None, text=VOICE_TEXT, voice=None, output_dir: Path = OUTPUT_DIR,
+                provider_factory=None, out=print) -> int:
+    check = check_voice(provider, model)
+    for line in describe(check):
+        out(line)
+    if not check.ready:
+        out("Not ready; nothing was sent.")
+        return 2
+    request = VoiceRequest(check.model, text, voice or VOICE_PROVIDERS[check.provider].default_voice)
+    started = time.monotonic()
+    try:
+        client = (provider_factory or create_voice_provider)(check.provider)
+    except ProviderError as exc:
+        _report_error(exc, out)
+        return 2
+    try:
+        try:
+            result = client.generate(request)
+        except Exception as exc:  # noqa: BLE001 - every failure is reported, none is retried
+            _report_error(exc, out)
+            return 1
+    finally:
+        client.close()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    partial = output_dir / f"{check.provider}-{stamp}.part"
+    partial.write_bytes(result.audio)
+    try:
+        info = inspect_audio(partial)
+    except ValueError as exc:
+        partial.unlink(missing_ok=True)
+        out(f"FAILED: the audio is not valid: {exc}")
+        return 1
+    target = partial.with_suffix(f".{info.extension}")
+    partial.replace(target)
+    out(f"Provider: {check.provider}")
+    out(f"Model: {result.model}")
+    out(f"Voice: {request.voice}")
+    out(f"Request ID: {result.remote_request_id or 'not returned'}")
+    out(f"Audio: {info.content_type}, {info.duration if info.duration is not None else 'unknown'} s, "
+        f"{target.stat().st_size} bytes")
+    out(f"Latency: {round((time.monotonic() - started) * 1000)} ms")
+    out(f"Saved: {target}")
+    out("PASSED: voice smoke test.")
+    return 0
+
+
 # Run report ------------------------------------------------------------------
 
 def compare_settings(node_type: str, config, payload) -> list[str]:
@@ -286,6 +337,12 @@ def compare_settings(node_type: str, config, payload) -> list[str]:
             problems.append(f"style: {config['style']!r} is not in the prompt")
         if config.get("duration") and f"about {config['duration']} seconds" not in prompt:
             problems.append(f"duration: {config['duration']!r} is not in the prompt")
+    elif payload.get("kind") == "voice.generate":
+        for key in ("voice", "style"):
+            if config.get(key) is not None:
+                expect(key, config[key], payload.get(key))
+        if isinstance(config.get("text"), str) and config["text"].strip():
+            expect("text override", " ".join(config["text"].split()), payload.get("prompt"))
     elif payload.get("kind") in ("video.generate", "image.generate"):
         keys = ("aspect_ratio", "duration") if payload["kind"] == "video.generate" else ("aspect_ratio", "quality", "seed")
         for key in keys:
@@ -370,11 +427,18 @@ def main(argv=None) -> int:
     image.add_argument("--poll", type=int, default=3, help="seconds between status checks (default 3)")
     image.add_argument("--output", type=Path, default=OUTPUT_DIR)
     image.add_argument("--live", action="store_true", help="confirm that a paid request may be sent")
+    voice = commands.add_parser("voice", help="one short real text-to-speech request")
+    voice.add_argument("--provider")
+    voice.add_argument("--model")
+    voice.add_argument("--voice")
+    voice.add_argument("--text", default=VOICE_TEXT)
+    voice.add_argument("--output", type=Path, default=OUTPUT_DIR)
+    voice.add_argument("--live", action="store_true", help="confirm that a paid request may be sent")
     report = commands.add_parser("run-report", help="check a workflow run's requests against its snapshot")
     report.add_argument("run_id")
     args = parser.parse_args(argv)
 
-    if args.command in ("text", "video", "image") and not live_intent(args.live):
+    if args.command in ("text", "video", "image", "voice") and not live_intent(args.live):
         # Checked before the runtime file loads, so the file cannot turn live tests on.
         print("Refusing to call a paid provider API: pass --live or set REELFORGE_LIVE_TESTS=1 in this shell.")
         return 3
@@ -388,6 +452,9 @@ def main(argv=None) -> int:
     if args.command == "image":
         return smoke_image(provider=args.provider, model=args.model, prompt=args.prompt, aspect=args.aspect,
                            timeout_seconds=args.timeout, poll_seconds=args.poll, output_dir=args.output)
+    if args.command == "voice":
+        return smoke_voice(provider=args.provider, model=args.model, text=args.text, voice=args.voice,
+                           output_dir=args.output)
     return run_report(args.run_id)
 
 

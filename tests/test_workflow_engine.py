@@ -22,7 +22,7 @@ from app.workflow import (ExecutionContext, NodeError, NodeExecutionResult, Node
                           default_registry, derive_run_status, parse_graph, resolve_inputs)
 from app.workflow.config import SELECT, ConfigField
 from app.workflow.executor import HANDLER_FAILED_DETAIL
-from app.workflow.nodes import (AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, PendingAITaskHandler, PendingServiceHandler,
+from app.workflow.nodes import (RenderNodeHandler, SubtitleNodeHandler, VoiceNodeHandler, AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, PendingAITaskHandler, PendingServiceHandler,
                                 ReviewNodeHandler, ScenesNodeHandler, TextNodeHandler, UnsupportedNodeHandler,
                                 VideoNodeHandler)
 from app.workflow.nodes.pending import UNSUPPORTED_DETAIL
@@ -89,11 +89,13 @@ class RegistryTest(unittest.TestCase):
                     "review": ReviewNodeHandler}
         for node_type, handler_type in expected.items():
             self.assertIsInstance(default_registry.resolve(node_type), handler_type)
-        for node_type in ("script", "voice", "music"):
+        for node_type in ("script", "music"):
             self.assertIsInstance(default_registry.resolve(node_type), PendingAITaskHandler)
         self.assertIsInstance(default_registry.resolve("image"), ImageNodeHandler)
-        for node_type in ("subtitle", "render", "publish"):
-            self.assertIsInstance(default_registry.resolve(node_type), PendingServiceHandler)
+        self.assertIsInstance(default_registry.resolve("voice"), VoiceNodeHandler)
+        self.assertIsInstance(default_registry.resolve("publish"), PendingServiceHandler)
+        self.assertIsInstance(default_registry.resolve("render"), RenderNodeHandler)
+        self.assertIsInstance(default_registry.resolve("subtitle"), SubtitleNodeHandler)
         self.assertIsInstance(default_registry.resolve("scenes"), ScenesNodeHandler)
         for node_type in TEXT_TYPES:
             self.assertIsInstance(default_registry.resolve(node_type), TextNodeHandler)
@@ -422,7 +424,7 @@ class ExecutorTest(DatabaseCase):
             checks = {node["id"]: check for node, check in WorkflowExecutor().readiness(context)}
         self.assertEqual({key: check.status for key, check in checks.items()},
                          {"idea": "configured", "video": "missing_tool", "script": "missing_tool",
-                          "render": "needs_connection", "hologram": "unsupported_node"})
+                          "render": "missing_input", "hologram": "unsupported_node"})
         self.assertEqual(sum(check.credits for check in checks.values()), 10)
 
 

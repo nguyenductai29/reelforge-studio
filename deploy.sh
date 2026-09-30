@@ -41,6 +41,14 @@ if systemctl is-enabled --quiet reelforge-image-worker 2>/dev/null; then
   sudo systemctl restart reelforge-image-worker
 fi
 
+if systemctl is-enabled --quiet reelforge-voice-worker 2>/dev/null; then
+  sudo systemctl restart reelforge-voice-worker
+fi
+
+if systemctl is-enabled --quiet reelforge-render-worker 2>/dev/null; then
+  sudo systemctl restart reelforge-render-worker
+fi
+
 if systemctl is-enabled --quiet reelforge-youtube-worker 2>/dev/null; then
   sudo systemctl restart reelforge-youtube-worker
 fi

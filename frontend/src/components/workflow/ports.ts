@@ -48,7 +48,7 @@ export function outputScenes(output: Record<string, unknown> | null | undefined)
   return scenes.filter((scene): scene is Scene => typeof scene?.text === "string");
 }
 
-/** One stored file of an image or video step; `scene_index` is null for prompt-mode images and single clips. */
+/** One stored file of an image, video or voice step; `scene_index` is null for prompt-mode files and single clips. */
 export type MediaAsset = {
   id: string;
   filename?: string;
@@ -64,7 +64,7 @@ export type MediaAsset = {
 /** The files a step stored, in scene order. A single clip from before scene mode only has `asset_id`. */
 export function outputMedia(
   output: Record<string, unknown> | null | undefined,
-  key: "image_assets" | "video_assets",
+  key: "image_assets" | "video_assets" | "audio_assets",
 ): MediaAsset[] {
   const list = output?.[key];
   const assets = Array.isArray(list)
@@ -76,8 +76,52 @@ export function outputMedia(
   return assets;
 }
 
+export type SubtitleCue = { start: number; end: number; text: string; scene_index?: number | null };
+export type SubtitleFile = {
+  id: string;
+  filename?: string;
+  format?: string;
+  cue_count?: number;
+  duration?: number;
+  timing?: "audio" | "video" | "scenes" | "estimate";
+  cues: SubtitleCue[];
+};
+
+/** The subtitle file a Subtitle step stored, with its cues for previewing. */
+export function outputSubtitle(output: Record<string, unknown> | null | undefined): SubtitleFile | null {
+  const value = output?.subtitle_asset as Record<string, unknown> | undefined;
+  if (!value || typeof value.id !== "string") return null;
+  const cues = Array.isArray(value.cues)
+    ? value.cues.filter((cue): cue is SubtitleCue => typeof cue?.text === "string" && typeof cue?.start === "number")
+    : [];
+  return { ...(value as Omit<SubtitleFile, "cues">), id: value.id, cues };
+}
+
+/** "1:05.2", for cue times. */
+export function clockTime(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${(seconds - minutes * 60).toFixed(1).padStart(4, "0")}`;
+}
+
 export type JobState = "queued" | "submitting" | "running" | "succeeded" | "failed" | "needs_attention";
 export type JobRecord = { scene_index?: number | null; operation?: string; status?: JobState; error?: { category?: string } };
+
+/** The media a Review step is showing: the files its parents produced, found in the run's step outputs. */
+export function reviewMedia(
+  steps: { output?: Record<string, unknown> | null }[] | undefined,
+  ids: unknown,
+): (MediaAsset & { kind: "video" | "image" })[] {
+  const wanted = new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
+  const found = new Map<string, MediaAsset & { kind: "video" | "image" }>();
+  for (const step of steps ?? []) {
+    for (const [key, kind] of [["video_assets", "video"], ["image_assets", "image"]] as const) {
+      for (const asset of outputMedia(step.output, key)) {
+        if (wanted.has(asset.id) && !found.has(asset.id)) found.set(asset.id, { ...asset, kind });
+      }
+    }
+  }
+  return [...wanted].flatMap((id) => (found.has(id) ? [found.get(id)!] : []));
+}
 
 /** Per-job progress of a step that makes one file per scene or image; null for single-job steps. */
 export function outputJobs(output: Record<string, unknown> | null | undefined) {

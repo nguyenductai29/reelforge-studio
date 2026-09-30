@@ -3,7 +3,7 @@
 The caller owns the transaction. A final decision is inserted once per paid job
 (migration 0012), never edited. Legacy jobs keep their original accounting
 references (``reserve:<run>`` for video, ``text-reserve:<step>`` for text); jobs
-queued per operation (images, multi-scene and new single video) carry their own
+queued per operation (images, voice, multi-scene and new single video) carry their own
 references in the payload (app/workflow/nodes/media.py). A step with several
 jobs keeps each job's facts under ``output["jobs"][<job_id>]``; each uncertain
 job is listed and decided on its own, and the step leaves ``needs_attention``
@@ -25,7 +25,7 @@ from app.models import (Asset, CreditAccount, CreditLedger, CreditReconciliation
 from app.workflow.results import derive_run_status
 
 logger = logging.getLogger(__name__)
-PAID_KINDS = {"video.generate": "video", "text.generate": "text", "image.generate": "image"}
+PAID_KINDS = {"video.generate": "video", "text.generate": "text", "image.generate": "image", "voice.generate": "voice"}
 
 
 class ReconciliationError(ValueError):
@@ -100,7 +100,7 @@ def paid_reservation(db, job, step, run) -> PaidReservation:
     workflow, project = db.get(Workflow, run.workflow_id), db.get(Project, run.project_id)
     if not workflow or not project or workflow.workspace_id != run.workspace_id or project.workspace_id != run.workspace_id:
         raise ReconciliationError("Run relationships do not match the workspace")
-    if (kind in ("video", "image") and step.node_type != kind) or (kind == "text" and step.node_type != payload.get("node_type")):
+    if (kind in ("video", "image", "voice") and step.node_type != kind) or (kind == "text" and step.node_type != payload.get("node_type")):
         raise ReconciliationError("Paid job does not match the step type")
     reserve, usage_reference, refund = _references(kind, payload, step, run)
     ledger = db.scalar(select(CreditLedger).where(CreditLedger.reference == reserve))

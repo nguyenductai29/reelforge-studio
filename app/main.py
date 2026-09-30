@@ -32,6 +32,7 @@ from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default
 from app.workflow.config import ConfigError, check_tools
 from app.workflow.nodes import ReviewNodeHandler
 from app.workflow.results import produced_asset_ids
+from app.subtitles import CONTENT_TYPES as SUBTITLE_TYPES
 from app.workflow.ports import DATA_TYPES, describe_node_types, edge_problems, normalize_edges
 
 
@@ -1230,7 +1231,9 @@ def retry_workflow_run(run_id: str, request: Request):
         refunded = db.scalar(select(CreditReconciliation.step_id).join(
             WorkflowRunStep, CreditReconciliation.step_id == WorkflowRunStep.id).where(
             WorkflowRunStep.run_id == original.id, CreditReconciliation.decision == "refunded"))
-        if refunded and db.scalar(select(Asset.id).where(Asset.run_id == original.id)):
+        # Subtitle files are made locally for free, so only generated media blocks the retry.
+        if refunded and db.scalar(select(Asset.id).where(Asset.run_id == original.id,
+                                                          Asset.content_type.notin_(SUBTITLE_TYPES))):
             raise HTTPException(409, "A reconciled run with generated media cannot be retried; start a new run")
         approved_review = db.scalar(select(WorkflowRunStep.id).where(
             WorkflowRunStep.run_id == original.id,

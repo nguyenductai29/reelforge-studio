@@ -73,6 +73,17 @@ sudo apt install -y python3.14-venv
 
 If the installed Python version is different, install the matching `pythonX.Y-venv` package.
 
+The Render step (Phase 8) needs FFmpeg and, for burned-in Vietnamese or Japanese subtitles, fonts that cover them:
+
+```bash
+sudo apt install -y ffmpeg fonts-noto-core fonts-noto-cjk
+ffmpeg -version | head -1
+ffprobe -version | head -1
+fc-list : family | grep -i "noto sans" | head -3
+```
+
+The API and every worker check that `ffmpeg` and `ffprobe` exist before they queue a render, so install FFmpeg on the machine that runs them (or set `RENDER_FFMPEG_PATH` / `RENDER_FFPROBE_PATH` in the shared runtime file). ReelForge never bundles FFmpeg.
+
 ---
 
 ## 2. Clone the deployment branch
@@ -724,6 +735,49 @@ It needs `RUNWAYML_API_SECRET` and `RUNWAY_OUTPUT_HOSTS` (the same Runway creden
 
 Multi-scene video needs no new process: the video worker also runs the one-clip-per-scene jobs (see `docs/MULTI_SCENE_VIDEO.md`).
 
+### Voice worker
+
+The voice worker runs Voice steps: one narration for a script, or one per scene (see `docs/VOICE_GENERATION.md`). Create `/etc/systemd/system/reelforge-voice-worker.service` with the same contents as the video worker, changing only these two lines:
+
+```ini
+Description=ReelForge Studio Voice Worker
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.voice_worker
+```
+
+Enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable reelforge-voice-worker
+sudo systemctl start reelforge-voice-worker
+journalctl -u reelforge-voice-worker -f
+```
+
+It needs `GEMINI_API_KEY` (the same key Gemini text uses), and optionally `VOICE_CREDITS_PER_GENERATION` (default 1 credit per narration) and `VOICE_JOB_MAX_AGE_SECONDS` (default 1800), from the same `EnvironmentFile`.
+
+### Render worker
+
+The render worker joins clips, narration and subtitles into the final MP4 with FFmpeg (see `docs/RENDERING.md`). Install FFmpeg and the fonts first (section 1), then create `/etc/systemd/system/reelforge-render-worker.service` with the same contents as the video worker, changing only these two lines:
+
+```ini
+Description=ReelForge Studio Render Worker
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.render_worker
+```
+
+Check the tools and font, then enable it:
+
+```bash
+cd /home/tai/apps/reelforge-studio && .venv/bin/python -m app.render_worker --check
+sudo systemctl daemon-reload
+sudo systemctl enable reelforge-render-worker
+sudo systemctl start reelforge-render-worker
+journalctl -u reelforge-render-worker -f
+```
+
+Rendering is local and free by default (`RENDER_CREDITS_PER_JOB=0`). `RENDER_TIMEOUT_SECONDS` (default 1800) stops a stuck FFmpeg. Temporary files live in `<media>/.render-tmp/<job_id>` and are removed after each render; a folder left by a killed worker can be deleted when no render is running. Render uses CPU heavily: on a small server, keep one render worker.
+
+Subtitles need no worker: the Subtitle step writes its SRT/VTT file while the run advances.
+
 ---
 
 ## 13. YouTube worker systemd service
@@ -956,6 +1010,12 @@ if systemctl is-enabled --quiet reelforge-text-worker 2>/dev/null; then
   sudo systemctl restart reelforge-text-worker
 fi
 
+for worker in image voice render; do
+  if systemctl is-enabled --quiet "reelforge-$worker-worker" 2>/dev/null; then
+    sudo systemctl restart "reelforge-$worker-worker"
+  fi
+done
+
 if systemctl is-enabled --quiet reelforge-youtube-worker 2>/dev/null; then
   sudo systemctl restart reelforge-youtube-worker
 fi
@@ -1011,6 +1071,13 @@ Text worker:
 ```bash
 sudo systemctl restart reelforge-text-worker
 journalctl -u reelforge-text-worker -f
+```
+
+Image, voice and render workers:
+
+```bash
+sudo systemctl restart reelforge-image-worker reelforge-voice-worker reelforge-render-worker
+journalctl -u reelforge-render-worker -f
 ```
 
 YouTube worker:

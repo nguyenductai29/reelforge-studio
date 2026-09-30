@@ -12,15 +12,17 @@ The balance is debited when a paid step is queued, in the same transaction as th
 | Finalize usage | `<kind>:<step_id>:<operation>` | `video:<step_id>` | `text:<step_id>` | none; append a usage event |
 | Refund | `<kind>-refund:<step_id>:<operation>` | `refund:<run_id>` | `text-refund:<step_id>` | plus exactly reserved credits |
 
-`<kind>` is `video` or `image`, and `<operation>` names one paid provider call:
+`<kind>` is `video`, `image` or `voice` (Phase 6), and `<operation>` names one paid provider call:
 
 - `scene:<n>`: one scene's clip or image;
 - `image:<n>`: the n-th image of one prompt;
-- `single`: one clip.
+- `single`: one clip or one narration.
 
-Every video or image job carries its three references in its payload. Reconciliation accepts them only when they name that job's step and operation. Video jobs queued before Phase 5 carry no references and keep the per-run references in the "Legacy video" column. Those incidents and their past decisions still resolve unchanged. Text keeps its step-based references. See `docs/IMAGE_GENERATION.md` and `docs/MULTI_SCENE_VIDEO.md`.
+Every video, image or voice job carries its three references in its payload. Reconciliation accepts them only when they name that job's step and operation. Video jobs queued before Phase 5 carry no references and keep the per-run references in the "Legacy video" column. Those incidents and their past decisions still resolve unchanged. Text keeps its step-based references. See `docs/IMAGE_GENERATION.md` and `docs/MULTI_SCENE_VIDEO.md`.
 
-A step that makes several files (one per scene or image) has one job per file. Its credits are reserved together, after checking that the balance covers all of them, so the step never holds part of its cost.
+A step that makes several files (one per scene or image) has one job per file.
+
+Voice narrations (`docs/VOICE_GENERATION.md`) follow the same rules as images: a definite rejection is refunded, while a lost response, a provider error after sending, or an invalid or empty answer is held and decided per narration. Rendering (`docs/RENDERING.md`) calls no paid provider: it is free by default, and with `RENDER_CREDITS_PER_JOB` set, a failed render is always refunded (`render-refund:<step>:final`), so it never needs reconciliation. Subtitles are free. Its credits are reserved together, after checking that the balance covers all of them, so the step never holds part of its cost.
 
 `reserved → charged` and `reserved → refunded` are mutually exclusive outcomes. `needs_attention` means the reservation is still awaiting a decision, not that the provider definitely charged. The credit amount is checked against the original debit and immutable job quote; the operator cannot enter a different amount.
 

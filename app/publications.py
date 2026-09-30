@@ -75,12 +75,13 @@ def _approved_review(db: Session, *, workspace_id: str, run_id: str, asset_id: s
                                          Asset.content_type == "video/mp4", Asset.bytes > 0))
     if asset is None:
         raise ValueError("asset is not a generated MP4 for this run and workspace")
+    # A final render (Phase 8) or a generated clip; both are MP4s from a completed step of this run.
     video_step = db.scalar(select(WorkflowRunStep).where(WorkflowRunStep.id == asset.step_id,
                                                        WorkflowRunStep.run_id == run_id,
-                                                       WorkflowRunStep.node_type == "video",
+                                                       WorkflowRunStep.node_type.in_(("video", "render")),
                                                        WorkflowRunStep.status == "completed"))
     if video_step is None:
-        raise ValueError("asset is not linked to a completed video step")
+        raise ValueError("asset is not linked to a completed video or render step")
     reviews = db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run_id,
                                                         WorkflowRunStep.node_type == "review",
                                                         WorkflowRunStep.status == "completed")

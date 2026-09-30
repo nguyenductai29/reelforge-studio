@@ -4,7 +4,9 @@
 > Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)), for Phase 3.5, the node configuration inspector (see [Phase 3.5 changes](#phase-35-changes)), and for Phase 3.6, runtime hardening and live smoke-test tooling (see [Phase 3.6 changes](#phase-36-changes) and [Live Provider Verification](#live-provider-verification)).
 > Line numbers drift, so items anchor on file and function names.
 
-> Phases 4 and 5 add AI image generation (Runway `gen4_image`) and multi-scene video (one clip per scene), with one job, one credit reservation and one reconciliation decision per image or clip; see [Phase 4 and 5 changes](#phase-4-and-5-changes), [IMAGE_GENERATION.md](IMAGE_GENERATION.md) and [MULTI_SCENE_VIDEO.md](MULTI_SCENE_VIDEO.md). Both use offline tests only; no paid call was made.
+> Phases 4 and 5 add AI image generation (Runway `gen4_image`) and multi-scene video (one clip per scene), with one job, one credit reservation and one reconciliation decision per image or clip; see [Phase 4 and 5 changes](#phase-4-and-5-changes), [IMAGE_GENERATION.md](IMAGE_GENERATION.md) and [MULTI_SCENE_VIDEO.md](MULTI_SCENE_VIDEO.md). The operator has since live-verified Runway `gen4_image` in scene mode, Runway `gen4.5` in multi-scene mode, `Idea → AI Writer → Scene Splitter → Image (3) + Video (3) → Review` and its credit accounting.
+
+> Phases 6, 7 and 8 add text-to-speech (Gemini TTS, one narration per script or scene), local SRT/WebVTT subtitles, and an FFmpeg render that joins the clips, narration and burned-in subtitles into one final MP4 that Review previews and publishing prefers; see [Phase 6, 7 and 8 changes](#phase-6-7-and-8-changes), [VOICE_GENERATION.md](VOICE_GENERATION.md), [SUBTITLES.md](SUBTITLES.md) and [RENDERING.md](RENDERING.md). They use offline tests only; no paid call and no real FFmpeg run were made here, because FFmpeg is not installed on the development machine.
 
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
@@ -27,7 +29,10 @@ Each item uses the same fields:
 | Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `ports.py`, `config.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler, which declares typed input and output ports and its settings. Before each handler runs, the executor checks the node's settings and resolves its inputs from edges, config and project context; the handler returns a standard result. Long work is queued as a durable job (F10, F12, F13). |
 | Video worker | `app/video_worker.py` (`python -m app.video_worker`) | Claims `video:*` jobs, then submits, polls, downloads and stores a private MP4 asset. A single clip is tracked on its step; clips made one per scene run through the shared child-job engine (Phase 5). It records usage and reports the finished step to the executor, which continues the run. |
 | Image worker | `app/image_worker.py` (`python -m app.image_worker`) | Claims `image:*` jobs (one per image) and stores private PNG/JPEG/WEBP assets after checking their bytes (Phase 4). |
-| Child-job engine | `app/media_jobs.py`, `app/workflow/nodes/media.py` | One paid job per image or scene clip, each with its own credit references, and step settlement once every job has finished (Phases 4–5). |
+| Child-job engine | `app/media_jobs.py`, `app/workflow/nodes/media.py` | One paid job per image, scene clip or narration, each with its own credit references, and step settlement once every job has finished (Phases 4–6). Providers that answer with the file itself (text-to-speech) skip polling. |
+| Voice worker | `app/voice_worker.py` (`python -m app.voice_worker`), `app/providers/voice/`, `app/audio_files.py` | Claims `voice:*` jobs (one per narration), calls Gemini TTS and stores checked WAV assets (Phase 6). |
+| Subtitles | `app/subtitles.py`, `app/workflow/nodes/subtitle.py` | Deterministic cue timing and SRT/WebVTT files, written while the run advances; no worker (Phase 7). |
+| Render worker | `app/render_worker.py` (`python -m app.render_worker`), `app/render.py` | Claims `render:*` jobs and runs system FFmpeg without a shell in a private folder, storing the final MP4 (Phase 8). |
 | Image providers | `app/providers/image/` (`base.py`, `runway.py`), `app/image_files.py` | Provider-neutral `ImageGenerationProvider`; Runway `gen4_image`; download and signature checks for image files. |
 | Video providers | `app/providers/{fal,runware,replicate,runway,dola}.py`, `app/providers/catalog.py` | One text-to-video model per adapter. Each adapter validates the request and checks provider and media URLs (SSRF guard). The catalog is the single provider map (module, client, credential) shared by the API, the video handler and the worker. |
 | Text providers | `app/providers/text/` (`base.py`, `openai.py`, `anthropic.py`, `gemini.py`) | One `TextGenerationProvider` interface; each adapter calls its vendor's HTTP API with `httpx` and returns a normalized `TextResult` (F11). |
@@ -69,13 +74,17 @@ Project (title/topic)
        submit → poll → download → check PNG/JPEG/WEBP bytes → Asset + UsageEvent; the step settles when all jobs end
   └─ video_worker.run_one()                  (one job per clip: single, or one per scene)
        submit → poll every 10 s → download → validate MP4 → Asset + UsageEvent
+  └─ voice_worker.run_one()                  (one job per narration: a script, or one per scene)
+       generate → check WAV/MP3 bytes → Asset + UsageEvent; then Subtitle writes its SRT/VTT during advance_run()
+  └─ render_worker.run_one()                 (one job per Render step, once clips, narration and subtitles exist)
+       ffprobe → ffmpeg (concat, narration, burned subtitles) → validate MP4 → Asset
        WorkflowExecutor.finish_step() → advance_run(): review → awaiting_review
   └─ POST /api/workflow-runs/{id}/approve     review completed → advance_run() · project.status = approved
   └─ POST /api/youtube/publications          Publication + job
   └─ youtube_worker.run_one()                private resumable upload → remote video ID
 ```
 
-The editor saves and displays the remaining node types (script, voice, music, subtitle, render, publish). Each has a registered placeholder handler that declares its future ports and blocks the step with a reason; none of them does real work yet.
+The editor saves and displays the remaining node types (script, music, publish). Each has a registered placeholder handler that declares its future ports and blocks the step with a reason; none of them does real work yet.
 
 ### Phase 1 changes
 
@@ -329,6 +338,51 @@ Phase 4 makes the Image node executable. Phase 5 makes the Video node produce on
   - No live paid request and no live database migration was performed.
   - The PostgreSQL branch of migration 0012 (dropping the step primary key by its reflected name) is untested without a disposable PostgreSQL database.
 
+### Phase 6, 7 and 8 changes
+
+These phases turn the scene-aware workflow into one final video. No completed phase was redesigned: text, image and video jobs, credits and reconciliation, and the UI keep their behavior. Music, voice cloning, speech recognition, publishing executors and scheduling are not part of this work.
+
+- **Voice (Phase 6):**
+  - `app/providers/voice/` defines a provider-neutral `VoiceGenerationProvider`. The adapter is Google Gemini TTS (`gemini-2.5-flash-preview-tts` and `gemini-2.5-pro-preview-tts`, 30 prebuilt voices, delivery presets), chosen because `GEMINI_API_KEY` is already configured and live-verified.
+  - The PCM response is wrapped in WAV. `app/audio_files.py` checks WAV and MP3 by their bytes and computes the WAV duration.
+  - The Voice node (`app/workflow/nodes/voice.py`) reads, in order: the text override, then connected text (one narration), then scenes (one narration per scene from `scene.text`, never joined, `scene_index` kept). The project topic is never read.
+  - Job kind `voice.generate`, keys `voice:<step>:single` and `voice:<step>:scene:<n>`, references `voice-reserve|voice|voice-refund:<step>:<op>`, price `VOICE_CREDITS_PER_GENERATION` (default 1).
+  - `app/media_jobs.py` gained a synchronous path (`MediaKind.generate`): generate → validate → store. Ambiguous outcomes go to per-narration reconciliation (`voice.generate` is a paid kind).
+- **Subtitles (Phase 7):**
+  - `app/subtitles.py` times cues by narration, then clips, then scene estimates, then reading speed, and wraps them by characters and lines.
+  - It escapes line breaks, `-->` and WebVTT markup, and writes SRT or WebVTT.
+  - The Subtitle node writes the file as a private asset (provider `local`) during the executor pass. The file is deleted if the transaction rolls back.
+  - Its `subtitle_asset` output carries the cues, the scene spans and the burn-in style. It is free, with no job and no worker.
+  - Subtitle files do not block a retry after a refund.
+- **Render (Phase 8):**
+  - The Render node (`app/workflow/nodes/render.py`) checks, before queueing: the input assets and their files, FFmpeg and ffprobe, the subtitle font (`fc-list`), storage, and the optional price.
+  - It freezes the clip order, narration and cues in a `render.generate` job (`render:<step>:final`).
+  - `app/render_worker.py` probes the clips and re-times the subtitles onto the clips.
+  - It runs one FFmpeg argument list (no shell, `cwd` = `<media>/.render-tmp/<job_id>`):
+    - scale and pad to the first clip, 30 fps, concat;
+    - narration per scene padded or cut to each clip, with the clip audio muted; else one narration for the whole video; else the clip audio;
+    - `subtitles` burn-in with `force_style`;
+    - H.264/AAC `+faststart`.
+  - It checks the MP4 and stores it (provider `ffmpeg`, model `local`, `final: true` in `video_assets`).
+  - Failures are final and refunded (never reconciled); FFmpeg messages are shown without paths. Rendering is free by default (`RENDER_CREDITS_PER_JOB=0`).
+- **Review and publishing:**
+  - Review after Render previews the final video only.
+  - The API accepts MP4s from completed `render` steps for publishing.
+  - The frontend's `approvedAsset` prefers a final render over clips.
+- **Frontend:**
+  - Voice shows a player (single) or a segment count and progress.
+  - Subtitle shows its first cues, and the inspector adds format, cue count, timing source, download and a cue preview.
+  - Render shows the final video and its length, and the inspector adds input counts, audio policy, resolution, download and the FFmpeg error.
+  - The Review inspector previews the media awaiting approval.
+  - The Models page has a Gemini TTS preset. Strings are in vi, en and ja; two image hints misplaced in Phase 4 were moved back to `config.hints`.
+- **Tools and operations:**
+  - `python -m app.provider_check --only voice`, `python -m app.smoke_test voice --live` and `python -m app.render_worker --check`.
+  - `run-report` compares voice settings.
+  - New systemd units `reelforge-voice-worker` and `reelforge-render-worker`, restarted by `deploy.sh`.
+  - FFmpeg and Noto fonts are installation prerequisites.
+- **Schema:** no migration. Assets, jobs, ledger and usage tables already fit; the newest migration is still `0012_job_reconciliation`.
+- **Tests:** `tests/test_voice_provider.py`, `tests/test_voice_nodes.py`, `tests/test_voice_worker.py`, `tests/test_subtitles.py`, `tests/test_render.py`, `tests/test_render_worker.py`. The render tests include a real FFmpeg render of synthetic media, skipped where FFmpeg is missing.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -338,14 +392,15 @@ Phase 4 makes the Image node executable. Phase 5 makes the Video node produce on
   - Video provider keys: `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, `RUNWAYML_API_SECRET`, `DOLA_API_KEY`.
   - Text provider keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`.
   - Provider settings: `DOLA_EXPERIMENTAL_ENABLED`, `DOLA_BASE_URL`, `DOLA_MEDIA_BASE_URL`, `DOLA_MAX_JOB_AGE_SECONDS`, `RUNWAY_OUTPUT_HOSTS`.
-  - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `IMAGE_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `IMAGE_JOB_MAX_AGE_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
+  - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `IMAGE_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `IMAGE_JOB_MAX_AGE_SECONDS`, `VOICE_CREDITS_PER_GENERATION`, `VOICE_JOB_MAX_AGE_SECONDS`, `RENDER_CREDITS_PER_JOB`, `RENDER_TIMEOUT_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
+  - Rendering: `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`, `RENDER_SUBTITLE_FONT`.
   - YouTube OAuth: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `REELFORGE_TOKEN_ENCRYPTION_KEY`.
   - Runtime file and logs: `REELFORGE_ENV_FILE` (default `.env.runtime`), `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL`.
-  - Live smoke tests: `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`, `REELFORGE_SMOKE_IMAGE_PROVIDER`, `REELFORGE_SMOKE_IMAGE_MODEL`; `REELFORGE_LIVE_TESTS=1` and `REELFORGE_LIVE_VIDEO=1` only from the shell.
+  - Live smoke tests: `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`, `REELFORGE_SMOKE_IMAGE_PROVIDER`, `REELFORGE_SMOKE_IMAGE_MODEL`, `REELFORGE_SMOKE_VOICE_PROVIDER`, `REELFORGE_SMOKE_VOICE_MODEL`; `REELFORGE_LIVE_TESTS=1` and `REELFORGE_LIVE_VIDEO=1` only from the shell.
   - Tests only: `REELFORGE_TEST_DATABASE_URL`.
 - **`.env.runtime`** (git-ignored; template `.env.runtime.example`): the environment variables above, loaded by every process (Phase 3.6).
 - **`frontend/instance/config.json`:** `api_base_url`.
-- **Deployment:** systemd units for the API, frontend, video worker, text worker, image worker and YouTube worker (`docs/home-server-deployment.md`, `deploy.sh`).
+- **Deployment:** systemd units for the API, frontend, video worker, text worker, image worker, voice worker, render worker and YouTube worker (`docs/home-server-deployment.md`, `deploy.sh`). System FFmpeg and Noto fonts for rendering.
 
 ### Where each audited area is covered
 
@@ -354,7 +409,7 @@ Phase 4 makes the Image node executable. Phase 5 makes the Video node produce on
 | 1 | Workflow graph persistence | Fully implemented, including per-node `config` (edited in the inspector since Phase 3.5) and edge ports | F1, F13 |
 | 2 | Workflow execution engine | Fully implemented (modular executor and registry); some run semantics still partial | F10, P1 |
 | 2b | Typed data passing between nodes | Fully implemented (ports, legacy fallback, required inputs) | F12 |
-| 3 | Node types | Partial (19 registered; 13 do real work) | P2, U2, U3 |
+| 3 | Node types | Partial (19 registered; 16 do real work) | P2, U2, U3 |
 | 4 | Job architecture | Fully implemented (core) | F3 |
 | 5 | Video generation providers | Partial | P3 |
 | 5b | Text generation providers | Fully implemented; Gemini live-verified by the operator, other providers mock-tested | F11 |
@@ -385,7 +440,9 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 | Runware | video | `bytedance:seedance@2.5` | yes | no | — | Mock tested only |
 | Replicate | video | `google/veo-3.1-fast` | yes | no | — | Mock tested only |
 | Runway Dev | video | `gen4.5` | yes | yes, operator-confirmed | Not supplied | Video generation and full workflow passed |
-| Runway Dev | image | `gen4_image` | yes | no | — | Mock tested only (`python -m app.smoke_test image --live` not run) |
+| Runway Dev | image | `gen4_image` | yes | yes, operator-confirmed | Not supplied | Scene mode and the Image + Video workflow passed, with credit accounting |
+| Gemini | voice | `gemini-2.5-flash-preview-tts` | yes | no | — | Mock tested only (`python -m app.smoke_test voice --live` not run) |
+| FFmpeg (local) | render | system `ffmpeg` | yes (fake runner) | no | — | Real render test skipped: FFmpeg not installed on the development machine |
 | Dola (experimental) | video | `seedance-2.0`, `seedance-2.5` | yes | no | — | Mock tested only; out of scope |
 | YouTube Data API | publishing | — | yes | no | — | Mock tested only |
 
@@ -791,7 +848,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
     - Phase 3.5 fixed the frozen payload when a text branch starts beside the video (it used to freeze the text job).
 - **Missing:**
   - One worker process per job kind (`video`, `text`, `image`). Images and scene clips share the child-job engine (`app/media_jobs.py`); text and single clips keep their own loops.
-  - Clips made one per scene are not joined into one video; that waits for the render phase.
+  - Clips made one per scene are joined only by a Render step (Phase 8); a Video step alone still outputs separate clips.
   - A retry regenerates every scene and image; successful files of the failed run are not reused, and there is no per-scene retry.
   - Credits for later steps are held only when those steps become ready. A run can therefore start and then block part-way on `insufficient_credits`; readiness shows the total up front.
   - Run cancellation and re-running a single step.
@@ -803,7 +860,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 ### P2. Node types
 
 - **Files:** `app/workflow/registry.py` (`build_default_registry`), `app/workflow/nodes/*.py`, `app/main.py` (`NODE_TYPES`), `frontend/src/lib/workflow.ts` (`kindOf`, `nodeLibrary`, `EXECUTABLE`, `workflowTemplates`), `frontend/src/components/workflow/studio-node.tsx`.
-- **Current:** all 19 node types the API accepts are registered, each with typed ports (F12). Thirteen of them do real work:
+- **Current:** all 19 node types the API accepts are registered, each with typed ports (F12). Sixteen of them do real work:
 
   | Type | Handler | Backend behavior | Notes |
   | --- | --- | --- | --- |
@@ -813,16 +870,18 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
   | `ai_writer`, `summarize`, `rewrite`, `translate`, `hook`, `title`, `cta` | Text handlers (F11) | Durable text job | Outputs `script` / `summary` / `text` / `hook` / `title` / `cta`, plus `provider`, `model`, `usage`, `language` |
   | `video` | `VideoNodeHandler` | Durable provider job per clip | One clip, or one per scene (Phase 5); model, aspect ratio, clip length and prompt override are node settings |
   | `image` | `ImageNodeHandler` | Durable provider job per image | One image per scene, or 1–4 from a prompt (Phase 4); Runway `gen4_image` |
+  | `voice` | `VoiceNodeHandler` | Durable provider job per narration | One narration, or one per scene (Phase 6); Gemini TTS |
+  | `subtitle` | `SubtitleNodeHandler` | Completes locally, free | SRT/WebVTT file asset timed by narration, clips or scenes (Phase 7) |
+  | `render` | `RenderNodeHandler` | Durable local FFmpeg job | One final MP4 from clips, narration and subtitles (Phase 8) |
   | `review` | `ReviewNodeHandler` | `awaiting_review` when a parent created media, then the approve endpoint; otherwise `blocked` | Always manual |
   | `publish` | `PendingServiceHandler` | Always `blocked` | Publishing is a separate manual flow (P7) |
-  | `subtitle`, `render` | `PendingServiceHandler` | Always `blocked` | "No executor" |
-  | `script`, `voice`, `music` | `PendingAITaskHandler` | Always `blocked` | "Provider not connected" or "no AI tool selected" |
+  | `script`, `music` | `PendingAITaskHandler` | Always `blocked` | "Provider not connected" or "no AI tool selected" |
   | any other type | `UnsupportedNodeHandler` | `blocked`, `error.code = unsupported_node_type` | Only reachable from old snapshots |
 
   - **Library:** 60 entries. 19 map to backend types; the other 41 are "Sắp có" (U2).
   - **Templates:** 4 of 10 have runnable graphs. `social-video`, `youtube-short` and `tiktok-video` are all `idea → video → review`; the fourth is `blank`.
 - **Missing:**
-  - Real handlers for 6 types. Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
+  - Real handlers for 3 types (`script`, `music`, `publish`). Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
   - No template uses the text or scenes nodes yet.
 - **Depends on:** F10, P1, F13, P5.
 
@@ -1164,13 +1223,13 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 ### M2. Executors for script, image, voice, music, subtitle, render and publish
 
 - **Files to change:** new handlers in `app/workflow/nodes/` registered in `app/workflow/registry.py`, a generalized worker (today `app/video_worker.py` and `app/text_worker.py`) that reports through `WorkflowExecutor.finish_step`, and new provider modules.
-- **Current:** image generation (Phase 4) and one clip per scene (Phase 5) are done; see [Phase 4 and 5 changes](#phase-4-and-5-changes). The six other node types have placeholder handlers that always return `blocked`, but they already declare their ports (F12). Text generation (F11) and rule-based scene splitting (F12) exist.
+- **Current:** image generation (Phase 4), one clip per scene (Phase 5), voice (Phase 6), subtitles (Phase 7) and FFmpeg render (Phase 8) are done; see [Phase 4 and 5 changes](#phase-4-and-5-changes) and [Phase 6, 7 and 8 changes](#phase-6-7-and-8-changes). The three other node types have placeholder handlers that always return `blocked`, but they already declare their ports (F12). Text generation (F11) and rule-based scene splitting (F12) exist.
 - **Missing:**
   - Script generation: `script` can subclass `TextNodeHandler`. That is a product decision, since it would start charging existing workflows.
   - An AI scene splitter with better visual prompts, using JSON output from the text layer, in place of the rule-based one.
-  - Text-to-speech and music.
-  - Subtitles, generated from the script or with speech recognition.
-  - FFmpeg render and compose: timeline, captions and audio mix.
+  - Music generation and mixing a music bed under the narration.
+  - Subtitles aligned to speech (speech recognition or forced alignment); Phase 7 times them by narration, clip or scene length.
+  - Image slideshows and transitions in Render; Phase 8 joins video clips only.
   - A publish executor that queues a publication after approval.
   - A price and a job kind for every paid executor.
 - **Depends on:**

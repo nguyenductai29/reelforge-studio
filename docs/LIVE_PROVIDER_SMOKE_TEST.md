@@ -23,7 +23,7 @@ cp .env.runtime.example .env.runtime        # PowerShell: Copy-Item .env.runtime
 Every process loads the same file at startup:
 
 - the API, in its lifespan;
-- `python -m app.text_worker`, `app.image_worker`, `app.video_worker` and `app.youtube_worker`;
+- `python -m app.text_worker`, `app.image_worker`, `app.video_worker`, `app.voice_worker`, `app.render_worker` and `app.youtube_worker`;
 - `python -m app.provider_check` and `app.smoke_test`.
 
 `REELFORGE_ENV_FILE=/path/to/file` selects another file. A variable already set in the process wins over the file. The format is systemd's `EnvironmentFile`: `KEY=value` lines, `#` comments and no `export`, so production can point every unit at the same file.
@@ -33,7 +33,9 @@ Every process loads the same file at startup:
 | Text provider (one of) | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` |
 | Video provider (one of) | `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, `RUNWAYML_API_SECRET` + `RUNWAY_OUTPUT_HOSTS` |
 | Image provider (optional) | `RUNWAYML_API_SECRET` + `RUNWAY_OUTPUT_HOSTS` |
-| Choice for the smoke tests (optional) | `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`, `REELFORGE_SMOKE_IMAGE_PROVIDER`, `REELFORGE_SMOKE_IMAGE_MODEL` |
+| Voice provider (optional) | `GEMINI_API_KEY` |
+| Render (optional) | FFmpeg and ffprobe on `PATH` (or `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`), `RENDER_SUBTITLE_FONT` |
+| Choice for the smoke tests (optional) | `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`, `REELFORGE_SMOKE_IMAGE_PROVIDER`, `REELFORGE_SMOKE_IMAGE_MODEL`, `REELFORGE_SMOKE_VOICE_PROVIDER`, `REELFORGE_SMOKE_VOICE_MODEL` |
 | Prices in credits (optional) | `VIDEO_CREDITS_PER_CLIP` (default 10), `TEXT_CREDITS_PER_GENERATION` (default 1), `IMAGE_CREDITS_PER_GENERATION` (default 2) |
 | Logs (optional) | `REELFORGE_LOG_FORMAT` (`json` or `text`), `REELFORGE_LOG_LEVEL` (default `INFO`) |
 | Permission to spend | `REELFORGE_LIVE_TESTS=1`, set in the shell for one command. Setting it in `.env.runtime` has no effect. |
@@ -71,6 +73,14 @@ Workflow runs use the node's clip length: 4, 6 or 8 s, or the model default of 8
 
 See `docs/IMAGE_GENERATION.md`.
 
+## Supported Voice Provider
+
+| Provider | Key | Model | Cheapest smoke request |
+| --- | --- | --- | --- |
+| Google Gemini TTS | `GEMINI_API_KEY` | `gemini-2.5-flash-preview-tts` | one short sentence, voice `Kore`, WAV |
+
+See `docs/VOICE_GENERATION.md`. Rendering calls no provider; check it with `python -m app.render_worker --check` (see `docs/RENDERING.md`).
+
 ## Pre-flight Check
 
 ```bash
@@ -78,9 +88,11 @@ python -m app.provider_check
 python -m app.provider_check --text openai --text-model gpt-4.1-mini --video runware
 python -m app.provider_check --only video
 python -m app.provider_check --only image
+python -m app.provider_check --only voice
+python -m app.render_worker --check
 ```
 
-The image check runs only with `--only image`, `--image <provider>` or `REELFORGE_SMOKE_IMAGE_PROVIDER`; by default the pre-flight covers text and video.
+The image and voice checks run only when asked for (`--only`, `--image`/`--voice`, or `REELFORGE_SMOKE_IMAGE_PROVIDER`/`REELFORGE_SMOKE_VOICE_PROVIDER`); by default the pre-flight covers text and video.
 
 Example output:
 
@@ -153,6 +165,15 @@ It sends one request ("A small red paper boat on a calm blue lake, soft morning 
 
 It prints the provider, model, task ID, dimensions, file size and elapsed time. The file is not added to workspace media.
 
+## Direct Voice Smoke Test
+
+```bash
+REELFORGE_LIVE_TESTS=1 python -m app.smoke_test voice
+python -m app.smoke_test voice --live --voice Puck --text "Xin chào các bạn"
+```
+
+It sends one text-to-speech request (a short Vietnamese and English sentence by default) and prints the model, the response ID, the audio duration and size, and the latency. The WAV is saved under `instance/smoke-tests/` after its bytes are checked. It never retries.
+
 To run both through unittest: `REELFORGE_LIVE_TESTS=1 python -m unittest tests.test_live_providers -v` runs the text test. Add `REELFORGE_LIVE_VIDEO=1` for the video test. Without the flags, both are skipped.
 
 ## Full Workflow Smoke Test
@@ -168,6 +189,10 @@ python -m app.text_worker
 python -m app.video_worker
 # Terminal 3b (only for Image steps): image worker
 python -m app.image_worker
+# Terminal 3c (only for Voice steps): voice worker
+python -m app.voice_worker
+# Terminal 3d (only for Render steps; needs FFmpeg): render worker
+python -m app.render_worker
 # Terminal 4: frontend
 cd frontend && npm run dev
 # Terminal 5 (only to publish): YouTube worker
@@ -191,15 +216,16 @@ Steps (the UI labels are the English ones; Vietnamese is the default language):
 11. Create or open a workflow with `Idea → AI Writer → Scene Splitter → Video → Review`, connected port to port: Topic → Prompt, Script → Script, Scenes → Scenes, Video → Media.
 12. Select **AI Writer** and set Language, Tone, Target platform, Target duration, Additional instructions and AI model in the inspector.
 13. Select **Video** and set AI model, Aspect ratio, Clip duration (4 s keeps the cost down) and, optionally, Prompt override. With Scenes connected and no Prompt override, the step makes **one paid clip per scene**. To keep the test to one clip, set the Scene Splitter's **Maximum scenes** to 1 or give the Video step a Prompt override (see `docs/MULTI_SCENE_VIDEO.md`).
-14. Click **Save**. The header shows "Saved".
-15. Before running, each node shows **Ready**, and the Run dialog lists no problems and shows the credit estimate. Click **Run workflow**, pick the project, then **Start run**.
-16. **AI Writer** goes **Queued → Running → Completed**, and its text appears on the node and in the inspector. Idea is Completed immediately.
-17. **Scene Splitter** becomes **Completed** as soon as the script arrives. It is free and runs on the server.
-18. **Video** becomes **Queued**. The editor polls every 5 s.
-19. The video worker submits the job: the step shows **Running** until the provider finishes (usually a few minutes), then **Completed**.
-20. The MP4 preview plays on the Video node and in the inspector.
-21. **Review** becomes **Needs Review**, and the run shows the same status.
-22. Click **Approve video**. Review becomes **Completed** and the run **Completed**.
+14. Optional, for the final video (Phases 6–8): add **Voice** (Scenes → Scenes), **Subtitle** (Scenes → Scenes, Voice's Audio → Audio) and **Render** (Video → Media, Voice → Audio, Subtitle → Subtitle), and connect Render → Review instead of Video → Review. Enable a Voice model (Google · Gemini 2.5 Flash TTS) and start the voice and render workers. Voice costs one narration per scene; Subtitle and Render are free.
+15. Click **Save**. The header shows "Saved".
+16. Before running, each node shows **Ready**, and the Run dialog lists no problems and shows the credit estimate. Click **Run workflow**, pick the project, then **Start run**.
+17. **AI Writer** goes **Queued → Running → Completed**, and its text appears on the node and in the inspector. Idea is Completed immediately.
+18. **Scene Splitter** becomes **Completed** as soon as the script arrives. It is free and runs on the server.
+19. **Video** (and **Voice**) become **Queued**. The editor polls every 5 s.
+20. The video worker submits the job: the step shows **Running** until the provider finishes (usually a few minutes), then **Completed**.
+21. The MP4 preview plays on the Video node and in the inspector. With the final-video steps: Voice completes with one narration per scene, Subtitle completes right after it, and Render runs once Video, Voice and Subtitle are done; its node then plays the final MP4 (the clips joined, narrated and subtitled).
+22. **Review** becomes **Needs Review**, and the run shows the same status.
+23. Click **Approve video**. Review becomes **Completed** and the run **Completed**.
 
 Expected node states, in order:
 
@@ -235,8 +261,10 @@ These tests incur provider charges; this repository does not know your prices.
 - **Text:** one generation of at most 256 output tokens with a small model. Usually a negligible cost.
 - **Video:** one generation at the shortest duration and lowest resolution. This is the expensive part: text-to-video models bill per second of output, often with a minimum per request. Check the provider's current pricing before running.
 - **Image:** one image at standard quality.
+- **Voice:** one short sentence of speech; usually a negligible cost.
+- **Render:** no provider cost; it uses the server's CPU.
 - **Workflow test:** one text generation plus one clip **per scene** (one clip with Maximum scenes = 1 or a Prompt override). The node's shortest clip length is 4 s. An Image step adds one image per scene.
-- **ReelForge credits** are separate from provider charges. They are debited in the workspace: 1 + 10 per clip (+ 2 per image) by default.
+- **ReelForge credits** are separate from provider charges. They are debited in the workspace: 1 + 10 per clip (+ 2 per image, + 1 per narration) by default; rendering is free.
 - **Retries cost again.** A retried run generates its text steps again.
 
 ## Troubleshooting

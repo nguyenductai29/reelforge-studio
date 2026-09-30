@@ -84,7 +84,20 @@ import { EXECUTABLE, MAX_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } fro
 import { kindIcon } from "./kind-icon";
 import { ConfigFields, type ConfigChange, type WorkspaceDefaults } from "./config-fields";
 import { blocksSaving, configErrors, toolChoices, withValue } from "./node-config";
-import { canConnect, edgeId, outputJobs, outputMedia, outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
+import {
+  canConnect,
+  clockTime,
+  edgeId,
+  outputJobs,
+  outputMedia,
+  outputScenes,
+  outputSubtitle,
+  outputText,
+  portLabel,
+  portsOf,
+  reviewMedia,
+  type PortCatalog,
+} from "./ports";
 import { NodeActionsContext, NodeContext, StudioNodeComponent, type NodeActions } from "./studio-node";
 import { detailText, readinessText, runStatusToNode, type NodeStatus, type StudioNode } from "./types";
 
@@ -281,15 +294,46 @@ function Inspector({
                 ? i.scenesHint
                 : d.type === "image"
                   ? i.imageHint
-                  : null;
+                  : d.type === "voice"
+                    ? i.voiceHint
+                    : d.type === "subtitle"
+                      ? i.subtitleHint
+                      : d.type === "render"
+                        ? i.renderHint
+                        : null;
   const generatedText = TEXT_NODES.has(d.type) ? outputText(step?.output, ports) : null;
   const scenes = d.type === "scenes" ? outputScenes(step?.output) : null;
   const media =
-    d.type === "image" ? outputMedia(step?.output, "image_assets") : d.type === "video" ? outputMedia(step?.output, "video_assets") : [];
+    d.type === "image"
+      ? outputMedia(step?.output, "image_assets")
+      : d.type === "video" || d.type === "render"
+        ? outputMedia(step?.output, "video_assets")
+        : d.type === "voice"
+          ? outputMedia(step?.output, "audio_assets")
+          : [];
   // A clip from before scene mode, or one prompt-mode clip, keeps the single player.
-  const singleClip = d.type === "video" && media.length === 1 && media[0]!.scene_index == null ? media[0]! : null;
-  const jobs = d.type === "image" || d.type === "video" ? outputJobs(step?.output) : null;
-  const hasResult = Boolean(generatedText || (scenes && scenes.length) || media.length || jobs);
+  const singleClip =
+    (d.type === "video" || d.type === "render") && media.length === 1 && media[0]!.scene_index == null ? media[0]! : null;
+  // Review shows what it is asking to approve: the final render when it follows Render, else the clips or images.
+  const reviewed = d.type === "review" ? reviewMedia(run?.steps, step?.output?.asset_ids) : [];
+  const renderFacts =
+    d.type === "render" && step?.output
+      ? {
+          clips: typeof step.output.clip_count === "number" ? step.output.clip_count : null,
+          audio: typeof step.output.audio_count === "number" ? step.output.audio_count : null,
+          subtitles: step.output.subtitles === true,
+          policy:
+            step.output.audio_policy === "voice" || step.output.audio_policy === "clips"
+              ? (step.output.audio_policy as "voice" | "clips")
+              : null,
+          error: typeof step.output.render_error === "string" ? step.output.render_error : null,
+        }
+      : null;
+  const jobs = d.type === "image" || d.type === "video" || d.type === "voice" ? outputJobs(step?.output) : null;
+  const subtitle = d.type === "subtitle" ? outputSubtitle(step?.output) : null;
+  const hasResult = Boolean(
+    generatedText || (scenes && scenes.length) || media.length || jobs || subtitle || reviewed.length || renderFacts,
+  );
   // The model this node will use: its own setting, else the first enabled model for the task.
   const toolField = ports.config.find((field) => field.type === "tool");
   const toolId = toolField ? d.config?.[toolField.key] : undefined;
@@ -422,30 +466,80 @@ function Inspector({
 
         {hasResult && (
           <Section title={i.result}>
+            {renderFacts && (
+              <div className="space-y-1 rounded-lg border border-border bg-surface p-3 text-xs">
+                {(
+                  [
+                    ...(renderFacts.clips !== null ? [[i.renderClips, String(renderFacts.clips)]] : []),
+                    ...(renderFacts.audio !== null
+                      ? [[i.renderNarration, renderFacts.audio ? i.renderAudioCount(renderFacts.audio) : i.none]]
+                      : []),
+                    [i.renderSubtitles, renderFacts.subtitles ? i.yes : i.none],
+                    ...(renderFacts.policy ? [[i.renderAudioPolicy, i.audioPolicy[renderFacts.policy]]] : []),
+                    ...(singleClip?.duration ? [[i.duration, clockTime(singleClip.duration)]] : []),
+                    ...(singleClip?.width && singleClip.height ? [[i.resolution, `${singleClip.width}×${singleClip.height}`]] : []),
+                  ] as [string, string][]
+                ).map(([label, value]) => (
+                  <div key={label} className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span>{value}</span>
+                  </div>
+                ))}
+                {renderFacts.error && (
+                  <p className="break-words pt-1 text-destructive">
+                    {i.renderError}: {renderFacts.error}
+                  </p>
+                )}
+              </div>
+            )}
+            {reviewed.length > 0 && (
+              <div className={cn("grid gap-3", reviewed.every((asset) => asset.kind === "image") && "grid-cols-2")}>
+                {reviewed.map((asset) => (
+                  <div key={asset.id} className="overflow-hidden rounded-lg border border-border bg-black">
+                    {asset.kind === "image" ? (
+                      <img src={assetUrl(asset.id)} alt="" loading="lazy" className="aspect-video w-full object-cover" />
+                    ) : (
+                      <video src={assetUrl(asset.id)} controls playsInline preload="metadata" className="max-h-72 w-full" />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {singleClip ? (
-              <div className="overflow-hidden rounded-lg border border-border bg-black">
-                <video src={assetUrl(singleClip.id)} controls playsInline preload="metadata" className="max-h-72 w-full" />
+              <div className="space-y-1">
+                <div className="overflow-hidden rounded-lg border border-border bg-black">
+                  <video src={assetUrl(singleClip.id)} controls playsInline preload="metadata" className="max-h-72 w-full" />
+                </div>
+                {d.type === "render" && (
+                  <a href={assetUrl(singleClip.id)} download className="text-[11px] text-primary hover:underline">
+                    {i.download} {singleClip.filename ?? ""}
+                  </a>
+                )}
               </div>
             ) : (
               media.length > 0 && (
                 <div className={cn("grid gap-3", d.type === "image" && "grid-cols-2")}>
                   {media.map((asset, position) => (
                     <figure key={asset.id} className="space-y-1">
-                      <div className="overflow-hidden rounded-lg border border-border bg-black">
-                        {d.type === "image" ? (
-                          // Private assets are streamed by the API, so the plain element is used.
-                          <img src={assetUrl(asset.id)} alt="" loading="lazy" className="aspect-video w-full object-cover" />
-                        ) : (
-                          <video src={assetUrl(asset.id)} controls playsInline preload="metadata" className="max-h-56 w-full" />
-                        )}
-                      </div>
+                      {d.type === "voice" ? (
+                        <audio src={assetUrl(asset.id)} controls preload="none" className="h-9 w-full" />
+                      ) : (
+                        <div className="overflow-hidden rounded-lg border border-border bg-black">
+                          {d.type === "image" ? (
+                            // Private assets are streamed by the API, so the plain element is used.
+                            <img src={assetUrl(asset.id)} alt="" loading="lazy" className="aspect-video w-full object-cover" />
+                          ) : (
+                            <video src={assetUrl(asset.id)} controls playsInline preload="metadata" className="max-h-56 w-full" />
+                          )}
+                        </div>
+                      )}
                       <figcaption className="flex items-start justify-between gap-2 text-[11px] text-muted-foreground">
                         <span className="min-w-0 break-words">
                           <span className="font-medium text-foreground">
                             {asset.scene_index != null ? i.sceneLabel(asset.scene_index) : i.fileLabel(position + 1)}
                           </span>
                           {asset.provider ? ` · ${asset.provider}${asset.model ? ` / ${asset.model}` : ""}` : ""}
-                          {asset.duration ? ` · ${i.seconds(Math.round(asset.duration))}` : ""}
+                          {asset.duration ? ` · ${i.seconds(Math.round(asset.duration * 10) / 10)}` : ""}
                           {asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}
                         </span>
                         <a href={assetUrl(asset.id)} download className="shrink-0 text-primary hover:underline">
@@ -476,6 +570,40 @@ function Inspector({
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+            {subtitle && (
+              <div className="space-y-2">
+                <div className="space-y-1 rounded-lg border border-border bg-surface p-3 text-xs">
+                  {(
+                    [
+                      [i.subtitleFormat, (subtitle.format ?? "srt").toUpperCase()],
+                      [i.cueCount, String(subtitle.cue_count ?? subtitle.cues.length)],
+                      ...(subtitle.duration ? [[i.duration, clockTime(subtitle.duration)]] : []),
+                      ...(subtitle.timing ? [[i.timingSource, i.timing[subtitle.timing]]] : []),
+                    ] as [string, string][]
+                  ).map(([label, value]) => (
+                    <div key={label} className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">{label}</span>
+                      <span>{value}</span>
+                    </div>
+                  ))}
+                  <a href={assetUrl(subtitle.id)} download className="block pt-1 text-primary hover:underline">
+                    {i.download} {subtitle.filename ?? ""}
+                  </a>
+                </div>
+                <FieldLabel>{i.subtitlePreview}</FieldLabel>
+                <ol className="max-h-72 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
+                  {subtitle.cues.map((cue, index) => (
+                    <li key={index}>
+                      <p className="font-mono text-[10px] text-muted-foreground">
+                        {clockTime(cue.start)} → {clockTime(cue.end)}
+                        {cue.scene_index != null ? ` · ${i.sceneLabel(cue.scene_index)}` : ""}
+                      </p>
+                      <p className="whitespace-pre-line break-words">{cue.text}</p>
+                    </li>
+                  ))}
+                </ol>
               </div>
             )}
             {generatedText && (

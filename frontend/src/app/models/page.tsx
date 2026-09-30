@@ -39,6 +39,8 @@ const TASKS: AiTask[] = ["script", "image", "video", "voice", "music"];
 const VIDEO_PROVIDERS = new Set(["fal", "runware", "replicate", "runway", "dola"]);
 /** Image providers the backend can call (task "image"). */
 const IMAGE_PROVIDERS = new Set(["runway"]);
+/** Text-to-speech providers the backend can call (task "voice"). */
+const VOICE_PROVIDERS = new Set(["gemini"]);
 /** Text providers the backend can call (task "script", shown as Text). */
 const TEXT_PROVIDERS = new Set(["openai", "anthropic", "gemini"]);
 const presets = [
@@ -48,6 +50,7 @@ const presets = [
   { task: "video", provider: "runway", model: "gen4.5", label: "Runway Dev · Gen-4.5", note: "noAudio" },
   { task: "video", provider: "dola", model: "seedance-2.5", label: "Dola Gateway · Seedance 2.5", note: "experimental" },
   { task: "image", provider: "runway", model: "gen4_image", label: "Runway · Gen-4 Image" },
+  { task: "voice", provider: "gemini", model: "gemini-2.5-flash-preview-tts", label: "Google · Gemini 2.5 Flash TTS" },
   { task: "script", provider: "openai", model: "gpt-4.1-mini", label: "OpenAI · GPT-4.1 mini" },
   { task: "script", provider: "anthropic", model: "claude-opus-5-5", label: "Anthropic · Claude Opus 5.5" },
   { task: "script", provider: "gemini", model: "gemini-2.5-flash", label: "Google · Gemini 2.5 Flash" },
@@ -56,6 +59,7 @@ const presets = [
 const isRunnable = (tool: AiTool) =>
   (tool.task === "video" && VIDEO_PROVIDERS.has(tool.provider)) ||
   (tool.task === "image" && IMAGE_PROVIDERS.has(tool.provider)) ||
+  (tool.task === "voice" && VOICE_PROVIDERS.has(tool.provider)) ||
   (tool.task === "script" && TEXT_PROVIDERS.has(tool.provider));
 
 type Draft = { id?: string; task: AiTask; provider: string; model: string; is_enabled: boolean };

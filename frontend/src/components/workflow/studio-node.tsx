@@ -15,7 +15,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { kindIcon } from "./kind-icon";
-import { outputJobs, outputMedia, outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
+import {
+  clockTime,
+  outputJobs,
+  outputMedia,
+  outputScenes,
+  outputSubtitle,
+  outputText,
+  portLabel,
+  portsOf,
+  type PortCatalog,
+} from "./ports";
 import type { NodeStatus, StudioNode } from "./types";
 
 const kindWidth: Record<NodeKind, string> = {
@@ -158,6 +168,11 @@ function Preview({ data }: { data: StudioNode["data"] }) {
                     : t.editor.node.clips(clips.length)}
                 </span>
               )}
+              {data.type === "render" && clips[0]?.duration ? (
+                <span className="absolute bottom-1 right-1 rounded bg-background/80 px-1.5 py-0.5 text-[10px] backdrop-blur">
+                  {clockTime(clips[0].duration)}
+                </span>
+              ) : null}
             </>
           ) : (
             <span className="px-2 text-center text-[10px] text-muted-foreground">
@@ -167,37 +182,61 @@ function Preview({ data }: { data: StudioNode["data"] }) {
         </div>
       );
     }
-    case "voice":
+    case "voice": {
+      const segments = outputMedia(output, "audio_assets");
+      const progress = outputJobs(output);
+      // One narration plays on the node; scene segments show their count (each plays in the inspector).
+      if (segments.length === 1 && segments[0]!.scene_index == null) {
+        return <audio src={assetUrl(segments[0]!.id)} controls preload="none" className="nodrag h-8 w-full" />;
+      }
+      const note =
+        progress && progress.done < progress.expected
+          ? t.editor.node.progress(progress.done, progress.expected)
+          : segments.length
+            ? t.editor.node.segments(segments.length)
+            : null;
       return (
-        <div className="flex items-center gap-2 rounded-lg bg-surface-2 p-2">
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
-            <Play className="size-3" />
-          </span>
-          <div className="flex h-6 flex-1 items-center gap-[2px]">
-            {waveform.map((h, i) => (
-              <span
-                key={i}
-                style={{ height: data.status === "completed" ? h : 3 }}
-                className={cn(
-                  "w-[3px] rounded-full",
-                  data.status === "completed" ? "bg-primary/70" : "bg-muted-foreground/30",
-                  running && "animate-pulse",
-                )}
-              />
-            ))}
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 rounded-lg bg-surface-2 p-2">
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+              <Play className="size-3" />
+            </span>
+            <div className="flex h-6 flex-1 items-center gap-[2px]">
+              {waveform.map((h, i) => (
+                <span
+                  key={i}
+                  style={{ height: data.status === "completed" ? h : 3 }}
+                  className={cn(
+                    "w-[3px] rounded-full",
+                    data.status === "completed" ? "bg-primary/70" : "bg-muted-foreground/30",
+                    running && "animate-pulse",
+                  )}
+                />
+              ))}
+            </div>
           </div>
+          {note && <p className="text-[10px] text-muted-foreground">{note}</p>}
         </div>
       );
-    case "subtitle":
+    }
+    case "subtitle": {
+      const file = outputSubtitle(output);
+      const lines = file ? file.cues.slice(0, 2).map((cue) => cue.text.replace(/\n/g, " ")) : ["—", "—"];
       return (
         <div className="space-y-1 rounded-lg bg-surface-2 p-2">
-          {["—", "—"].map((line, i) => (
-            <p key={i} className="truncate text-center text-[11px] font-medium text-muted-foreground">
+          {lines.map((line, i) => (
+            <p key={i} className={cn("truncate text-center text-[11px] font-medium", !file && "text-muted-foreground")}>
               {line}
             </p>
           ))}
+          {file && (
+            <p className="text-center text-[10px] text-muted-foreground">
+              {(file.format ?? "srt").toUpperCase()} · {t.editor.node.cues(file.cue_count ?? file.cues.length)}
+            </p>
+          )}
         </div>
       );
+    }
     case "script": {
       const scenes = outputScenes(output);
       if (scenes) {

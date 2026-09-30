@@ -36,11 +36,18 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
     case "ready":
       if (step.code === "per_scene") return r.readyPerScene(step.credits ?? 0);
       if (step.task === "image") return r.readyImage(step.credits ?? 0);
+      if (step.task === "voice") return r.readyVoice(step.credits ?? 0);
       return step.task === "video" ? r.ready(step.credits ?? readiness.credits_required) : r.readyText;
     case "configured":
       return r.configured;
     case "missing_tool":
-      return step.task === "video" ? r.missingVideoTool : step.task === "image" ? r.missingImageTool : r.missingTool;
+      return step.task === "video"
+        ? r.missingVideoTool
+        : step.task === "image"
+          ? r.missingImageTool
+          : step.task === "voice"
+            ? r.missingVoiceTool
+            : r.missingTool;
     case "needs_connection":
       return AI_TASKS.has(step.task) ? r.needsProvider : r.needsService;
     case "unsupported_graph":
@@ -65,6 +72,10 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
       return r.missingInput(step.field ? (t.ports[step.field] ?? step.field) : "");
     case "tool_unavailable":
       return r.toolUnavailable;
+    case "ffmpeg_missing":
+      return r.ffmpegMissing;
+    case "font_unavailable":
+      return r.fontUnavailable;
     default:
       return step.detail;
   }

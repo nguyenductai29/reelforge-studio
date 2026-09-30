@@ -1,9 +1,9 @@
 """Maps each node type to the one handler that executes it."""
 from app.workflow.nodes import (TEXT_HANDLERS, AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, NodeHandler,
-                                PendingAITaskHandler, PendingServiceHandler, ReviewNodeHandler, ScenesNodeHandler,
-                                UnsupportedNodeHandler, VideoNodeHandler)
-from app.workflow.ports import (AUDIO_ASSETS, BRIEF, IMAGE_ASSETS, SUBTITLE_ASSET, TEXT, VIDEO_ASSETS,
-                                InputPort, OutputPort)
+                                PendingAITaskHandler, PendingServiceHandler, RenderNodeHandler, ReviewNodeHandler,
+                                ScenesNodeHandler, SubtitleNodeHandler, UnsupportedNodeHandler, VideoNodeHandler,
+                                VoiceNodeHandler)
+from app.workflow.ports import AUDIO_ASSETS, BRIEF, TEXT, VIDEO_ASSETS, InputPort, OutputPort
 
 
 class NodeRegistry:
@@ -40,17 +40,8 @@ def _placeholders():
     return (
         PendingAITaskHandler("script", (InputPort("topic", (BRIEF, TEXT), multiple=True),),
                              (OutputPort("script", TEXT),)),
-        PendingAITaskHandler("voice", (InputPort("script", text, multiple=True),),
-                             (OutputPort("audio_assets", AUDIO_ASSETS),)),
         PendingAITaskHandler("music", (InputPort("mood", (BRIEF, TEXT), multiple=True),),
                              (OutputPort("audio_assets", AUDIO_ASSETS),)),
-        PendingServiceHandler("subtitle", (InputPort("script", text, multiple=True),
-                                           InputPort("video", (VIDEO_ASSETS,))),
-                              (OutputPort("subtitle_asset", SUBTITLE_ASSET),)),
-        PendingServiceHandler("render", (InputPort("media", (VIDEO_ASSETS, IMAGE_ASSETS), multiple=True),
-                                         InputPort("audio", (AUDIO_ASSETS,), multiple=True),
-                                         InputPort("subtitle", (SUBTITLE_ASSET,))),
-                              (OutputPort("rendered_video", VIDEO_ASSETS),)),
         # Publishing ends a workflow, so the node has no output yet (PUBLICATION is reserved for it).
         PendingServiceHandler("publish", (InputPort("video", (VIDEO_ASSETS,)), InputPort("title", text),
                                           InputPort("description", (TEXT,)))),
@@ -60,7 +51,8 @@ def _placeholders():
 def build_default_registry() -> NodeRegistry:
     registry = NodeRegistry()
     for handler in (IdeaNodeHandler(), AssetsNodeHandler(), ScenesNodeHandler(), ImageNodeHandler(),
-                    VideoNodeHandler(), ReviewNodeHandler(), *(handler_type() for handler_type in TEXT_HANDLERS), *_placeholders()):
+                    VideoNodeHandler(), VoiceNodeHandler(), SubtitleNodeHandler(), RenderNodeHandler(),
+                    ReviewNodeHandler(), *(handler_type() for handler_type in TEXT_HANDLERS), *_placeholders()):
         registry.register(handler)
     return registry
 
