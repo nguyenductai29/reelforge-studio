@@ -1,7 +1,7 @@
 # ReelForge Studio Implementation Status
 
 > Audit snapshot: branch `feat/studio-foundation`, commit `eb00d8a`, 2026-09-30.
-> Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)), and for Phase 3.5, the node configuration inspector (see [Phase 3.5 changes](#phase-35-changes)).
+> Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)), for Phase 3.5, the node configuration inspector (see [Phase 3.5 changes](#phase-35-changes)), and for Phase 3.6, runtime hardening and live smoke-test tooling (see [Phase 3.6 changes](#phase-36-changes) and [Live Provider Verification](#live-provider-verification)).
 > Line numbers drift, so items anchor on file and function names.
 
 Each item uses the same fields:
@@ -29,6 +29,7 @@ Each item uses the same fields:
 | Publishing | `app/publications.py`, `app/publishers/*` | Publication records with a channel-generic schema, plus YouTube OAuth and upload. The Facebook and TikTok adapters exist only as libraries. |
 | Billing and credits | `app/billing.py`, `app/payments.py`, `app/usage.py` | payOS VNQR checkout, webhook and refresh reconciliation, and the credit ledger. |
 | Maintenance | `app/media_maintenance.py` | Cleans up stale `.part` downloads. Dry-run by default. |
+| Runtime support | `app/runtime_env.py`, `app/logs.py`, `app/provider_check.py`, `app/smoke_test.py`, `app/providers/errors.py`, `app/video_files.py` | One runtime environment file for every process, structured logs, the provider pre-flight, live smoke tests and run reports, shared error categories, and MP4 download and checks (Phase 3.6). |
 | Frontend | `frontend/` (Next.js 15, React 19, React Query, `@xyflow/react`, Radix UI, Tailwind v4) | `next.config.ts` rewrites `/api/*` to the API. UI in vi/en/ja, following the workflow-first redesign. |
 
 ### Data model
@@ -204,6 +205,47 @@ Frontend changes, without layout changes:
 - **Run dialog:** the video model and prompt fields were removed (they are node settings now). The dialog lists the saved workflow's readiness problems and the credit estimate.
 - **Readiness:** the new statuses are translated (vi/en/ja), and `invalid_settings` shows the message for its code.
 
+### Phase 3.6 changes
+
+Phase 3.6 added no product feature and no migration. It makes the existing pipeline testable against real providers and diagnosable when it fails.
+
+- **Shared runtime environment (`app/runtime_env.py`):**
+  - The API (lifespan), the text, video and YouTube workers (`main`), `app.provider_check` and `app.smoke_test` load `.env.runtime`, or the file named by `REELFORGE_ENV_FILE`.
+  - Variables already set in the process win. Nothing loads on import, so tests never read the file.
+  - `.env.runtime.example` lists the variable names only, and `.gitignore` ignores every other `.env*` file.
+  - Production uses one `EnvironmentFile=/etc/reelforge/runtime.env` for every unit (deployment guide §4.1).
+  - Each process logs `process_started` with the file it loaded and an 8-character SHA-256 fingerprint per provider key.
+- **Pre-flight (`python -m app.provider_check`):**
+  - For the selected text and video provider, it reports the provider, the model (recognized, accepted or unsupported), whether the key is configured, missing or invalid (with its fingerprint), provider settings such as `RUNWAY_OUTPUT_HOSTS`, and the video smoke request.
+  - It makes no network request and never prints a key. It exits 0 when ready.
+- **Smoke tests (`python -m app.smoke_test`):**
+  - `text` sends one request with at most 256 tokens and prints the latency, token usage, finish reason and a 160-character preview.
+  - `video` submits the cheapest request the adapter accepts (shortest duration, lowest resolution, no audio), polls until the job ends or times out (900 s), downloads and validates the MP4 into `instance/smoke-tests/`, and prints the job ID, duration, size and elapsed time.
+  - Both refuse to run without `--live` or `REELFORGE_LIVE_TESTS=1` in the shell (exit 3). The runtime file cannot set that flag.
+  - `run-report <run_id>` compares each queued job with the settings in the run snapshot (model, language, tone, platform, length, style, duration, aspect ratio, prompt override) without calling a provider.
+  - `tests/test_live_providers.py` wraps the same functions and is skipped unless `REELFORGE_LIVE_TESTS=1` (video also needs `REELFORGE_LIVE_VIDEO=1`).
+- **Structured logging (`app/logs.py`):**
+  - JSON lines on stderr, or `key=value` with `REELFORGE_LOG_FORMAT=text`.
+  - Events:
+    - executor: `workflow_run_started`, `workflow_run_rejected`, `workflow_run_status_changed`, `workflow_step_started`, `workflow_step_{completed,failed,blocked,queued,awaiting_review,needs_attention}`, `credit_reserved`;
+    - text and video workers: `job_claimed`, `provider_request_{started,completed,failed}`, `job_retry_scheduled`, `job_completed`, `job_failed`, `credit_refunded`.
+  - Fields: workspace, workflow, run, step and job IDs, provider and model, latency, token usage, and the error code, category, `retryable` flag and HTTP status.
+  - A queued step logs the safe job fields next to the node's settings, so the snapshot settings and the request can be compared in the log.
+  - Keys are scrubbed by value and by field name. Prompts, instructions and topics appear only as character counts.
+  - The executor writes a pass's events when the pass ends, so a start rejected and rolled back (for example with HTTP 402) logs only `workflow_run_rejected`.
+- **Error categories (`app/providers/errors.py`):**
+  - Every text and video adapter error derives from one `ProviderError` with a `category`: `authentication_error`, `rate_limited`, `invalid_request`, `content_rejected`, `provider_unavailable`, `timeout`, `network_error`, `empty_output`, `invalid_response`, plus `billing_error`, `generation_failed` and `configuration_error`.
+  - The adapters share the HTTP status mapping. Codes were renamed to match: `auth_error` → `authentication_error`, `transport_error` → `network_error` or `timeout`, `provider_response` → `invalid_response`, `content_blocked` → `content_rejected`, and "no text" → `empty_output`.
+  - Codes kept for detail:
+    - `submission_unknown`: a submit whose outcome is unknown, never refunded. Its category says whether it was a timeout, a network error or a 5xx.
+    - `not_found`, `unsafe_url`, `billing_error`.
+  - The refund rules are unchanged, except that HTTP 413, and 402 from Dola, now count as definite rejections.
+  - Text step outputs store `error.category`.
+  - `provider_detail` keeps the provider's own error message, at most 200 characters, from the error response. It appears in server logs (scrubbed of secret values) and in the smoke-test output. It never appears in a step output or an API response, which keep the plain message such as "openai returned HTTP 404".
+- **Timeouts:** every provider call already had an explicit timeout. They are now tested and documented (docs/LIVE_PROVIDER_SMOKE_TEST.md#timeouts). A timeout on a status poll is `timeout` and retryable, where it was reported as a transport error before.
+- **Refactors without behavior change:** the MP4 download, validation and new duration read (`mvhd`) moved to `app/video_files.py`, so the smoke test does not need the database.
+- **Docs:** `docs/LIVE_PROVIDER_SMOKE_TEST.md` (setup, pre-flight, smoke tests, the full workflow test with expected node states, costs, troubleshooting, timeouts), the README (process start-up sequence), and the deployment guide (§4.1 runtime file).
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -215,7 +257,10 @@ Frontend changes, without layout changes:
   - Provider settings: `DOLA_EXPERIMENTAL_ENABLED`, `DOLA_BASE_URL`, `DOLA_MEDIA_BASE_URL`, `DOLA_MAX_JOB_AGE_SECONDS`, `RUNWAY_OUTPUT_HOSTS`.
   - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
   - YouTube OAuth: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `REELFORGE_TOKEN_ENCRYPTION_KEY`.
+  - Runtime file and logs: `REELFORGE_ENV_FILE` (default `.env.runtime`), `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL`.
+  - Live smoke tests: `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`; `REELFORGE_LIVE_TESTS=1` and `REELFORGE_LIVE_VIDEO=1` only from the shell.
   - Tests only: `REELFORGE_TEST_DATABASE_URL`.
+- **`.env.runtime`** (git-ignored; template `.env.runtime.example`): the environment variables above, loaded by every process (Phase 3.6).
 - **`frontend/instance/config.json`:** `api_base_url`.
 - **Deployment:** systemd units for the API, frontend, video worker, text worker and YouTube worker (`docs/home-server-deployment.md`, `deploy.sh`).
 
@@ -243,6 +288,24 @@ Frontend changes, without layout changes:
 | 16 | Retry behavior | Partial | P10 |
 | 17 | Security boundaries | Partial | P11, R2–R4 |
 | 18 | Workspace isolation | Fully implemented (single-member model) | F2, M8 |
+
+## Live Provider Verification
+
+No provider has been verified against its live API yet. The Phase 3.6 run had no provider credentials: this machine's process, user and machine environments hold no provider key, and there is no `.env.runtime`. The tooling is ready (`python -m app.provider_check`, `python -m app.smoke_test text|video --live`, docs/LIVE_PROVIDER_SMOKE_TEST.md), but no live request was sent. **Live provider test not executed because credentials were not available.**
+
+| Provider | Modality | Model | Mock tested | Live verified | Date | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| OpenAI | text | `gpt-4.1-mini` (smoke default) | yes | no | — | Mock tested only |
+| Anthropic | text | `claude-haiku-4-5-20251001` (smoke default) | yes | no | — | Mock tested only |
+| Gemini | text | `gemini-2.5-flash` | yes | no | — | Mock tested only |
+| fal | video | `fal-ai/veo3.1/fast` | yes | no | — | Mock tested only |
+| Runware | video | `bytedance:seedance@2.5` | yes | no | — | Mock tested only |
+| Replicate | video | `google/veo-3.1-fast` | yes | no | — | Mock tested only |
+| Runway Dev | video | `gen4.5` | yes | no | — | Mock tested only |
+| Dola (experimental) | video | `seedance-2.0`, `seedance-2.5` | yes | no | — | Mock tested only; out of scope |
+| YouTube Data API | publishing | — | yes | no | — | Mock tested only |
+
+"Mock tested" means the adapter's request shape, response parsing, error mapping and timeouts are covered offline with `httpx.MockTransport` or fake clients, and the workflow path is covered with fake providers. None of these providers is production-ready until it passes a live smoke test. When one does, record here the date, the model, the command run and its result: latency and tokens for text; job ID, duration, size and elapsed time for video.
 
 ## Fully Implemented
 
@@ -693,7 +756,8 @@ Frontend changes, without layout changes:
   | Dola (experimental gateway) | `seedance-2.0`, `seedance-2.5` | 10s, `auto` | `DOLA_API_KEY`, `DOLA_BASE_URL`, `DOLA_EXPERIMENTAL_ENABLED=1` |
 
   - **Requests:** each adapter checks aspect ratio, duration and resolution against the model's capabilities.
-  - **Errors:** HTTP failures map to stable codes with a `retryable` flag. A network error during submit becomes `submission_unknown` and is never resubmitted automatically.
+  - **Errors:** HTTP failures map to stable codes with a `retryable` flag and a shared category (`app/providers/errors.py`, Phase 3.6). A timeout, network error or 5xx during submit becomes `submission_unknown` and is never resubmitted automatically.
+  - **Timeouts:** 10 s per API call; downloads connect in 30 s with 120 s per read.
   - **URL safety:** status, result and media URLs must match the provider's hosts, and redirects are not followed.
   - **Storing the result:** the worker downloads to a `.part` file, checks the size (at most 100 MB) and the MP4 box structure (`ftyp`, `moov`, `mdat`), then records the asset.
 - **Missing:**
@@ -703,7 +767,7 @@ Frontend changes, without layout changes:
   - Square output: `video_orientation = square` blocks the run.
   - More than one model per provider, and per-model pricing.
   - Webhooks: the worker only polls, every 10 s.
-  - Checks with live credentials. All tests use fakes.
+  - Checks with live credentials: the smoke test exists (Phase 3.6), but no provider has passed it yet (see Live Provider Verification).
   - Codec and duration inspection (for example with ffprobe).
   - Cancelling a job on the provider side.
 - **Depends on:** F3, P6. F4 depends on it.
@@ -804,9 +868,20 @@ Frontend changes, without layout changes:
 
 ### P8. Tests
 
-- **Files:** `tests/` (29 modules, 230 tests), `.github/workflows/ci.yml`.
+- **Files:** `tests/` (32 modules, 262 tests), `.github/workflows/ci.yml`.
 - **Current:**
   - **Unit tests:** jobs, providers, publishers, OAuth, the body limit, media maintenance, login throttling, the workflow engine, text generation, and typed ports.
+  - **Runtime tests** (Phase 3.6, all offline):
+    - `tests/test_runtime_support.py` (29):
+      - the runtime file (parsing, no override, example names only, fingerprints);
+      - the pre-flight for missing, configured, invalid and unsupported choices, with no key in the output;
+      - the smoke commands refusing without live intent, and succeeding or failing with fake providers;
+      - MP4 checks and the error categories of all five video adapters on submit;
+      - explicit timeouts and log redaction;
+      - `provider_detail` kept for logs, never stored in the step;
+      - worker logs with IDs but no key or prompt, failures with refunds, and a rejected start.
+    - `tests/test_workflow_provider_requests.py` (1): the Idea → AI Writer → Scene Splitter → Video → Review workflow over HTTP through the real workers with fake provider clients. It checks the arguments each provider receives against the node settings, the run report, and the log contents.
+    - `tests/test_live_providers.py` (2): live smoke tests, skipped unless `REELFORGE_LIVE_TESTS=1`.
   - **Node settings tests** (`tests/test_node_config.py`, 17, Phase 3.5):
     - the schema served to the editor, valid settings, and a stable code for each invalid value;
     - defaults, the tool check, and video clip lengths per model;
@@ -839,8 +914,9 @@ Frontend changes, without layout changes:
     - legacy list definitions, pre-executor runs in flight, and one HTTP-level compatibility test.
   - **Integration tests:** each copies `app/` and `migrations/` to a temp directory, migrates a SQLite database with Alembic, and drives the API through `TestClient` in a subprocess. They cover projects, runs, the video worker, Dola, the YouTube flow and checkout.
   - **CI:** runs the backend tests on Python 3.13, and the frontend typecheck and build on Node 20.
-- **Results after Phase 3.5** (2026-09-30, Windows, Python 3.14.7, Node 22.23.2):
-  - `python -m unittest discover -s tests -v` → **Ran 230 tests, OK (skipped=3).** Earlier runs: 213 after Phase 3, 194 after Phase 2, 168 after Phase 1, and 146 before Phase 1, all OK (skipped=3).
+- **Results after Phase 3.6** (2026-09-30, Windows, Python 3.14.7, Node 22.23.2):
+  - `python -m unittest discover -s tests -v` → **Ran 262 tests, OK (skipped=5)**: the three skips below plus the two live tests. Earlier runs: 230 after Phase 3.5 (skipped=3), 213 after Phase 3, 194 after Phase 2, 168 after Phase 1, and 146 before Phase 1.
+    - Phase 3.6 changed provider-test assertions for the renamed error codes, and the text-failure output, which now includes `category`.
     - Phase 3.5 changed seven older assertions: tone and language values must be listed codes, the 422 detail for settings is an object, prompts spell out tone and platform, the video output records aspect ratio and duration, the test echo handler declares its setting, and the scene-splitting test states its target duration.
     - Phase 3 changed five older assertions: AI Writer outputs are now under `script`, a connected idea beats `config.prompt`, the test source node declares a port, and `scenes` is a real node.
     - `PostgreSQLJobClaimTest.test_locked_job_is_skipped_by_another_worker` was skipped because `REELFORGE_TEST_DATABASE_URL` is not set.
@@ -852,7 +928,7 @@ Frontend changes, without layout changes:
 - **Missing:**
   - PostgreSQL in CI. It is the production database, and its `SKIP LOCKED`, `FOR UPDATE` and `ON CONFLICT` code paths are untested.
   - Frontend unit, component and E2E tests in the repository (there is no test script; the Phase 3.5 browser check is not committed).
-  - Contract tests against live providers, video or text.
+  - A live run against any provider: the opt-in smoke tests exist, but none has been run (see Live Provider Verification).
   - Tests for non-owner roles and for `PUT /api/settings/system`.
   - A concurrency test on PostgreSQL for two workers finishing sibling steps (the run-row lock is not exercised by SQLite).
   - Load tests for polling.
@@ -862,7 +938,7 @@ Frontend changes, without layout changes:
 
 - **Files:** `app/main.py`, `app/workflow/executor.py` (`_evaluate`), `app/workflow/results.py` (`NodeError`, `RunRequestError`), `app/providers/*.py`, `app/providers/text/base.py` (`TextProviderError`, `http_error`), `app/publishers/*.py`, `app/video_worker.py`, `app/text_worker.py`, `app/youtube_worker.py`, `frontend/src/lib/errors.ts`, `frontend/src/components/workflow/types.ts`, `frontend/src/lib/i18n/*.ts`.
 - **Current:**
-  - **Provider and publisher errors:** typed, with a stable `code`, a `retryable` flag and `http_status`. They never include secrets or response bodies. Text adapters also turn empty output, refusals and safety blocks into `empty_output` or `content_blocked`, instead of saving a blank step.
+  - **Provider and publisher errors:** typed, with a stable `code`, a `retryable` flag and `http_status`. Text and video provider errors also carry a shared `category` (Phase 3.6). They never include secrets or response bodies. Text adapters also turn empty output, refusals and safety blocks into `empty_output` or `content_blocked`, instead of saving a blank step.
   - **Workers:** turn those errors into step or publication states with readable detail.
   - **Node errors:** a handler can return a `failed` result with a `NodeError(code, message, retryable)`, which is stored as `output.error`. An unexpected exception inside a handler becomes a `handler_error` failure on that step. It is logged through `logging.getLogger("app.workflow.executor")`, the first use of `logging` in `app/`.
   - **API:** `HTTPException` with English `detail` strings. Handlers raise `RunRequestError`, which the API turns into the same HTTP status and message.
@@ -870,7 +946,7 @@ Frontend changes, without layout changes:
   - **Settings errors:** a 422 for node settings carries a stable `code`, the `field` and the `node_id`, and the frontend translates by code (F13).
 - **Missing:**
   - Stable error codes on other HTTP responses. Except for settings errors, the frontend translates by exact text: English `detail` strings through `t.errors.server[...]` and Vietnamese step `detail` strings through `t.details[...]` (see D6).
-  - Logging outside the executor and the text worker, and a log configuration for the API and the other workers. The text worker configures `logging` when run as a program.
+  - Structured logs in the YouTube worker and in the API routes outside workflow execution. Phase 3.6 added them to the executor and the text and video workers, and configures logging in every process.
   - A global exception handler and request IDs.
   - Configuration errors that still return 500 instead of a clear message:
     - An invalid `WORKSPACE_MEDIA_QUOTA_BYTES`, or an invalid `VIDEO_CREDITS_PER_CLIP` during readiness, raises `RuntimeError`. During a run, the same `VIDEO_CREDITS_PER_CLIP` error now fails the video step instead.
@@ -1083,9 +1159,9 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 ### M9. Observability and operations
 
 - **Files to change:** `app/*`, workers, deployment units.
-- **Current:** no logging. The only visibility is through state in the DB.
+- **Current:** structured JSON logs for workflow execution in the API and in the text and video workers, with IDs, latencies and error categories, and a `process_started` line per process (Phase 3.6). Beyond that, the only visibility is state in the DB.
 - **Missing:**
-  - Structured logs for the API and workers.
+  - Log shipping and retention (journald only), request IDs, and structured logs in the YouTube worker and the other API routes.
   - Metrics: queue depth, job latency, provider errors and spend.
   - Alerting and an admin view of jobs and the queue.
   - Automated backup and restore for the database and media.
@@ -1107,7 +1183,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 | --- | --- | --- | --- |
 | D1 | One 1,202-line module (1,372 before Phase 1) holds 45 routes, business logic and settings access. Run and node logic moved to `app/workflow/` and provider wiring to `app/providers/catalog.py`. | `app/main.py` | Both workers still import `app.main` (for `media_root`, `MAX_UPLOAD` and the quota) and so run its import-time side effects. |
 | D2 | Importing the modules has side effects: the migration check and settings seeding in `app.main`, and the DB URL resolution in `app.db` | `app/main.py` (module level), `app/db.py` | Any import (tests, workers, tooling) needs a configured, migrated database. |
-| D3 | Every video adapter re-declares the same types. The text adapters share one base class (Phase 2). The backend has one provider map per modality, but the frontend repeats both. | `app/providers/*.py`; `app/providers/catalog.py`; `app/providers/text/__init__.py`; `VIDEO_PROVIDERS`, `TEXT_PROVIDERS` and the presets in `frontend/src/app/models/page.tsx` | Adding a provider still means editing the backend and the frontend separately. |
+| D3 | Every video adapter re-declares the same types (only the error base class and the status mapping are shared since Phase 3.6). The text adapters share one base class (Phase 2). The backend has one provider map per modality, but the frontend repeats both. | `app/providers/*.py`; `app/providers/catalog.py`; `app/providers/text/__init__.py`; `VIDEO_PROVIDERS`, `TEXT_PROVIDERS` and the presets in `frontend/src/app/models/page.tsx` | Adding a provider still means editing the backend and the frontend separately. |
 | D4 | The frontend copies backend constants and hand-writes the API types. Ports and node settings are the exception: they come from `GET /api/workflow-node-types` (Phases 3 and 3.5). | `frontend/src/lib/workflow.ts` (`NODE_TYPES`, `EXECUTABLE`, `TEXT_NODES`, `MAX_NODES`), `frontend/src/lib/studio.ts` (`ACCEPTED_UPLOADS`, `MAX_UPLOAD_BYTES`), `frontend/src/lib/types.ts` | Drift goes unnoticed, since nothing is generated from OpenAPI. `EXECUTABLE` could come from the catalog too. |
 | D5 | Some models are defined outside `app/models.py` | `app/auth_security.py`, `app/publishers/google_oauth.py`, `app/publications.py` | Complete metadata depends on the imports in `migrations/env.py`. |
 | D6 | The backend returns user-facing Vietnamese text, and the frontend translates it by exact-text lookup | `app/workflow/nodes/*.py`, `app/workflow/executor.py`, `app/main.py`, `app/video_worker.py`; `details` and `errors.server` in `frontend/src/lib/i18n/{vi,en,ja}.ts` | Rewording any backend message silently breaks its translation. `NodeError.code` gives new failures a stable code, but only settings errors and readiness are translated by code so far. |
@@ -1183,9 +1259,9 @@ Production runs on PostgreSQL, but every test runs on SQLite. The PostgreSQL cla
 - The Google app has not yet been verified with a real channel (per the roadmap).
 - `videos.insert` costs a lot of quota compared with a default daily allowance, and one OAuth client is shared by every workspace. Check the current quota in Google Cloud Console before inviting users.
 
-### R9. No observability
+### R9. Little observability
 
-Apart from handler exceptions in the workflow executor and unexpected errors in the text worker, the API and workers log nothing, and only the text worker configures logging. Failures are mostly visible only as DB state. Users will notice a crashed worker, an expired provider key or a full disk before operators do.
+Since Phase 3.6, workflow execution and the text and video workers write structured logs, but nothing collects them or alerts on them. There are no metrics for queue depth, latency or provider errors. Users will still notice a crashed worker, an expired provider key or a full disk before operators do, unless someone reads the logs.
 
 ### R10. No handling for loss or rotation of the encryption key
 
@@ -1201,15 +1277,18 @@ If `REELFORGE_TOKEN_ENCRYPTION_KEY` is lost or changed, no stored YouTube connec
   - Move to token-based settlement: reserve a maximum, charge from `usage` (already recorded as the event's units), refund the difference.
   - Rate-limit text jobs per workspace.
 
-### R12. Text providers are not verified with live keys
+### R12. No provider is verified with live keys
 
-All text tests use mocked HTTP or a fake provider. The request and response shapes follow the vendors' public API references. Model names, token limits and reasoning-model behavior still need a smoke test with real keys before users rely on them; for example, reasoning models can spend the whole token budget before writing any text, which surfaces as `empty_output`.
+All text and video tests use mocked HTTP or fake clients. The request and response shapes follow the vendors' public API references. Model names, token limits, reasoning-model behavior, video durations, result URLs and download hosts still need a smoke test with real keys before users rely on them. For example, reasoning models can spend the whole token budget before writing any text, which surfaces as `empty_output`, and a provider may serve results from a host the adapter does not allow.
+
+The smoke tests exist since Phase 3.6, but they have not been run: no credentials were available (see Live Provider Verification).
 
 ### R13. Every process that advances runs needs every provider key
 
 - **Where:** `app/text_worker.py` and `app/video_worker.py` call `WorkflowExecutor.finish_step`, which starts the next steps in the worker's own process.
 - **Problem:** the next step checks its provider key in that process. For example, the text worker queues the video step after an AI Writer, and blocks it with "Server cần RUNWARE_API_KEY." if only the API and video worker have that key. The Phase 3.5 browser check hit this with a simulated worker.
-- **Direction:** give the API and all workers one shared environment file (the deployment guide now says so), or move provider checks for later steps into the worker that runs them.
+- **Mitigation (Phase 3.6):** every process loads the same runtime file (`.env.runtime`, or `EnvironmentFile=/etc/reelforge/runtime.env` in production) and logs `process_started` with key fingerprints, so a mismatch shows in the logs.
+- **Still open:** a process started by hand with its own environment can still differ. Moving provider checks for later steps into the worker that runs them would remove the dependency.
 
 ## Recommended Implementation Order
 
@@ -1222,20 +1301,19 @@ Guiding rules:
 
 | Step | Work | Resolves | Depends on |
 | --- | --- | --- | --- |
-| 0 | Operational hardening: <br>• structured logging in the API and workers <br>• a PostgreSQL service in CI with `REELFORGE_TEST_DATABASE_URL` <br>• `alembic check` in CI <br>• an enforced production checklist: `create-admin` before exposure, HTTPS origin, `secure_cookies`, forwarded-IP handling for the throttle <br>• frontend smoke tests for the editor's status mapping | R2–R5, R9, D12, part of M10 | — |
+| 0 | Operational hardening: <br>• structured logging in the API and workers (**done for workflow execution and the text and video workers in Phase 3.6**) <br>• a PostgreSQL service in CI with `REELFORGE_TEST_DATABASE_URL` <br>• `alembic check` in CI <br>• an enforced production checklist: `create-admin` before exposure, HTTPS origin, `secure_cookies`, forwarded-IP handling for the throttle <br>• frontend smoke tests for the editor's status mapping | R2–R5, R9, D12, part of M10 | — |
 | 1 | Credit reconciliation: <br>• an admin endpoint and UI to resolve `needs_attention` runs <br>• a refund policy for provider-reported failures <br>• a quota check before submitting <br>• a trial and monthly grant policy | R1, part of R6, M6 | 0 |
 | 2 | Split `app/main.py` into routers and services without changing behavior <br>• remove the import-time side effects <br>• return stable error codes instead of translating by text | D1, D2, D6, P9 | 0 |
 | 3 | Provider/model registry: <br>• one adapter protocol <br>• one registry used by the API and worker and exposed to the frontend (capabilities, defaults, price) <br>• validate AI tools when they are saved | D3, D4, P5 | 2 |
 | 4 | Per-node configuration. **Done in Phase 3.5 (F13):** a settings schema served with the ports, inspector fields for every executable node, video model, aspect ratio, clip length and prompt in `config`, validation codes, readiness. **Still open:** <br>• show a past run's snapshot settings <br>• settings for new executors as they land | M1 | 3 |
 | 5 | Engine refactor. **Done in Phase 1 (F10):** executor, registry, handlers, input resolution, job requests, `finish_step`, advancing after approval. **Done in Phase 3 (F12):** typed ports and required inputs. **Still open:** <br>• a generic worker loop for new job kinds <br>• honor `approval_required` <br>• run cancellation <br>• more than one paid node per run | P1, U6, M4 | 4, F3 |
-| 6 | Text generation. **Done in Phase 2 (F11):** OpenAI/Anthropic/Gemini adapters, text worker, and seven text nodes with credits. **Still open:** <br>• a smoke test with live keys (R12) <br>• token-based pricing (R11) <br>• feed upstream text into the video prompt <br>• decide whether `script` becomes a text node <br>• `scenes` with JSON output <br>• text-node templates | Part of M2, U4, R11, R12 | 5, 3, P6 pricing |
+| 6 | Text generation. **Done in Phase 2 (F11):** OpenAI/Anthropic/Gemini adapters, text worker, and seven text nodes with credits. **Phase 3.6:** smoke-test tooling for text and video. **Still open:** <br>• running the smoke tests with live keys (R12) <br>• token-based pricing (R11) <br>• feed upstream text into the video prompt <br>• decide whether `script` becomes a text node <br>• `scenes` with JSON output <br>• text-node templates | Part of M2, U4, R11, R12 | 5, 3, P6 pricing |
 | 7 | Asset lifecycle: <br>• delete and rename <br>• link uploads to projects <br>• ffprobe metadata <br>• a storage abstraction <br>• backups | M5, P4, R6 | 0 |
 | 8 | `image`, `voice`/`music` and `subtitle` executors, then the FFmpeg `render` node | M2, U3 | 5, 6, 7 |
 | 9 | `publish` node executor (queues a publication after approval), then scheduling (`available_at` plus calendar), then TikTok and Facebook connections built on the existing adapters | P7, M3, U5 | 5, F4 |
 | 10 | Teams, roles and workspace switching; account security (password reset, 2FA); full frontend E2E tests | M7, M8, M10 | 2 |
 
-Phase 1 took the engine part of step 5 ahead of steps 2–4, because it did not depend on them. Phase 2 then did most of step 6 and the backend half of step 4, Phase 3 connected the nodes with typed data, and Phase 3.5 finished step 4. The next highest-value work:
+Phase 1 took the engine part of step 5 ahead of steps 2–4, because it did not depend on them. Phase 2 then did most of step 6 and the backend half of step 4, Phase 3 connected the nodes with typed data, Phase 3.5 finished step 4, and Phase 3.6 added the runtime environment, logs and smoke tooling. The next highest-value work:
 
-- A live-key smoke test and a pricing decision for text (R11, R12).
-- One shared provider environment for the API and all workers (R13).
+- Run the live smoke tests with one real text provider and one real video provider, then the full workflow test (R12), and record the results under Live Provider Verification. Decide text pricing (R11) with the measured token counts.
 - Credit reconciliation for video (step 1). Steps 1–3 can run in parallel once step 0 is in place. Step 7 is independent of steps 3–6 and can start earlier if storage pressure appears in production. Apply to Google, TikTok and Meta for platform API access early, because approval timelines are outside the team's control.

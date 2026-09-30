@@ -264,7 +264,8 @@ class TextNodeTest(unittest.TestCase):
         self.work(FakeProvider(TextProviderError("invalid_request", "bad model", http_status=400)))
         steps = self.steps(run_id)
         self.assertEqual((steps["writer"].status, steps["writer"].detail), ("failed", text_worker.REJECTED_DETAIL))
-        self.assertEqual(json.loads(steps["writer"].output)["error"], {"code": "invalid_request", "retryable": False})
+        self.assertEqual(json.loads(steps["writer"].output)["error"], {"code": "invalid_request", "retryable": False,
+                                                                           "category": "invalid_request"})
         self.assertEqual(steps["summary"].status, "skipped")
         self.assertEqual(json.loads(steps["idea"].output)["topic"], "Rừng đêm")
         self.assertEqual(self.run_status(run_id), "failed")

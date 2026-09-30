@@ -44,6 +44,8 @@ class ExecutionContext:
         self.now = now or datetime.now(timezone.utc)
         # The run's steps by node ID, set by the executor before it calls handlers.
         self.steps: dict[str, WorkflowRunStep] = {}
+        # Log events of the current executor pass, written once the pass finishes.
+        self.events: list[tuple[str, int, dict[str, Any]]] = []
 
     @classmethod
     def for_run(cls, db: Session, run: WorkflowRun, **kwargs) -> "ExecutionContext":

@@ -36,10 +36,10 @@ class GeminiTextProvider(TextGenerationProvider):
 
         feedback = data.get("promptFeedback") if isinstance(data.get("promptFeedback"), dict) else {}
         if feedback.get("blockReason"):
-            raise TextProviderError("content_blocked", "gemini blocked the prompt")
+            raise TextProviderError("content_rejected", "gemini blocked the prompt")
         candidates = data.get("candidates")
         if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
-            raise TextProviderError("provider_response", "gemini returned no candidates")
+            raise TextProviderError("invalid_response", "gemini returned no candidates")
         candidate = candidates[0]
         raw_finish = candidate.get("finishReason")
         finish = _FINISH.get(raw_finish, FINISH_OTHER)

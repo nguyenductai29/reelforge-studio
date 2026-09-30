@@ -180,7 +180,7 @@ class DolaClientTest(unittest.TestCase):
             self.assertFalse(raised.exception.retryable)
             with self.assertRaises(dola.ProviderError) as raised:
                 client.status(submission)
-            self.assertEqual(raised.exception.code, "transport_error")
+            self.assertEqual(raised.exception.code, "timeout")
             self.assertTrue(raised.exception.retryable)
 
     def test_http_redirect_cannot_forward_bearer_token(self):
@@ -191,7 +191,7 @@ class DolaClientTest(unittest.TestCase):
             with self.assertRaises(dola.ProviderError) as raised:
                 dola.DolaClient("secret", base_url=BASE, http_client=http).submit(
                     dola.VideoRequest("seedance-2.0", "fox"))
-        self.assertEqual(raised.exception.code, "provider_response")
+        self.assertEqual(raised.exception.code, "invalid_response")
 
 
 if __name__ == "__main__":

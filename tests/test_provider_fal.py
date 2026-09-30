@@ -197,7 +197,7 @@ class FalQueueClientTest(unittest.TestCase):
 
     def test_http_errors_map_to_stable_worker_codes(self):
         expected = [
-            (401, "auth_error", False),
+            (401, "authentication_error", False),
             (402, "billing_error", False),
             (422, "invalid_request", False),
             (429, "rate_limited", True),
@@ -238,7 +238,7 @@ class FalQueueClientTest(unittest.TestCase):
             with self.assertRaises(ProviderError) as raised:
                 FalQueueClient("test-key", http_client=http).status(handle)
 
-        self.assertEqual(raised.exception.code, "transport_error")
+        self.assertEqual(raised.exception.code, "timeout")
         self.assertTrue(raised.exception.retryable)
 
     def test_redirect_is_not_followed_with_api_key(self):
@@ -249,7 +249,7 @@ class FalQueueClientTest(unittest.TestCase):
             with self.assertRaises(ProviderError) as raised:
                 FalQueueClient("test-key", http_client=http).submit(VideoRequest(MODEL, "fox"))
 
-        self.assertEqual(raised.exception.code, "provider_response")
+        self.assertEqual(raised.exception.code, "invalid_response")
 
     def test_malformed_provider_payload_raises_typed_error(self):
         handle = Submission(MODEL, REQUEST_ID, f"{BASE}/status", f"{BASE}/response")
@@ -272,7 +272,7 @@ class FalQueueClientTest(unittest.TestCase):
                             client.status(handle)
                         else:
                             client.result(handle)
-                self.assertEqual(raised.exception.code, "provider_response")
+                self.assertEqual(raised.exception.code, "invalid_response")
 
 
 if __name__ == "__main__":

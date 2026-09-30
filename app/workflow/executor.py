@@ -12,6 +12,10 @@ A step that did not complete never lets its children run, and a pass never
 rewrites a step that already left the pending state. Every change happens in
 the caller's transaction. A node whose settings are invalid is blocked with the
 setting's error code before its handler sees it; the rest of the run goes on.
+
+Each pass logs structured events (``workflow_run_started``, ``workflow_step_*``,
+``credit_reserved``…; see ``app/logs.py``) once it has finished, so a start
+that is rejected and rolled back logs only ``workflow_run_rejected``.
 """
 from dataclasses import dataclass
 import json
@@ -23,19 +27,39 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import jobs
+from app.logs import log_event, payload_summary
 from app.models import WorkflowRun, WorkflowRunStep
-from app.workflow.config import ConfigError
+from app.workflow.config import TEXT as TEXT_FIELD, ConfigError
 from app.workflow.context import ExecutionContext, NodeInputs, StepState, resolve_node_inputs
 from app.workflow.graph import ordered_nodes
 from app.workflow.nodes.base import INVALID_CONFIG_DETAIL
 from app.workflow.ports import unsatisfied_inputs
 from app.workflow.registry import NodeRegistry, default_registry
-from app.workflow.results import (AWAITING_REVIEW, OPEN_STATUSES, RUNNING, SKIPPED, WAITING_DETAIL, NodeError,
-                                  NodeExecutionResult, NodeReadiness, RunRequestError, derive_run_status)
+from app.workflow.results import (AWAITING_REVIEW, BLOCKED, COMPLETED, FAILED, NEEDS_ATTENTION, OPEN_STATUSES, QUEUED,
+                                  RUNNING, SKIPPED, WAITING_DETAIL, NodeError, NodeExecutionResult, NodeReadiness,
+                                  RunRequestError, derive_run_status)
 
 logger = logging.getLogger(__name__)
 
 HANDLER_FAILED_DETAIL = "Bước gặp lỗi khi thực thi."
+STEP_EVENTS = {COMPLETED: "workflow_step_completed", FAILED: "workflow_step_failed", BLOCKED: "workflow_step_blocked",
+               QUEUED: "workflow_step_queued", AWAITING_REVIEW: "workflow_step_awaiting_review",
+               NEEDS_ATTENTION: "workflow_step_needs_attention", RUNNING: "workflow_step_running"}
+
+
+def config_summary(handler, config) -> dict[str, Any]:
+    """A node's settings for logs: choices as they are, free text by length only."""
+    if not isinstance(config, Mapping):
+        return {}
+    fields = {field.key: field for field in handler.config_fields}
+    summary = {}
+    for key, value in config.items():
+        field = fields.get(key)
+        if isinstance(value, str) and (field is None or field.type == TEXT_FIELD):
+            summary[f"{key}_chars"] = len(value)
+        else:
+            summary[key] = value
+    return summary
 
 
 @dataclass
@@ -72,13 +96,23 @@ class WorkflowExecutor:
         context.steps = {step.node_id: step for step in steps}
         states: dict[str, StepState] = {}
         evaluated = {}
-        for (node, _), step in zip(order, steps):
-            result = self._evaluate(context, node, self._inputs(context, node, states), starting=True)
-            self._apply(step, result, context)
-            self._enqueue(context, step, result)
-            states[node["id"]] = StepState(node["id"], node["type"], result.status, result.stored_output())
-            evaluated[node["id"]] = result
+        try:
+            for (node, _), step in zip(order, steps):
+                result = self._evaluate(context, node, self._inputs(context, node, states), starting=True)
+                self._record(context, step, result, node)
+                states[node["id"]] = StepState(node["id"], node["type"], result.status, result.stored_output())
+                evaluated[node["id"]] = result
+        except RunRequestError as exc:
+            # The caller rolls the whole start back, so nothing evaluated so far happened.
+            context.events.clear()
+            log_event(logger, "workflow_run_rejected", level=logging.WARNING, **self._run_fields(context),
+                      code=exc.code, status_code=exc.status_code)
+            raise
         self._settle(context.run, steps, context)
+        context.events.insert(0, ("workflow_run_started", logging.INFO, {
+            **self._run_fields(context), "project_id": context.run.project_id,
+            "retry_of_id": context.run.retry_of_id, "nodes": len(steps), "status": context.run.status}))
+        self._flush(context)
         return RunProgress(steps, evaluated)
 
     def advance_run(self, context: ExecutionContext) -> RunProgress:
@@ -101,19 +135,22 @@ class WorkflowExecutor:
             if not inputs.ready:
                 continue
             result = self._evaluate(context, node, inputs, starting=False)
-            self._apply(step, result, context)
-            self._enqueue(context, step, result)
+            self._record(context, step, result, node)
             states[node["id"]] = StepState(node["id"], node["type"], result.status, result.stored_output())
             evaluated[node["id"]] = result
+        previous = context.run.status
         self._settle(context.run, steps, context)
+        if context.run.status != previous:
+            context.events.append(("workflow_run_status_changed", logging.INFO, {
+                **self._run_fields(context), "previous_status": previous, "status": context.run.status}))
+        self._flush(context)
         return RunProgress(steps, evaluated)
 
     def finish_step(self, context: ExecutionContext, step: WorkflowRunStep,
                     result: NodeExecutionResult) -> RunProgress:
         """Record the outcome of a step's asynchronous work, then continue the run."""
         self._lock_run(context)
-        self._apply(step, result, context)
-        self._enqueue(context, step, result)
+        self._record(context, step, result)
         return self.advance_run(context)
 
     def readiness(self, context: ExecutionContext) -> list[tuple[dict, NodeReadiness]]:
@@ -148,6 +185,10 @@ class WorkflowExecutor:
                 return NodeExecutionResult.blocked(
                     handler.missing_input_detail, NodeError("missing_input", f"Needs input: {' or '.join(missing)}"),
                     output={"missing_inputs": missing})
+            if context.run is not None:
+                context.events.append(("workflow_step_started", logging.INFO, {
+                    **self._run_fields(context), "step_id": context.steps[node["id"]].id if node["id"] in context.steps
+                    else None, "node_id": node["id"], "node_type": node["type"]}))
             result = handler.execute(context, node, inputs)
             if not isinstance(result, NodeExecutionResult):
                 raise TypeError(f"{type(handler).__name__} returned {type(result).__name__}")
@@ -166,6 +207,42 @@ class WorkflowExecutor:
             return NodeExecutionResult.failed(
                 NodeError("handler_error", f"{type(exc).__name__} while executing {node['type']}"),
                 detail=HANDLER_FAILED_DETAIL)
+
+    def _record(self, context: ExecutionContext, step: WorkflowRunStep, result: NodeExecutionResult,
+                node: Mapping[str, Any] | None = None) -> None:
+        """Store a step's result, enqueue its job, and note what happened for the log."""
+        self._apply(step, result, context)
+        self._enqueue(context, step, result)
+        event = STEP_EVENTS.get(result.status)
+        if event is None:
+            return
+        fields = {**self._run_fields(context), "step_id": step.id, "node_id": step.node_id,
+                  "node_type": step.node_type, "status": result.status}
+        if result.error is not None:
+            fields.update(error_code=result.error.code, retryable=result.error.retryable)
+        if result.job is not None:
+            # What will be sent to the provider, as resolved from the node's settings in the run snapshot.
+            fields.update(job_id=result.job_id, job=payload_summary(result.job.payload))
+            if node is not None:
+                fields["settings"] = config_summary(self.registry.resolve(step.node_type), node.get("config"))
+        level = logging.WARNING if result.status in (FAILED, NEEDS_ATTENTION) else logging.INFO
+        context.events.append((event, level, fields))
+        if result.metadata.get("credits_reserved"):
+            context.events.append(("credit_reserved", logging.INFO, {
+                **self._run_fields(context), "step_id": step.id, "credits": result.metadata["credits_reserved"],
+                "reference": result.metadata.get("credit_reference")}))
+
+    @staticmethod
+    def _run_fields(context: ExecutionContext) -> dict[str, Any]:
+        run = context.run
+        return {"workspace_id": context.workspace.id if context.workspace else None,
+                "workflow_id": run.workflow_id if run else None, "run_id": run.id if run else None}
+
+    @staticmethod
+    def _flush(context: ExecutionContext) -> None:
+        for event, level, fields in context.events:
+            log_event(logger, event, level=level, **fields)
+        context.events.clear()
 
     @staticmethod
     def _apply(step: WorkflowRunStep, result: NodeExecutionResult, context: ExecutionContext) -> None:

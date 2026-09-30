@@ -1,4 +1,5 @@
 """ReelForge Studio: small, self-hosted first slice."""
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import math
@@ -24,6 +25,7 @@ from app import auth_security, billing, payments, publications, usage
 # Re-exported: existing callers import video_provider_config_issue from app.main.
 from app.providers.catalog import video_provider_config_issue  # noqa: F401
 from app.publishers import google_oauth
+from app.runtime_env import start_process
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
                           parse_graph)
 from app.workflow.config import ConfigError, check_tools
@@ -70,7 +72,14 @@ with Session.begin() as db:
         for key, default in WORKSPACE_DEFAULTS.items():
             if db.get(WorkspaceSetting, (workspace_id, key)) is None:
                 db.add(WorkspaceSetting(workspace_id=workspace_id, key=key, value=json.dumps(default)))
-app = FastAPI(title="ReelForge Studio")
+@asynccontextmanager
+async def lifespan(_app):
+    # The API loads the same runtime environment file as the workers (app/runtime_env.py).
+    start_process("api")
+    yield
+
+
+app = FastAPI(title="ReelForge Studio", lifespan=lifespan)
 MAX_UPLOAD = 100 * 1024 * 1024
 
 

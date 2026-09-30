@@ -162,7 +162,8 @@ class VideoNodeHandler(NodeHandler):
         return NodeExecutionResult.queued("Đã xếp hàng tạo video.", JobRequest("video", payload),
                                           {"prompt": prompt, "provider": provider_name, "model": model_id,
                                            "aspect_ratio": aspect_ratio, "duration": request.duration},
-                                          metadata={"credits_reserved": cost})
+                                          metadata={"credits_reserved": cost,
+                                                    "credit_reference": f"reserve:{context.run.id}"})
 
     def readiness(self, context, node):
         quote = video_credit_cost()

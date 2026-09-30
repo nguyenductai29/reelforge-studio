@@ -9,15 +9,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.providers.errors import NETWORK_ERROR, TIMEOUT, ProviderError as BaseProviderError, response_detail, status_error
 
-class ProviderError(Exception):
-    """A local or fal error with a stable code for the worker."""
 
-    def __init__(self, code: str, message: str, *, retryable: bool = False, http_status: int | None = None):
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
-        self.http_status = http_status
+class ProviderError(BaseProviderError):
+    """A local or fal error with a stable code and category (app/providers/errors.py)."""
 
 
 @dataclass(frozen=True)
@@ -180,35 +176,31 @@ class FalQueueClient:
                 timeout=self.timeout_seconds,
                 follow_redirects=False,
             )
+        except httpx.TimeoutException as exc:
+            if method == "POST":
+                raise ProviderError("submission_unknown", "fal submission timed out; its outcome is unknown",
+                                    category=TIMEOUT) from exc
+            raise ProviderError("timeout", "fal did not answer in time", retryable=True) from exc
         except httpx.RequestError as exc:
             if method == "POST":
-                raise ProviderError("submission_unknown", "fal submission outcome is unknown") from exc
-            raise ProviderError("transport_error", "Could not contact fal", retryable=True) from exc
+                raise ProviderError("submission_unknown", "fal submission outcome is unknown",
+                                    category=NETWORK_ERROR) from exc
+            raise ProviderError("network_error", "Could not contact fal", retryable=True) from exc
 
         status = response.status_code
         if not 200 <= status < 300:
-            if status in (400, 422):
-                code, retryable = "invalid_request", False
-            elif status in (401, 403):
-                code, retryable = "auth_error", False
-            elif status == 402:
-                code, retryable = "billing_error", False
-            elif status == 404:
-                code, retryable = "not_found", False
-            elif status == 429:
-                code, retryable = "rate_limited", True
-            elif status >= 500:
-                code, retryable = "provider_unavailable", method != "POST"
-            else:
-                code, retryable = "provider_response", False
-            raise ProviderError(code, f"fal returned HTTP {status}", retryable=retryable, http_status=status)
+            code, retryable = status_error(status)
+            if method == "POST" and status >= 500:
+                retryable = False
+            raise ProviderError(code, f"fal returned HTTP {status}", retryable=retryable, http_status=status,
+                                provider_detail=response_detail(response))
 
         try:
             data = response.json()
         except ValueError as exc:
-            raise ProviderError("provider_response", "fal returned invalid JSON") from exc
+            raise ProviderError("invalid_response", "fal returned invalid JSON") from exc
         if not isinstance(data, dict):
-            raise ProviderError("provider_response", "fal returned an invalid response")
+            raise ProviderError("invalid_response", "fal returned an invalid response")
         return data
 
     def submit(self, request: VideoRequest) -> Submission:
@@ -224,7 +216,7 @@ class FalQueueClient:
             },
         )
         if not all(isinstance(data.get(key), str) for key in ("request_id", "status_url", "response_url")):
-            raise ProviderError("provider_response", "fal returned an incomplete submission")
+            raise ProviderError("invalid_response", "fal returned an incomplete submission")
         submission = Submission(
             model_id=request.model_id,
             request_id=data["request_id"],
@@ -238,7 +230,7 @@ class FalQueueClient:
         _validate_submission(submission)
         data = self._request_json("GET", submission.status_url)
         if "request_id" in data and data["request_id"] != submission.request_id:
-            raise ProviderError("provider_response", "fal returned a different request ID")
+            raise ProviderError("invalid_response", "fal returned a different request ID")
         raw_status = data.get("status")
         if raw_status == "IN_QUEUE":
             return JobStatus("queued", queue_position=data.get("queue_position"))
@@ -253,13 +245,13 @@ class FalQueueClient:
                     retryable=code in _TRANSIENT_ERROR_TYPES,
                 ))
             return JobStatus("completed")
-        raise ProviderError("provider_response", "Unknown fal queue state")
+        raise ProviderError("invalid_response", "Unknown fal queue state")
 
     def result(self, submission: Submission) -> VideoResult:
         _validate_submission(submission)
         data = self._request_json("GET", submission.response_url)
         video = data.get("video")
         if not isinstance(video, dict) or not isinstance(video.get("url"), str):
-            raise ProviderError("provider_response", "fal returned no video URL")
+            raise ProviderError("invalid_response", "fal returned no video URL")
         validate_media_url(video["url"])
         return VideoResult(video_url=video["url"], content_type=video.get("content_type"))

@@ -150,7 +150,7 @@ class ReplicateClientTests(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(handle)) as http_client:
             with self.assertRaises(ProviderError) as raised:
                 ReplicateClient("secret", http_client=http_client).status(submission())
-        self.assertEqual(raised.exception.code, "provider_response")
+        self.assertEqual(raised.exception.code, "invalid_response")
 
     def test_result_accepts_only_replicate_delivery_https_mp4(self):
         for bad_url in (
@@ -176,7 +176,7 @@ class ReplicateClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "unsafe_url")
 
     def test_transport_and_http_errors_have_stable_retry_decisions(self):
-        for status, expected in ((400, ("invalid_request", False)), (401, ("auth_error", False)),
+        for status, expected in ((400, ("invalid_request", False)), (401, ("authentication_error", False)),
                                  (402, ("billing_error", False)), (429, ("rate_limited", True)),
                                  (503, ("provider_unavailable", True))):
             with self.subTest(status=status):
@@ -194,7 +194,7 @@ class ReplicateClientTests(unittest.TestCase):
             client = ReplicateClient("secret", http_client=http_client)
             with self.assertRaises(ProviderError) as raised:
                 client.status(submission())
-            self.assertEqual((raised.exception.code, raised.exception.retryable), ("transport_error", True))
+            self.assertEqual((raised.exception.code, raised.exception.retryable), ("timeout", True))
             with self.assertRaises(ProviderError) as raised:
                 client.submit(VideoRequest(model_id=MODEL, prompt="video"))
             self.assertEqual((raised.exception.code, raised.exception.retryable), ("submission_unknown", False))

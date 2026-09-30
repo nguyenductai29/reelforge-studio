@@ -11,6 +11,8 @@ from typing import Any, Mapping
 
 import httpx
 
+from app.providers.errors import ProviderError, response_detail, status_error
+
 RESPONSE_FORMATS = frozenset({"text", "json"})
 MAX_PROMPT_CHARS = 100_000
 MAX_SYSTEM_CHARS = 20_000
@@ -25,14 +27,8 @@ FINISH_FILTERED = "content_filter"
 FINISH_OTHER = "other"
 
 
-class TextProviderError(Exception):
-    """A local or provider error with a stable code; it never carries a key or a response body."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False, http_status: int | None = None):
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
-        self.http_status = http_status
+class TextProviderError(ProviderError):
+    """A local or provider error with a stable code and category; it never carries a key or a response body."""
 
 
 @dataclass(frozen=True)
@@ -110,30 +106,16 @@ def finished_text(text: Any, finish_reason: str) -> str:
     if isinstance(text, str) and text.strip():
         return text.strip()
     if finish_reason == FINISH_FILTERED:
-        raise TextProviderError("content_blocked", "The provider declined to generate this content")
+        raise TextProviderError("content_rejected", "The provider declined to generate this content")
     if finish_reason == FINISH_LENGTH:
         raise TextProviderError("empty_output", "The token limit was reached before any text was produced")
-    raise TextProviderError("provider_response", "The provider returned no text")
+    raise TextProviderError("empty_output", "The provider returned no text")
 
 
-def http_error(provider: str, status: int) -> TextProviderError:
-    if status in (400, 413, 422):
-        code, retryable = "invalid_request", False
-    elif status in (401, 403):
-        code, retryable = "auth_error", False
-    elif status == 402:
-        code, retryable = "billing_error", False
-    elif status == 404:
-        code, retryable = "not_found", False
-    elif status == 408:
-        code, retryable = "timeout", True
-    elif status == 429:
-        code, retryable = "rate_limited", True
-    elif status >= 500:
-        code, retryable = "provider_unavailable", True
-    else:
-        code, retryable = "provider_response", False
-    return TextProviderError(code, f"{provider} returned HTTP {status}", retryable=retryable, http_status=status)
+def http_error(provider: str, status: int, detail: str | None = None) -> TextProviderError:
+    code, retryable = status_error(status)
+    return TextProviderError(code, f"{provider} returned HTTP {status}", retryable=retryable, http_status=status,
+                             provider_detail=detail)
 
 
 def metadata(response_id: Any, finish_reason: str, provider_finish_reason: Any) -> dict[str, str | None]:
@@ -189,13 +171,13 @@ class TextGenerationProvider(ABC):
         except httpx.TimeoutException as exc:
             raise TextProviderError("timeout", f"{self.name} did not answer in time", retryable=True) from exc
         except httpx.RequestError as exc:
-            raise TextProviderError("transport_error", f"Could not contact {self.name}", retryable=True) from exc
+            raise TextProviderError("network_error", f"Could not contact {self.name}", retryable=True) from exc
         if not 200 <= response.status_code < 300:
-            raise http_error(self.name, response.status_code)
+            raise http_error(self.name, response.status_code, response_detail(response))
         try:
             data = response.json()
         except ValueError as exc:
-            raise TextProviderError("provider_response", f"{self.name} returned invalid JSON") from exc
+            raise TextProviderError("invalid_response", f"{self.name} returned invalid JSON") from exc
         if not isinstance(data, dict):
-            raise TextProviderError("provider_response", f"{self.name} returned an invalid response")
+            raise TextProviderError("invalid_response", f"{self.name} returned an invalid response")
         return data

@@ -241,6 +241,27 @@ cat .gitignore
 
 Never commit `instance/bootstrap.json`.
 
+### 4.1 Runtime environment file (provider keys)
+
+Provider keys, prices and the YouTube OAuth settings are environment variables. The API and every worker need the same values, because a worker that finishes one step also starts the next one. Keep them in one root-owned file that every unit loads:
+
+```bash
+sudo mkdir -p /etc/reelforge
+sudo cp ~/apps/reelforge-studio/.env.runtime.example /etc/reelforge/runtime.env
+sudo chown root:tai /etc/reelforge/runtime.env
+sudo chmod 640 /etc/reelforge/runtime.env
+sudo nano /etc/reelforge/runtime.env
+```
+
+Fill in only the providers you use. The format is `KEY=value` per line, without `export`. Every unit below has `EnvironmentFile=/etc/reelforge/runtime.env`. Check the file without calling any provider:
+
+```bash
+cd ~/apps/reelforge-studio
+REELFORGE_ENV_FILE=/etc/reelforge/runtime.env .venv/bin/python -m app.provider_check
+```
+
+After editing the file, restart the API and all workers. Each logs a `process_started` line with key fingerprints (never the keys). `journalctl -u 'reelforge-*' | grep process_started` shows whether every process loaded the same keys. See `docs/LIVE_PROVIDER_SMOKE_TEST.md` for the live smoke tests.
+
 ---
 
 ## 5. Python virtual environment
@@ -375,6 +396,7 @@ RestartSec=5
 
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/reelforge/runtime.env
 
 StandardOutput=journal
 StandardError=journal
@@ -632,6 +654,7 @@ Restart=always
 RestartSec=5
 
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/reelforge/runtime.env
 
 StandardOutput=journal
 StandardError=journal
@@ -655,7 +678,7 @@ systemctl is-active reelforge-video-worker
 journalctl -u reelforge-video-worker -f
 ```
 
-Provider credentials such as `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, Runway credentials, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` must be supplied to the API, the video worker and the text worker alike. A worker that finishes one step also starts the next one: for example, the text worker queues the video step that follows an AI Writer, and blocks it if it cannot see that video provider's key.
+Provider credentials such as `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, Runway credentials, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` must be supplied to the API, the video worker and the text worker alike, through the shared `/etc/reelforge/runtime.env` (section 4.1). A worker that finishes one step also starts the next one: for example, the text worker queues the video step that follows an AI Writer, and blocks it if it cannot see that video provider's key.
 
 Do not put private API keys into Git.
 
@@ -677,7 +700,7 @@ sudo systemctl start reelforge-text-worker
 journalctl -u reelforge-text-worker -f
 ```
 
-Supply `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` for each text provider you use to both the API (readiness checks) and the text worker (generation). `TEXT_CREDITS_PER_GENERATION` (default 1) sets the credits charged per text step; set the same value for both.
+The text worker gets `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` and `TEXT_CREDITS_PER_GENERATION` (default 1, credits per text step) from the same `EnvironmentFile` as the API, because it copies the video worker unit.
 
 ---
 
@@ -712,6 +735,7 @@ Restart=always
 RestartSec=5
 
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/reelforge/runtime.env
 
 StandardOutput=journal
 StandardError=journal

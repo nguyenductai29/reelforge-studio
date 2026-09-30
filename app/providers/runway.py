@@ -20,6 +20,9 @@ import uuid
 
 import httpx
 
+from app.providers.errors import (NETWORK_ERROR, PROVIDER_UNAVAILABLE, TIMEOUT,
+                                 ProviderError as BaseProviderError, response_detail, status_error)
+
 
 API_BASE = "https://api.dev.runwayml.com/v1"
 API_VERSION = "2024-11-06"
@@ -27,14 +30,8 @@ _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _DURATION = re.compile(r"([0-9]{1,2})s\Z")
 
 
-class ProviderError(Exception):
-    """A local or Runway error with a stable code for the worker."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False, http_status: int | None = None):
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
-        self.http_status = http_status
+class ProviderError(BaseProviderError):
+    """A local or Runway error with a stable code and category (app/providers/errors.py)."""
 
 
 @dataclass(frozen=True)
@@ -200,35 +197,32 @@ class RunwayClient:
                          "Content-Type": "application/json"},
                 json=payload, timeout=self.timeout_seconds, follow_redirects=False,
             )
+        except httpx.TimeoutException as exc:
+            if method == "POST":
+                raise ProviderError("submission_unknown", "Runway submission timed out; its outcome is unknown",
+                                    category=TIMEOUT) from exc
+            raise ProviderError("timeout", "Runway did not answer in time", retryable=True) from exc
         except httpx.RequestError as exc:
             if method == "POST":
-                raise ProviderError("submission_unknown", "Runway submission outcome is unknown") from exc
-            raise ProviderError("transport_error", "Could not contact Runway", retryable=True) from exc
+                raise ProviderError("submission_unknown", "Runway submission outcome is unknown",
+                                    category=NETWORK_ERROR) from exc
+            raise ProviderError("network_error", "Could not contact Runway", retryable=True) from exc
         status = response.status_code
         if not 200 <= status < 300:
+            code, retryable = status_error(status)
+            category = None
             if method == "POST" and status >= 500:
-                code, retryable = "submission_unknown", False
-            elif status in (400, 422):
-                code, retryable = "invalid_request", False
-            elif status in (401, 403):
-                code, retryable = "auth_error", False
-            elif status == 402:
-                code, retryable = "billing_error", False
-            elif status == 404:
-                code, retryable = "not_found", False
-            elif status == 429:
-                code, retryable = "rate_limited", method != "POST"
-            elif status >= 500:
-                code, retryable = "provider_unavailable", True
-            else:
-                code, retryable = "provider_response", False
-            raise ProviderError(code, f"Runway returned HTTP {status}", retryable=retryable, http_status=status)
+                code, retryable, category = "submission_unknown", False, PROVIDER_UNAVAILABLE
+            elif status == 429 and method == "POST":
+                retryable = False
+            raise ProviderError(code, f"Runway returned HTTP {status}", retryable=retryable,
+                                http_status=status, category=category, provider_detail=response_detail(response))
         try:
             data = response.json()
         except ValueError as exc:
-            raise ProviderError("provider_response", "Runway returned invalid JSON") from exc
+            raise ProviderError("invalid_response", "Runway returned invalid JSON") from exc
         if not isinstance(data, dict):
-            raise ProviderError("provider_response", "Runway returned an invalid response")
+            raise ProviderError("invalid_response", "Runway returned an invalid response")
         return data
 
     def submit(self, request: VideoRequest) -> Submission:
@@ -246,7 +240,7 @@ class RunwayClient:
         _validate_submission(submission)
         data = self._request_json("GET", submission.status_url)
         if data.get("id") != submission.request_id:
-            raise ProviderError("provider_response", "Runway returned a different task ID")
+            raise ProviderError("invalid_response", "Runway returned a different task ID")
         return data
 
     def status(self, submission: Submission) -> JobStatus:
@@ -267,7 +261,7 @@ class RunwayClient:
                 message = f"Runway task {state.lower()}"
             retryable = code in {"INTERNAL", "INPUT_PREPROCESSING.INTERNAL", "THIRD_PARTY.UNAVAILABLE"}
             return JobStatus("failed", error=JobFailure(code, message[:1000], retryable))
-        raise ProviderError("provider_response", "Unknown Runway task state")
+        raise ProviderError("invalid_response", "Unknown Runway task state")
 
     def result(self, submission: Submission) -> VideoResult:
         data = self._poll(submission)
@@ -275,6 +269,6 @@ class RunwayClient:
             raise ProviderError("not_ready", "Runway video is not ready", retryable=True)
         output = data.get("output")
         if not isinstance(output, list) or len(output) != 1 or not isinstance(output[0], str):
-            raise ProviderError("provider_response", "Runway returned no single video URL")
+            raise ProviderError("invalid_response", "Runway returned no single video URL")
         validate_media_url(output[0])
         return VideoResult(video_url=output[0])

@@ -29,7 +29,7 @@ class OpenAITextProvider(TextGenerationProvider):
 
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise TextProviderError("provider_response", "openai returned no choices")
+            raise TextProviderError("invalid_response", "openai returned no choices")
         choice = choices[0]
         message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
         raw_finish = choice.get("finish_reason")

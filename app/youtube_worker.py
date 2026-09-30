@@ -11,6 +11,7 @@ from app.db import Session
 from app.main import media_root
 from app.models import Asset
 from app.publishers import google_oauth, youtube
+from app.runtime_env import start_process
 
 
 MAX_TRANSIENT_ATTEMPTS = 6
@@ -154,6 +155,7 @@ def main():
     parser = argparse.ArgumentParser(description="Process approved YouTube uploads")
     parser.add_argument("--once", action="store_true", help="Process at most one due upload")
     args = parser.parse_args()
+    start_process("youtube_worker")
     while True:
         worked = run_one()
         if args.once:

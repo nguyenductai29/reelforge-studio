@@ -15,19 +15,16 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.providers.errors import (NETWORK_ERROR, PROVIDER_UNAVAILABLE, TIMEOUT,
+                                 ProviderError as BaseProviderError, response_detail, status_error)
+
 
 API_BASE = "https://api.replicate.com/v1"
 _PREDICTION_ID = re.compile(r"[a-z0-9]{10,64}\Z")
 
 
-class ProviderError(Exception):
-    """A local or Replicate error with a stable code for the worker."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False, http_status: int | None = None):
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
-        self.http_status = http_status
+class ProviderError(BaseProviderError):
+    """A local or Replicate error with a stable code and category (app/providers/errors.py)."""
 
 
 @dataclass(frozen=True)
@@ -158,43 +155,38 @@ class ReplicateClient:
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                 json=payload, timeout=self.timeout_seconds, follow_redirects=False,
             )
+        except httpx.TimeoutException as exc:
+            if method == "POST":
+                raise ProviderError("submission_unknown", "Replicate submission timed out; its outcome is unknown",
+                                    category=TIMEOUT) from exc
+            raise ProviderError("timeout", "Replicate did not answer in time", retryable=True) from exc
         except httpx.RequestError as exc:
             if method == "POST":
-                raise ProviderError("submission_unknown", "Replicate submission outcome is unknown") from exc
-            raise ProviderError("transport_error", "Could not contact Replicate", retryable=True) from exc
+                raise ProviderError("submission_unknown", "Replicate submission outcome is unknown",
+                                    category=NETWORK_ERROR) from exc
+            raise ProviderError("network_error", "Could not contact Replicate", retryable=True) from exc
         status = response.status_code
         if not 200 <= status < 300:
+            code, retryable = status_error(status)
+            category = None
             if method == "POST" and status >= 500:
-                code, retryable = "submission_unknown", False
-            elif status in (400, 422):
-                code, retryable = "invalid_request", False
-            elif status in (401, 403):
-                code, retryable = "auth_error", False
-            elif status == 402:
-                code, retryable = "billing_error", False
-            elif status == 404:
-                code, retryable = "not_found", False
-            elif status == 429:
-                code, retryable = "rate_limited", True
-            elif status >= 500:
-                code, retryable = "provider_unavailable", True
-            else:
-                code, retryable = "provider_response", False
-            raise ProviderError(code, f"Replicate returned HTTP {status}", retryable=retryable, http_status=status)
+                code, retryable, category = "submission_unknown", False, PROVIDER_UNAVAILABLE
+            raise ProviderError(code, f"Replicate returned HTTP {status}", retryable=retryable,
+                                http_status=status, category=category, provider_detail=response_detail(response))
         try:
             data = response.json()
         except ValueError as exc:
-            raise ProviderError("provider_response", "Replicate returned invalid JSON") from exc
+            raise ProviderError("invalid_response", "Replicate returned invalid JSON") from exc
         if not isinstance(data, dict):
-            raise ProviderError("provider_response", "Replicate returned an invalid prediction")
+            raise ProviderError("invalid_response", "Replicate returned an invalid prediction")
         return data
 
     @staticmethod
     def _validate_prediction(data: dict[str, Any], submission: Submission) -> None:
         if data.get("id") != submission.request_id:
-            raise ProviderError("provider_response", "Replicate returned a different prediction ID")
+            raise ProviderError("invalid_response", "Replicate returned a different prediction ID")
         if "model" in data and data["model"] != submission.model_id:
-            raise ProviderError("provider_response", "Replicate returned a different model")
+            raise ProviderError("invalid_response", "Replicate returned a different model")
 
     def submit(self, request: VideoRequest) -> Submission:
         validate_video_request(request)
@@ -236,7 +228,7 @@ class ReplicateClient:
             return JobStatus("failed", error=JobFailure(
                 code=code, message=str(data.get("error") or f"Prediction {state}")[:1000], retryable=False,
             ))
-        raise ProviderError("provider_response", "Unknown Replicate prediction state")
+        raise ProviderError("invalid_response", "Unknown Replicate prediction state")
 
     def result(self, submission: Submission) -> VideoResult:
         data = self._poll(submission)
@@ -246,6 +238,6 @@ class ReplicateClient:
             raise ProviderError("result_expired", "Replicate video has expired")
         output = data.get("output")
         if not isinstance(output, str):
-            raise ProviderError("provider_response", "Replicate returned no video URL")
+            raise ProviderError("invalid_response", "Replicate returned no video URL")
         validate_media_url(output)
         return VideoResult(video_url=output)

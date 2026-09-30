@@ -6,7 +6,7 @@ Self-hosted foundation for a short-video production platform. Next.js/React/Type
 
 Requires Python 3.11+, Node.js 20.9+ and an existing PostgreSQL database. Create a dedicated database and user on your PostgreSQL server. Give the user permission to create tables in its own database/schema.
 
-1. Create the local `instance` directory and copy `config.example.json` to `instance/bootstrap.json`. The template contains the requested host, user, database and query string. Replace the literal `PASSWORD` with the **actual password on your server**; it is only a placeholder in the repository. URL-encode the password if it contains reserved URL characters. This is the **only backend bootstrap value outside PostgreSQL**: the app cannot discover a database connection by reading that database. Keep the file out of Git and restrict access to the service account. Do not create a `.env` file.
+1. Create the local `instance` directory and copy `config.example.json` to `instance/bootstrap.json`. The template contains the requested host, user, database and query string. Replace the literal `PASSWORD` with the **actual password on your server**; it is only a placeholder in the repository. URL-encode the password if it contains reserved URL characters. This is the **only backend bootstrap value outside PostgreSQL**: the app cannot discover a database connection by reading that database. Keep the file out of Git and restrict access to the service account. Do not put the database URL in an environment file; provider keys go in `.env.runtime` (below).
 2. Install dependencies and run the initial migration **before** starting the API. From the repository root:
 
 ```bash
@@ -27,6 +27,22 @@ npm run dev
 ```
 
 Open http://localhost:3000 to create the first admin account, or run `npm run create-admin` in `frontend` while the API is running (it prompts for the email and password, or reads `ADMIN_EMAIL` and `ADMIN_PASSWORD`). On a public server, create the admin this way before the site is reachable; until an account exists, the first visitor can claim it. API documentation is at http://127.0.0.1:8000/docs. The Next.js proxy defaults to `http://127.0.0.1:8000`; if the API is at a different server address, copy `frontend/config.example.json` to `frontend/instance/config.json` and set `api_base_url` to the address **reachable by the Next.js server**. That address is the frontend's connection bootstrap, not an application preference.
+
+### Provider keys, processes and logs
+
+Provider keys and prices are environment variables that the API and every worker must share: a worker that finishes one step also starts the next (the text worker queues the video step after an AI Writer). Copy `.env.runtime.example` to `.env.runtime` (git-ignored) and fill in only the providers you use. The API loads it at startup, and so do `python -m app.text_worker`, `app.video_worker`, `app.youtube_worker`, `app.provider_check` and `app.smoke_test`. A variable already set in the process wins, and `REELFORGE_ENV_FILE` names another file (production uses one `EnvironmentFile=` for every systemd unit). Start each process in its own terminal:
+
+```bash
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000   # API
+python -m app.text_worker                                      # AI Writer, Summarize, … steps
+python -m app.video_worker                                     # video steps
+python -m app.youtube_worker                                   # only for YouTube publishing
+cd frontend && npm run dev                                     # dashboard
+```
+
+Each process logs structured JSON lines to stderr. The first is `process_started`, with the runtime file it loaded and an 8-character fingerprint per provider key, so a process started with different keys stands out. Run events follow: `workflow_step_*`, `job_claimed`, `provider_request_*`, `credit_reserved` and `credit_refunded`, with run, step, job, provider and model IDs. Keys are redacted and prompts are logged by length only. `REELFORGE_LOG_FORMAT=text` switches to `key=value` lines, and `REELFORGE_LOG_LEVEL` sets the level.
+
+`python -m app.provider_check` reports, without calling any provider, whether the selected text and video providers have their keys, supported models and settings. `python -m app.smoke_test text|video --live` sends one small paid request, and `python -m app.smoke_test run-report <run_id>` checks that a run's requests match its node settings. See [docs/LIVE_PROVIDER_SMOKE_TEST.md](docs/LIVE_PROVIDER_SMOKE_TEST.md), including the full workflow test and troubleshooting.
 
 ### Studio interface
 
@@ -136,7 +152,7 @@ The Facebook Page Reels and TikTok Content Posting HTTP adapters in `app/publish
 
 ### Text nodes
 
-AI Writer, Summarize, Rewrite, Translate, Hook, Title and CTA steps generate text with the Text model chosen in the step's settings, or else the first enabled **Text** model (AI tool task `script`) whose provider is `openai`, `anthropic` or `gemini`. Keys come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` in the API and text worker environments and are never stored in PostgreSQL. A text step holds `TEXT_CREDITS_PER_GENERATION` credits (default 1) when it is queued, charges them as one usage event when the text arrives, and refunds them if generation fails. `python -m app.text_worker` calls the provider outside any database transaction, retries transient failures up to three times, and then lets the next steps run. A node's optional `config` (prompt, language, tone, platform, duration, target language, count…) is saved with the workflow graph and validated per node type (see Node settings).
+AI Writer, Summarize, Rewrite, Translate, Hook, Title and CTA steps generate text with the Text model chosen in the step's settings, or else the first enabled **Text** model (AI tool task `script`) whose provider is `openai`, `anthropic` or `gemini`. Keys come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` in the shared runtime environment and are never stored in PostgreSQL. A text step holds `TEXT_CREDITS_PER_GENERATION` credits (default 1) when it is queued, charges them as one usage event when the text arrives, and refunds them if generation fails. `python -m app.text_worker` calls the provider outside any database transaction, retries transient failures up to three times, and then lets the next steps run. A node's optional `config` (prompt, language, tone, platform, duration, target language, count…) is saved with the workflow graph and validated per node type (see Node settings).
 
 ### Typed connections
 
@@ -148,7 +164,7 @@ Select a step on the canvas to edit its settings in the right-hand inspector: la
 
 ### Worker and storage settings
 
-Run `python -m app.video_worker`, `python -m app.text_worker` and `python -m app.youtube_worker` continuously as separate processes. All support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and video worker; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys: a worker that finishes one step also starts the next, for example the text worker queues the video step after an AI Writer. Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
+Run `python -m app.video_worker`, `python -m app.text_worker` and `python -m app.youtube_worker` continuously as separate processes. All support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and video worker; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys through `.env.runtime` or one `EnvironmentFile=` (see Provider keys, processes and logs). Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
 
 If a worker crashes during download, preview abandoned temporary files with `python -m app.media_maintenance`. Run `python -m app.media_maintenance --apply` to remove eligible `.part` files older than 24 hours. The command restricts cleanup to known workspace directories and is a dry run unless `--apply` is supplied.
 
@@ -161,4 +177,4 @@ python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
 
-From `frontend/`, run `npm ci`, `npm run typecheck`, and `npm run build`. GitHub Actions runs these Python and frontend checks on pushes and pull requests.
+From `frontend/`, run `npm ci`, `npm run typecheck`, and `npm run build`. GitHub Actions runs these Python and frontend checks on pushes and pull requests. The suite never calls a paid provider: `tests/test_live_providers.py` is skipped unless `REELFORGE_LIVE_TESTS=1` is set in the shell.

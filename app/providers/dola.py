@@ -14,13 +14,12 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.providers.errors import (NETWORK_ERROR, PROVIDER_UNAVAILABLE, TIMEOUT,
+                                 ProviderError as BaseProviderError, response_detail, status_error)
 
-class ProviderError(Exception):
-    def __init__(self, code: str, message: str, *, retryable: bool = False, http_status: int | None = None):
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
-        self.http_status = http_status
+
+class ProviderError(BaseProviderError):
+    """A local or Dola error with a stable code and category (app/providers/errors.py)."""
 
 
 @dataclass(frozen=True)
@@ -159,33 +158,32 @@ class DolaClient:
                 method, url, headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload, timeout=self.timeout_seconds, follow_redirects=False,
             )
+        except httpx.TimeoutException as exc:
+            if method == "POST":
+                raise ProviderError("submission_unknown", "Dola submission timed out; its outcome is unknown",
+                                    category=TIMEOUT) from exc
+            raise ProviderError("timeout", "Dola did not answer in time", retryable=True) from exc
         except httpx.RequestError as exc:
             if method == "POST":
-                raise ProviderError("submission_unknown", "Dola submission outcome is unknown") from exc
-            raise ProviderError("transport_error", "Could not contact Dola", retryable=True) from exc
+                raise ProviderError("submission_unknown", "Dola submission outcome is unknown",
+                                    category=NETWORK_ERROR) from exc
+            raise ProviderError("network_error", "Could not contact Dola", retryable=True) from exc
         status = response.status_code
         if not 200 <= status < 300:
+            code, retryable = status_error(status)
+            category = None
             if method == "POST" and status >= 500:
-                code, retryable = "submission_unknown", False
-            elif status in (400, 422):
-                code, retryable = "invalid_request", False
-            elif status in (401, 403):
-                code, retryable = "auth_error", False
-            elif status == 404:
-                code, retryable = "not_found", False
-            elif status == 429:
-                code, retryable = "rate_limited", method != "POST"
-            elif status >= 500:
-                code, retryable = "provider_unavailable", True
-            else:
-                code, retryable = "provider_response", False
-            raise ProviderError(code, f"Dola returned HTTP {status}", retryable=retryable, http_status=status)
+                code, retryable, category = "submission_unknown", False, PROVIDER_UNAVAILABLE
+            elif status == 429 and method == "POST":
+                retryable = False
+            raise ProviderError(code, f"Dola returned HTTP {status}", retryable=retryable,
+                                http_status=status, category=category, provider_detail=response_detail(response))
         try:
             data = response.json()
         except ValueError as exc:
-            raise ProviderError("provider_response", "Dola returned invalid JSON") from exc
+            raise ProviderError("invalid_response", "Dola returned invalid JSON") from exc
         if not isinstance(data, dict):
-            raise ProviderError("provider_response", "Dola returned an invalid response")
+            raise ProviderError("invalid_response", "Dola returned an invalid response")
         return data
 
     def submit(self, request: VideoRequest) -> Submission:
@@ -200,7 +198,7 @@ class DolaClient:
             not isinstance(request_id, str) or not _TASK_ID.fullmatch(request_id)
             or data.get("status") != "queued" or data.get("model") != request.model_id
         ):
-            raise ProviderError("provider_response", "Dola did not acknowledge a valid task")
+            raise ProviderError("invalid_response", "Dola did not acknowledge a valid task")
         url = f"{self.base_url}/v1/videos/{request_id}"
         return Submission(request.model_id, request_id, url, url)
 
@@ -215,7 +213,7 @@ class DolaClient:
             raise ProviderError("unsafe_url", "Invalid Dola task URL")
         data = self._request_json("GET", expected)
         if data.get("id") != submission.request_id or data.get("model") != submission.model_id:
-            raise ProviderError("provider_response", "Dola returned a different task")
+            raise ProviderError("invalid_response", "Dola returned a different task")
         return data
 
     def status(self, submission: Submission) -> JobStatus:
@@ -229,7 +227,7 @@ class DolaClient:
             return JobStatus("completed")
         if state == "failed":
             return JobStatus("failed", error=JobFailure("provider_failed", "Dola generation failed", False))
-        raise ProviderError("provider_response", "Unknown Dola task state")
+        raise ProviderError("invalid_response", "Unknown Dola task state")
 
     def result(self, submission: Submission) -> VideoResult:
         data = self._poll(submission)

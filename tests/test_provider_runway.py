@@ -169,7 +169,7 @@ class RunwayClientTests(unittest.TestCase):
                 RunwayClient("secret", http_client=http_client).status(submission())
 
     def test_http_and_transport_errors_never_retry_ambiguous_submit(self):
-        for status, expected in ((400, ("invalid_request", False)), (401, ("auth_error", False)),
+        for status, expected in ((400, ("invalid_request", False)), (401, ("authentication_error", False)),
                                  (402, ("billing_error", False)), (429, ("rate_limited", True)),
                                  (503, ("provider_unavailable", True))):
             with self.subTest(status=status):
@@ -194,7 +194,7 @@ class RunwayClientTests(unittest.TestCase):
             client = RunwayClient("secret", http_client=http_client)
             with self.assertRaises(ProviderError) as raised:
                 client.status(submission())
-            self.assertEqual((raised.exception.code, raised.exception.retryable), ("transport_error", True))
+            self.assertEqual((raised.exception.code, raised.exception.retryable), ("timeout", True))
             with self.assertRaises(ProviderError) as raised:
                 client.submit(VideoRequest(MODEL, "fox", generate_audio=False))
             self.assertEqual((raised.exception.code, raised.exception.retryable), ("submission_unknown", False))

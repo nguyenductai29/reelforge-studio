@@ -166,7 +166,8 @@ class TextNodeHandler(NodeHandler):
                    "response_format": "text", "language": language, "credits": cost}
         return NodeExecutionResult.queued(QUEUED_DETAIL, JobRequest("text", payload),
                                           {"provider": tool.provider, "model": tool.model},
-                                          metadata={"credits_reserved": cost})
+                                          metadata={"credits_reserved": cost,
+                                                    "credit_reference": f"text-reserve:{step.id}"})
 
     def readiness(self, context, node):
         config = self.config_values(node.get("config"))

@@ -52,6 +52,8 @@ class NodeError:
     code: str
     message: str
     retryable: bool = False
+    # For provider failures: the stable category from app/providers/errors.py, e.g. "rate_limited".
+    category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,7 +121,10 @@ class NodeExecutionResult:
         if self.asset_ids:
             output = {**(output or {}), "asset_ids": list(self.asset_ids)}
         if self.error is not None:
-            output = {**(output or {}), "error": {"code": self.error.code, "retryable": self.error.retryable}}
+            error = {"code": self.error.code, "retryable": self.error.retryable}
+            if self.error.category:
+                error["category"] = self.error.category
+            output = {**(output or {}), "error": error}
         return output
 
 

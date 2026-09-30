@@ -64,7 +64,7 @@ class OpenAITest(unittest.TestCase):
         provider = OpenAITextProvider(KEY, http_client=client(respond(body=refused)))
         with self.assertRaises(TextProviderError) as caught:
             provider.generate(model="gpt-4.1-mini", prompt="x")
-        self.assertEqual((caught.exception.code, caught.exception.retryable), ("content_blocked", False))
+        self.assertEqual((caught.exception.code, caught.exception.retryable), ("content_rejected", False))
 
 
 class AnthropicTest(unittest.TestCase):
@@ -124,7 +124,7 @@ class GeminiTest(unittest.TestCase):
         provider = GeminiTextProvider(KEY, http_client=client(respond(body={"promptFeedback": {"blockReason": "SAFETY"}})))
         with self.assertRaises(TextProviderError) as caught:
             provider.generate(model="gemini-2.5-flash", prompt="x")
-        self.assertEqual(caught.exception.code, "content_blocked")
+        self.assertEqual(caught.exception.code, "content_rejected")
         seen = []
         provider = GeminiTextProvider(KEY, http_client=client(respond(body=self.BODY, record=seen)))
         with self.assertRaises(TextProviderError) as caught:
@@ -135,7 +135,7 @@ class GeminiTest(unittest.TestCase):
 
 class ErrorAndConfigTest(unittest.TestCase):
     def test_http_status_maps_to_stable_codes_without_secrets(self):
-        cases = [(400, "invalid_request", False), (401, "auth_error", False), (402, "billing_error", False),
+        cases = [(400, "invalid_request", False), (401, "authentication_error", False), (402, "billing_error", False),
                  (404, "not_found", False), (429, "rate_limited", True), (503, "provider_unavailable", True),
                  (529, "provider_unavailable", True)]
         for status, code, retryable in cases:
@@ -156,7 +156,7 @@ class ErrorAndConfigTest(unittest.TestCase):
         def slow(request):
             raise httpx.ReadTimeout("slow", request=request)
 
-        for handler, code in ((unreachable, "transport_error"), (slow, "timeout")):
+        for handler, code in ((unreachable, "network_error"), (slow, "timeout")):
             provider = OpenAITextProvider(KEY, http_client=client(handler))
             with self.assertRaises(TextProviderError) as caught:
                 provider.generate(model="gpt-4.1-mini", prompt="x")
@@ -167,7 +167,7 @@ class ErrorAndConfigTest(unittest.TestCase):
 
         with self.assertRaises(TextProviderError) as caught:
             OpenAITextProvider(KEY, http_client=client(not_json)).generate(model="gpt-4.1-mini", prompt="x")
-        self.assertEqual((caught.exception.code, caught.exception.retryable), ("provider_response", False))
+        self.assertEqual((caught.exception.code, caught.exception.retryable), ("invalid_response", False))
 
     def test_requests_are_validated_before_any_call(self):
         seen = []

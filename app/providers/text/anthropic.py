@@ -29,7 +29,7 @@ class AnthropicTextProvider(TextGenerationProvider):
 
         blocks = data.get("content")
         if not isinstance(blocks, list):
-            raise TextProviderError("provider_response", "anthropic returned no content")
+            raise TextProviderError("invalid_response", "anthropic returned no content")
         raw_finish = data.get("stop_reason")
         finish = _FINISH.get(raw_finish, FINISH_OTHER)
         text = finished_text("".join(block["text"] for block in blocks if isinstance(block, dict)

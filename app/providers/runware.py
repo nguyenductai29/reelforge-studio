@@ -15,18 +15,15 @@ import uuid
 
 import httpx
 
+from app.providers.errors import (NETWORK_ERROR, PROVIDER_UNAVAILABLE, TIMEOUT,
+                                 ProviderError as BaseProviderError, response_detail, status_error)
+
 
 API_URL = "https://api.runware.ai/v1"
 
 
-class ProviderError(Exception):
-    """A local or Runware error with a stable code for the worker."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False, http_status: int | None = None):
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
-        self.http_status = http_status
+class ProviderError(BaseProviderError):
+    """A local or Runware error with a stable code and category (app/providers/errors.py)."""
 
 
 @dataclass(frozen=True)
@@ -168,36 +165,31 @@ class RunwareClient:
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                 json=payload, timeout=self.timeout_seconds, follow_redirects=False,
             )
+        except httpx.TimeoutException as exc:
+            if submitting:
+                raise ProviderError("submission_unknown", "Runware submission timed out; its outcome is unknown",
+                                    category=TIMEOUT) from exc
+            raise ProviderError("timeout", "Runware did not answer in time", retryable=True) from exc
         except httpx.RequestError as exc:
             if submitting:
-                raise ProviderError("submission_unknown", "Runware submission outcome is unknown") from exc
-            raise ProviderError("transport_error", "Could not contact Runware", retryable=True) from exc
+                raise ProviderError("submission_unknown", "Runware submission outcome is unknown",
+                                    category=NETWORK_ERROR) from exc
+            raise ProviderError("network_error", "Could not contact Runware", retryable=True) from exc
 
         status = response.status_code
         if not 200 <= status < 300:
+            code, retryable = status_error(status)
+            category = None
             if submitting and status >= 500:
-                code, retryable = "submission_unknown", False
-            elif status in (400, 422):
-                code, retryable = "invalid_request", False
-            elif status in (401, 403):
-                code, retryable = "auth_error", False
-            elif status == 402:
-                code, retryable = "billing_error", False
-            elif status == 404:
-                code, retryable = "not_found", False
-            elif status == 429:
-                code, retryable = "rate_limited", True
-            elif status >= 500:
-                code, retryable = "provider_unavailable", True
-            else:
-                code, retryable = "provider_response", False
-            raise ProviderError(code, f"Runware returned HTTP {status}", retryable=retryable, http_status=status)
+                code, retryable, category = "submission_unknown", False, PROVIDER_UNAVAILABLE
+            raise ProviderError(code, f"Runware returned HTTP {status}", retryable=retryable,
+                                http_status=status, category=category, provider_detail=response_detail(response))
         try:
             data = response.json()
         except ValueError as exc:
-            raise ProviderError("provider_response", "Runware returned invalid JSON") from exc
+            raise ProviderError("invalid_response", "Runware returned invalid JSON") from exc
         if not isinstance(data, dict):
-            raise ProviderError("provider_response", "Runware returned an invalid response")
+            raise ProviderError("invalid_response", "Runware returned an invalid response")
         return data
 
     @staticmethod
@@ -205,13 +197,13 @@ class RunwareClient:
         results = data.get("data", [])
         errors = data.get("errors", [])
         if not isinstance(results, list) or not isinstance(errors, list):
-            raise ProviderError("provider_response", "Runware returned an invalid response")
+            raise ProviderError("invalid_response", "Runware returned an invalid response")
         matching_results = [entry for entry in results if isinstance(entry, dict)
                             and entry.get("taskUUID") == request_id and entry.get("taskType") == "videoInference"]
         matching_errors = [entry for entry in errors if isinstance(entry, dict)
                            and entry.get("taskUUID") == request_id]
         if len(matching_results) + len(matching_errors) != 1:
-            raise ProviderError("provider_response", "Runware returned a missing or ambiguous task response")
+            raise ProviderError("invalid_response", "Runware returned a missing or ambiguous task response")
         return (matching_results[0] if matching_results else None,
                 matching_errors[0] if matching_errors else None)
 
@@ -229,7 +221,7 @@ class RunwareClient:
         if error is not None:
             raise ProviderError("provider_failed", str(error.get("message", "Runware rejected task"))[:1000])
         if result is None or result.get("status") == "error":
-            raise ProviderError("provider_response", "Runware did not acknowledge task")
+            raise ProviderError("invalid_response", "Runware did not acknowledge task")
         return Submission(model_id=request.model_id, request_id=request_id)
 
     def _poll(self, submission: Submission) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -246,7 +238,7 @@ class RunwareClient:
                 retryable=code in _TRANSIENT_CODES,
             ))
         if result is None:
-            raise ProviderError("provider_response", "Runware returned no task status")
+            raise ProviderError("invalid_response", "Runware returned no task status")
         state = result.get("status")
         if state == "processing":
             return JobStatus("running")
@@ -254,7 +246,7 @@ class RunwareClient:
             return JobStatus("completed")
         if state == "error":
             return JobStatus("failed", error=JobFailure("provider_failed", "Runware task failed", False))
-        raise ProviderError("provider_response", "Unknown Runware task state")
+        raise ProviderError("invalid_response", "Unknown Runware task state")
 
     def result(self, submission: Submission) -> VideoResult:
         result, error = self._poll(submission)
@@ -264,6 +256,6 @@ class RunwareClient:
             raise ProviderError("not_ready", "Runware video is not ready", retryable=True)
         video_url = result.get("videoURL")
         if not isinstance(video_url, str):
-            raise ProviderError("provider_response", "Runware returned no video URL")
+            raise ProviderError("invalid_response", "Runware returned no video URL")
         validate_media_url(video_url)
         return VideoResult(video_url=video_url)
