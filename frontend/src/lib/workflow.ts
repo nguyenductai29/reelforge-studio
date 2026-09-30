@@ -148,7 +148,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
 ];
 
 /** Node types the backend can execute today; every other step stops a run with a reason. */
-export const EXECUTABLE: ReadonlySet<NodeType> = new Set(["idea", "assets", "video", "review", ...TEXT_NODES]);
+export const EXECUTABLE: ReadonlySet<NodeType> = new Set(["idea", "assets", "scenes", "video", "review", ...TEXT_NODES]);
 
 export type TemplateId = keyof Dictionary["templates"];
 

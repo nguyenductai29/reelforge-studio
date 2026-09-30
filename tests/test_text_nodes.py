@@ -21,6 +21,7 @@ from app.providers.text import TextProviderError, TextResult, TextUsage
 from app.workflow import (ExecutionContext, NodeExecutionResult, NodeHandler, RunRequestError, WorkflowExecutor,
                           build_default_registry, default_registry)
 from app.workflow.nodes.text import MISSING_INPUT_DETAIL, MISSING_TOOL_DETAIL, QUEUED_DETAIL
+from app.workflow.ports import TEXT, OutputPort
 
 ROOT = Path(__file__).resolve().parents[1]
 KEYS = {"OPENAI_API_KEY": "sk-test", "TEXT_CREDITS_PER_GENERATION": "1"}
@@ -42,6 +43,7 @@ class SourceHandler(NodeHandler):
     """Stands in for any upstream node that produced text."""
 
     node_type = "source"
+    outputs = (OutputPort("text", TEXT),)
 
     def execute(self, context, node, inputs):
         return NodeExecutionResult.completed("source", {"text": "Nội dung gốc về rừng đêm."})
@@ -149,7 +151,8 @@ class TextNodeTest(unittest.TestCase):
         self.fund(5)
         config = {"prompt": "Giới thiệu rừng đêm", "language": "en", "tone": "cinematic", "platform": "youtube",
                   "duration": 60}
-        run_id = self.start(chain(("idea", "idea"), ("writer", "ai_writer", config)))
+        # Nothing is connected to the writer's prompt, so its "prompt" setting is the brief.
+        run_id = self.start(chain(("writer", "ai_writer", config)))
         steps = self.steps(run_id)
         self.assertEqual((steps["writer"].status, steps["writer"].detail), ("queued", QUEUED_DETAIL))
         self.assertEqual(self.run_status(run_id), "running")
@@ -165,7 +168,7 @@ class TextNodeTest(unittest.TestCase):
         self.assertTrue(self.work(provider))
         self.assertEqual(provider.calls[0]["model"], "gpt-4.1-mini")
         self.assertEqual(self.output(run_id, "writer"),
-                         {"text": "A night in the forest…", "provider": "openai", "model": "gpt-4.1-mini",
+                         {"script": "A night in the forest…", "provider": "openai", "model": "gpt-4.1-mini",
                           "usage": {"input_tokens": 40, "output_tokens": 60, "total_tokens": 100}, "language": "en"})
         self.assertEqual(self.steps(run_id)["writer"].status, "completed")
         self.assertEqual(self.run_status(run_id), "completed")
@@ -194,7 +197,8 @@ class TextNodeTest(unittest.TestCase):
         self.assertEqual(translate["language"], "ja")
         self.work(provider)
         self.assertEqual(self.output(run_id, "japanese")["text"], "要約")
-        self.assertEqual(self.output(run_id, "writer")["text"], "BÀI VIẾT ĐẦY ĐỦ")
+        self.assertEqual(self.output(run_id, "writer")["script"], "BÀI VIẾT ĐẦY ĐỦ")
+        self.assertEqual(self.output(run_id, "summary")["summary"], "TÓM TẮT")
         self.assertEqual(self.run_status(run_id), "completed")
         self.assertEqual(self.balance(), 0)
         with self.Session() as db:
@@ -276,7 +280,7 @@ class TextNodeTest(unittest.TestCase):
         step = self.steps(run_id)["writer"]
         self.assertEqual((step.status, step.detail), ("queued", text_worker.RETRY_DETAIL))
         self.work(provider)
-        self.assertEqual(self.output(run_id, "writer")["text"], "Xong")
+        self.assertEqual(self.output(run_id, "writer")["script"], "Xong")
         self.assertEqual(self.balance(), 1)
 
         run_id = self.start(chain(("writer", "ai_writer")))
@@ -297,7 +301,7 @@ class TextNodeTest(unittest.TestCase):
             db.get(WorkflowRunStep, job.step_id).status = "running"
             job.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
         self.work(FakeProvider("Viết lại từ đầu"))
-        self.assertEqual(self.output(run_id, "writer")["text"], "Viết lại từ đầu")
+        self.assertEqual(self.output(run_id, "writer")["script"], "Viết lại từ đầu")
         self.assertEqual(self.balance(), 0)
 
     def test_missing_api_key_blocks_or_refunds(self):
@@ -420,7 +424,7 @@ class Fake:
 assert text_worker.run_one(provider_factory=Fake)
 middle = client.get(f"/api/workflow-runs/{run['id']}").json()
 assert [s["status"] for s in middle["steps"]] == ["completed", "completed", "queued"], middle
-assert middle["steps"][1]["output"]["text"] == "Bài viết"
+assert middle["steps"][1]["output"]["script"] == "Bài viết"
 assert text_worker.run_one(provider_factory=Fake)
 done = client.get(f"/api/workflow-runs/{run['id']}").json()
 assert done["status"] == "completed", done

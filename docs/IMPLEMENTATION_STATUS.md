@@ -1,7 +1,7 @@
 # ReelForge Studio Implementation Status
 
 > Audit snapshot: branch `feat/studio-foundation`, commit `eb00d8a`, 2026-09-30.
-> Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), and for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)).
+> Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), and for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)).
 > Line numbers drift, so items anchor on file and function names.
 
 Each item uses the same fields:
@@ -17,10 +17,10 @@ Each item uses the same fields:
 
 | Component | Entry point | Role |
 | --- | --- | --- |
-| API | `app/main.py` (FastAPI, 45 `/api` routes) | Auth, workspace scoping, projects, workflows, runs, assets, AI tool catalog, settings, billing, admin, YouTube OAuth and publications. Run endpoints delegate to the workflow executor. On import, it checks that the DB is migrated and seeds settings. |
+| API | `app/main.py` (FastAPI, 46 `/api` routes) | Auth, workspace scoping, projects, workflows, runs, assets, AI tool catalog, settings, billing, admin, YouTube OAuth and publications. Run endpoints delegate to the workflow executor. On import, it checks that the DB is migrated and seeds settings. |
 | Database bootstrap | `app/db.py`, `instance/bootstrap.json` | Builds the SQLAlchemy engine from `database_url` (PostgreSQL/psycopg in production, SQLite in tests). |
 | Durable queue | `app/jobs.py`, `workflow_jobs` table | Idempotent enqueue by `logical_key` and lease-fenced claim, complete and fail. Uses `FOR UPDATE SKIP LOCKED` on PostgreSQL and an atomic `UPDATE … RETURNING` on SQLite. |
-| Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler; handlers resolve their inputs from parent outputs and return a standard result. Long work is queued as a durable job (F10). |
+| Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `ports.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler, which declares typed input and output ports. Before each handler runs, the executor resolves its inputs from edges, config and project context; the handler returns a standard result. Long work is queued as a durable job (F10, F12). |
 | Video worker | `app/video_worker.py` (`python -m app.video_worker`) | Claims `video:*` jobs, then submits, polls, downloads and stores a private MP4 asset. It records usage and reports the finished step to the executor, which continues the run. |
 | Video providers | `app/providers/{fal,runware,replicate,runway,dola}.py`, `app/providers/catalog.py` | One text-to-video model per adapter. Each adapter validates the request and checks provider and media URLs (SSRF guard). The catalog is the single provider map (module, client, credential) shared by the API, the video handler and the worker. |
 | Text providers | `app/providers/text/` (`base.py`, `openai.py`, `anthropic.py`, `gemini.py`) | One `TextGenerationProvider` interface; each adapter calls its vendor's HTTP API with `httpx` and returns a normalized `TextResult` (F11). |
@@ -49,9 +49,10 @@ Most models live in `app/models.py`. Three are defined elsewhere: `AuthAttempt` 
 ```text
 Project (title/topic)
   └─ POST /api/workflows/{id}/runs ─ persist_run()
-       validate graph → snapshot → WorkflowExecutor.start_run()
-         each node, in topological order: parents all completed? → registry handler → NodeExecutionResult
-         idea/assets: completed · video/text: credits reserved, job queued · others: blocked · descendants: skipped
+       validate graph → snapshot (edges name their ports) → WorkflowExecutor.start_run()
+         each node, in topological order: parents all completed? → resolve typed inputs → required inputs present?
+           → registry handler → NodeExecutionResult
+         idea/assets/scenes: completed · video/text: credits reserved, job queued · others: blocked · descendants: skipped
        steps, credit holds and jobs are committed in one DB transaction
   └─ text_worker.run_one()                   (for each text step, as it becomes ready)
        provider.generate() → text + usage → UsageEvent (or refund on failure)
@@ -64,7 +65,7 @@ Project (title/topic)
   └─ youtube_worker.run_one()                private resumable upload → remote video ID
 ```
 
-The editor saves and displays the remaining node types (script, scenes, image, voice, music, subtitle, render, publish). Each has a registered placeholder handler that blocks the step with a reason; none of them does real work yet.
+The editor saves and displays the remaining node types (script, image, voice, music, subtitle, render, publish). Each has a registered placeholder handler that declares its future ports and blocks the step with a reason; none of them does real work yet.
 
 ### Phase 1 changes
 
@@ -114,6 +115,46 @@ Frontend changes, without layout changes:
 
 Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `deploy.sh`).
 
+### Phase 3 changes
+
+Phase 3 made edges carry typed data between ports (F12). There is no database migration and no graph version field. Handles are optional, and older graphs are read tolerantly.
+
+New code:
+
+- `app/workflow/ports.py`: port and data-type definitions, edge binding with the legacy fallback, graph normalization, edge validation, and the port catalog.
+- `resolve_node_inputs(node, graph, states, registry=…, context=…)` in `app/workflow/context.py`.
+- `app/workflow/nodes/scenes.py`: the scene splitter.
+- `GET /api/workflow-node-types`.
+
+Engine and API changes:
+
+- **Handler contract:** every handler declares `inputs`, `outputs` and `requires`. The executor resolves input values before calling a handler, and blocks the step (`missing_input`, with `output.missing_inputs`) when a required group has no value. Handlers no longer read their parents' outputs themselves.
+- **Edges:** each edge can name `sourceHandle` and `targetHandle`; `source_handle` and `target_handle` are also accepted.
+  - Saving checks that named ports exist, that the data types match, and that an input taking one connection gets only one.
+  - Two nodes may now be joined by several edges, one per port pair.
+- **Normalization:** stored definitions, API responses and run snapshots name the ports of every edge. Old edges get their default ports when they are read, saved or run. A snapshot whose ports no longer exist falls back to the default mapping instead of failing.
+- **Input priority:** a connected edge beats the node's config, which beats the project context. For the AI Writer, a connected idea now wins over `config.prompt`. In Phase 2, the setting won.
+- **Standard output keys:**
+  - `ai_writer` → `script`, `summarize` → `summary`, `rewrite`/`translate` → `text`.
+  - `hook`/`title`/`cta` → the first option under their own name, plus `text` (all options) and `options`.
+  - `scenes` → `scenes`; `video` → `video_assets`.
+  - Phase 2 outputs stored under `text` are still read.
+- **`scenes` became a real node.** It splits a script locally, with no provider call and no credits, into `{index, text, visual_prompt, duration}` items.
+- **Video prompt source,** in order: the Run dialog prompt, then a connected `prompt`, then connected `scenes` (joined as "Shot 1: … Shot 2: …"), then the project topic. Connected text is cut to 1,000 characters at a word boundary, which is Runway's limit.
+- **Review** stores the media it waits on (`asset_ids`), and approval now merges into the review output instead of replacing it. Its `video_assets` output passes the approved clip on.
+
+Frontend changes, without layout changes:
+
+- **Canvas handles are ports:** each node lists its input ports on the left and output ports on the right, with labels (for example "Kịch bản ●", "● Cảnh").
+  - While you drag, the canvas only accepts compatible ports. An incompatible drop shows "Hai cổng này không nối được với nhau."
+  - Connecting to an input that takes one connection replaces the old edge.
+  - The "→ output" footer text was removed, because the port labels replace it.
+- **Editor:** the page waits for the port catalog before drawing the canvas, and saves `sourceHandle`/`targetHandle`.
+- **Scenes:** the scenes node previews its scene count, and the inspector lists the scenes.
+- **Inspector (advanced mode):** shows each incoming edge as "Prompt ← AI Writer · Script".
+- **Run dialog:** the video prompt now starts empty, so connected inputs are used unless you type a prompt.
+- **Library:** "Chia kịch bản thành cảnh" (`scenes`) is no longer "Sắp có".
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -133,9 +174,10 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
 
 | # | Area | Status | Items |
 | --- | --- | --- | --- |
-| 1 | Workflow graph persistence | Fully implemented, including per-node `config` in the API; config has no editing UI | F1, M1 |
+| 1 | Workflow graph persistence | Fully implemented, including per-node `config` and edge ports in the API; config has no editing UI | F1, M1 |
 | 2 | Workflow execution engine | Fully implemented (modular executor and registry); some run semantics still partial | F10, P1 |
-| 3 | Node types | Partial (19 registered; 11 do real work) | P2, U2, U3 |
+| 2b | Typed data passing between nodes | Fully implemented (ports, legacy fallback, required inputs) | F12 |
+| 3 | Node types | Partial (19 registered; 12 do real work) | P2, U2, U3 |
 | 4 | Job architecture | Fully implemented (core) | F3 |
 | 5 | Video generation providers | Partial | P3 |
 | 5b | Text generation providers | Fully implemented for OpenAI, Anthropic and Gemini (mocked; not verified with live keys) | F11 |
@@ -158,14 +200,18 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
 ### F1. Workflow graph persistence (topology, layout and node settings)
 
 - **Files:**
-  - `app/main.py`: `GraphNode`, `GraphEdge`, `WorkflowGraph`, `NODE_TYPES`, `validate_graph`, `parse_graph`, `default_graph`, `create_workflow`, `update_workflow`.
+  - `app/main.py`: `GraphNode`, `GraphEdge`, `WorkflowGraph`, `NODE_TYPES`, `validate_graph`, `workflow_graph`, `default_graph`, `create_workflow`, `update_workflow`.
+  - `app/workflow/ports.py`: `normalize_edges`, `edge_problems`.
   - `app/models.py`: `Workflow.definition`.
-  - Frontend: `frontend/src/components/workflow/workflow-editor.tsx` (`toNodes`, `save`) and `frontend/src/lib/hooks.ts` (`useCreateFromTemplate`).
+  - Frontend: `frontend/src/components/workflow/workflow-editor.tsx` (`toNodes`, `toEdges`, `save`) and `frontend/src/lib/hooks.ts` (`useCreateFromTemplate`).
 - **Current:**
-  - **Storage:** the graph is JSON text in `workflows.definition`. Nodes are `{id, type, x, y, label, config}` and edges are `{source, target}`.
-  - **Server validation:** 1–30 nodes and at most 60 edges, unique node IDs, one of the 19 registered node types, finite coordinates within ±100 000, no duplicate, self or dangling edges, and no cycles (Kahn's algorithm).
+  - **Storage:** the graph is JSON text in `workflows.definition`. Nodes are `{id, type, x, y, label, config}`, and edges are `{source, target, sourceHandle, targetHandle}`. The handles name ports (F12).
+  - **Server validation:**
+    - Structure: 1–30 nodes and at most 60 edges, unique node IDs, one of the 19 registered node types, and finite coordinates within ±100 000.
+    - Edges: no dangling or self edges, no duplicate edge through the same ports, and no cycles (Kahn's algorithm).
+    - Ports (on save only): named ports must exist and have compatible types, and an input that takes one connection gets only one.
   - **Node settings (Phase 2):** `config` is optional, at most 8,000 characters of JSON, and validated by the node type's handler (`validate_config`). Types without settings reject any config. The canvas keeps `config` when it saves or duplicates a node.
-  - **Legacy data:** list-form definitions are converted on read.
+  - **Legacy data:** list-form definitions are converted on read. Edges without handles get their default ports when read, saved or run (`workflow_graph`).
   - **Defaults:** a new workflow starts as `idea → video → review`.
   - **Editor:** add, drag, connect (with a client-side cycle check), rename (`label`), duplicate, delete, undo/redo and explicit save. Templates create a workflow and then `PUT` their graph.
   - **Permissions:** only the workspace owner can save; the workflow count is limited by the plan.
@@ -297,7 +343,7 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
 
 - **Files:** `frontend/src/lib/api.ts`, `frontend/src/lib/queries.ts`, `frontend/src/lib/types.ts`, `frontend/src/lib/errors.ts`, `frontend/next.config.ts`, `frontend/src/app/providers.tsx`.
 - **Current:**
-  - **Coverage:** every existing backend route is used: auth, dashboard, projects, workflows, runs (including readiness, approve and retry), asset upload and download, AI tools CRUD, settings, billing, usage, admin, and the YouTube connection and publications.
+  - **Coverage:** every existing backend route is used: auth, dashboard, projects, workflows, the node-type port catalog (`useNodeTypes`, fetched once), runs (including readiness, approve and retry), asset upload and download, AI tools CRUD, settings, billing, usage, admin, and the YouTube connection and publications.
   - **Transport:** same-origin `fetch` through the Next.js rewrite, with typed responses.
   - **Caching:** React Query, polling every 5 s only while a run or upload is active. `useRefreshStudio` invalidates dependent queries when a run changes state.
   - **Errors:** an `ApiError` becomes a localized toast.
@@ -321,7 +367,8 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
     - Each node shows its step status: `queued`, `submitting` (shown as running), `running`, `completed`, `awaiting_review` (shown as review), `blocked`, `skipped`, `failed`, and `needs_attention` (shown as failed).
     - Polls every 5 s while the run is `running`, `queued` or `submitting`.
     - Edges into running nodes are animated.
-    - The video node previews the generated MP4, text nodes preview the first lines of their text (the inspector shows all of it), and the idea and assets nodes show their real step output.
+    - The video node previews the generated MP4, and text nodes preview the first lines of their text; the inspector shows all of it. The scenes node shows its scene count, with the full list in the inspector. The idea and assets nodes show their real step output.
+    - Each node lists its typed input and output ports as labeled handles (F12).
     - The run banner offers approve, retry, download and a link to publishing.
     - The history sheet lists the last 30 runs.
 - **Missing:**
@@ -353,7 +400,7 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
 - **Files:**
   - `app/workflow/executor.py`: `WorkflowExecutor.start_run`, `advance_run`, `finish_step`, `readiness`.
   - `app/workflow/registry.py`: `NodeRegistry`, `build_default_registry`, `default_registry`.
-  - `app/workflow/context.py`: `ExecutionContext`, `RunOptions`, `NodeInputs`, `StepState`, `resolve_inputs`.
+  - `app/workflow/context.py`: `ExecutionContext`, `RunOptions`, `NodeInputs`, `StepState`, `resolve_node_inputs` (Phase 3).
   - `app/workflow/results.py`: `NodeExecutionResult`, `NodeError`, `JobRequest`, `NodeReadiness`, `RunRequestError`, `derive_run_status`, and the status constants.
   - `app/workflow/graph.py`: `parse_graph`, `ordered_nodes`.
   - `app/workflow/nodes/`: `base.py` (`NodeHandler`), `idea.py`, `assets.py`, `video.py`, `review.py`, `pending.py`.
@@ -361,8 +408,8 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
   - Tests: `tests/test_workflow_engine.py`, plus the existing run, video and YouTube flow tests.
 - **Current:**
   - **Registry:** each node type resolves to exactly one `NodeHandler`, and registering a type twice raises. An unregistered type resolves to `UnsupportedNodeHandler`, which blocks the step with a clear reason instead of crashing the run.
-    - `idea`, `assets`, `video`, `review` and the seven text nodes (F11) have real handlers.
-    - `script`, `image`, `voice` and `music` use `PendingAITaskHandler`; `scenes`, `subtitle`, `render` and `publish` use `PendingServiceHandler`. Both keep the existing messages.
+    - `idea`, `assets`, `scenes` (Phase 3), `video`, `review` and the seven text nodes (F11) have real handlers.
+    - `script`, `image`, `voice` and `music` use `PendingAITaskHandler`; `subtitle`, `render` and `publish` use `PendingServiceHandler`. Both keep the existing messages, and both declare their future ports.
     - The API accepts exactly the registered types (`NODE_TYPES`).
   - **Handler contract:** `execute(context, node, inputs)` returns a `NodeExecutionResult`, `readiness(context, node)` returns a `NodeReadiness`, and `validate_config(config)` checks saved settings.
     - `context` carries the database session, workspace, project, run, snapshot graph, the run's steps (`step_for(node)`), run options (prompt override, tool ID, frozen video payload) and cached lookups (enabled tools, `find_tool`, assets, workspace settings, credit balance).
@@ -371,7 +418,12 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
     - Fields: `status`, `detail`, `output`, `metadata`, `error`, `job`, `job_id`, `asset_ids`.
     - Statuses reuse the stored values: generic *pending* is `skipped`, and *needs review* is `awaiting_review`. The model rejects unknown statuses, a `queued` result without a job, or a `failed` result without an error.
     - `output` is persisted together with `asset_ids` and `error.code`. `metadata` is not persisted. `job_id` is filled in after enqueue.
-  - **Input resolution:** `resolve_inputs` gives each node its own `config` (read from the snapshot node if present), the status and output of each direct parent, `value(key)`, `outputs(node_type)`, and `asset_ids` created upstream. A node runs only when every parent has completed; otherwise it stays `skipped`.
+  - **Input resolution:** since Phase 3, `resolve_node_inputs` gives each node:
+    - its `config`;
+    - the status and output of each direct parent;
+    - one value per input port, from edges, then config, then context (`inputs.get(port)`, F12).
+    - `value(key)`, `outputs(node_type)` and `asset_ids` remain for code that needs raw parent outputs.
+    - A node runs only when every parent has completed; otherwise it stays `skipped`. A node whose required inputs have no value blocks (`missing_input`) without its handler running.
   - **Execution passes:**
     - `start_run` first creates one step row per node, then evaluates the snapshot in topological order, enqueues `JobRequest`s (key `<kind>:<run>:<step>`), and derives the run status.
     - `finish_step` records a worker's result and calls `advance_run`.
@@ -412,13 +464,20 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
   - **Selection and keys:**
     - Text nodes use the first enabled AI tool with task `script` (shown as "Text") and provider `openai`, `anthropic` or `gemini`, or the tool named by the node's `config.tool_id`. The model string is passed through, not allow-listed.
     - Keys come only from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`. A missing key blocks the step, or shows `missing_key` in readiness.
-  - **Nodes and inputs:**
-    - "Upstream text" is the `text` output of completed parents, joined in edge order and capped at 60,000 characters. Topic fallback is the upstream idea's topic or title, then the project's.
-    - `ai_writer`: brief from `config.prompt`, else the topic; upstream text as source material; optional `language`, `tone`, `platform`, `duration` (converted to a word target at 2.5 words per second) and `instructions`.
-    - `summarize`, `rewrite` and `translate`: upstream text, else the topic. `rewrite` uses `instructions` as the style. `translate` uses `target_language`, else `language`, else the workspace default language.
-    - `hook`, `title`, `cta`: `count` alternatives, one per line, also returned as `options`.
+  - **Nodes and inputs** (through typed ports since Phase 3, F12; text inputs are capped at 60,000 characters):
+    - `ai_writer`:
+      - Inputs `prompt` (brief: connected idea, else `config.prompt`, else project topic) and `source` (connected text).
+      - Optional `language`, `tone`, `platform`, `duration` (converted to a word target at 2.5 words per second) and `instructions`.
+      - Output `script`.
+    - `summarize`, `rewrite` and `translate`: input `text` (connected text or brief, else the project topic).
+      - `rewrite` uses `instructions` as the style.
+      - `translate` uses `target_language`, else `language`, else the workspace default language.
+      - Outputs `summary`, `text` and `text`.
+    - `hook`, `title`, `cta`:
+      - Inputs `topic` and `source`; `count` alternatives, one per line.
+      - Outputs: the first alternative under the node's own name, all of them under `text`, plus `options`.
     - With nothing to work from, the step blocks (`missing_input`) and nothing is charged.
-    - Output: `{text, provider, model, usage, language}`, plus `options` for list nodes.
+    - Every output also has `provider`, `model`, `usage` and `language`.
   - **Execution:** the handler holds credits and queues a `text:` job. `python -m app.text_worker` claims it, marks the step `running`, calls the provider outside any DB transaction, and then, in one transaction:
     - closes the job;
     - records a `UsageEvent`, or refunds the hold;
@@ -442,6 +501,64 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
   - Other job kinds still need their own worker process (text and video each have one).
 - **Depends on:** F10, F3, P5 (AI tools), P6 (ledger).
 
+### F12. Typed data passing between nodes (Phase 3)
+
+- **Files:**
+  - `app/workflow/ports.py`: `InputPort`, `OutputPort`, data types, `bind_edges`, `normalize_edges`, `edge_problems`, `describe_node_types`.
+  - `app/workflow/context.py`: `resolve_node_inputs`, `NodeInputs.get/has/sources`.
+  - `app/workflow/nodes/*.py`: the `inputs`, `outputs` and `requires` of each handler.
+  - `app/workflow/nodes/scenes.py`: `split_scenes`, `ScenesNodeHandler`.
+  - `app/main.py`: `GraphEdge.sourceHandle/targetHandle`, `validate_graph`, `workflow_graph`, `GET /api/workflow-node-types`.
+  - Frontend: `frontend/src/components/workflow/ports.ts`, `studio-node.tsx` (`Ports`), `workflow-editor.tsx` (`isValidConnection`, `onConnect`, `toEdges`, `save`), `frontend/src/lib/queries.ts` (`useNodeTypes`).
+  - Tests: `tests/test_workflow_ports.py` (19, including one over HTTP).
+- **Current:**
+  - **Data types:** `brief` (short idea: topic, title), `text` (written content), `scenes` (list of `{index, text, visual_prompt, duration}`), `video_assets`, `image_assets` and `audio_assets` (lists of `{id, filename?, content_type?}`), `subtitle_asset`, and `publication` (reserved). Values of the wrong shape are dropped rather than passed on.
+  - **Ports per node** (outputs first = default):
+
+    | Node | Inputs | Outputs |
+    | --- | --- | --- |
+    | `idea` | — | `topic`, `title` (brief) |
+    | `assets` | — | `video_assets`, `image_assets`, `audio_assets` |
+    | `ai_writer` | `prompt` (brief/text), `source` (text) | `script` |
+    | `summarize` / `rewrite` / `translate` | `text` (text/brief) | `summary` / `text` / `text` |
+    | `hook` / `title` / `cta` | `topic` (brief/text), `source` (text) | `hook` / `title` / `cta`, `text` |
+    | `scenes` | `script` (text/brief) | `scenes` |
+    | `video` | `prompt` (text/brief), `scenes` | `video_assets` |
+    | `review` | `media` (video/image assets) | `video_assets` (the approved clip) |
+    | `script`, `image`, `voice`, `music`, `subtitle`, `render`, `publish` | declared for the future executor | `publish` has no output yet |
+
+  - **Edge mapping:**
+    - An edge with `sourceHandle`/`targetHandle` connects those ports.
+    - A legacy edge connects the source's default output to the first target input accepting that type, preferring inputs that list the type earlier. For example, idea → writer maps `topic → prompt`, and writer → hook maps `script → source`.
+    - Explicit edges claim inputs before legacy edges. An input that takes one connection is not filled twice.
+    - An edge that cannot carry data still orders the run.
+  - **Resolution:**
+    - Priority: connected edges, then the node's config (`config_key`), then run context (`project_topic`).
+    - Several connections to a `multiple` input are joined: text with blank lines, lists concatenated, in edge order.
+    - `NodeInputs.sources` records where each value came from.
+  - **Required inputs:**
+    - `requires` groups: for example `scenes` needs `script`, and summarize/rewrite/translate need `text`.
+    - A missing input blocks the step with a node-specific message and `output.missing_inputs`.
+    - The video node keeps its own check, because the Run dialog prompt and the project topic can supply its prompt.
+  - **Compatibility:**
+    - No migration and no version field.
+    - Old edges are normalized when read, saved or run.
+    - A snapshot naming a port that no longer exists falls back to the default mapping.
+    - Phase 2 outputs stored under `text` are still read (`OutputPort.keys`).
+  - **Canvas:**
+    - Handles are the ports, with labels.
+    - Only compatible ports accept a connection while dragging.
+    - A single-connection input swaps its old edge for the new one.
+    - Nodes without inputs keep an inert handle, so old edges into them still draw.
+    - Raw JSON only appears in advanced mode.
+- **Missing:**
+  - **Scene splitting is rule-based** (paragraphs, then sentences). An AI splitter with better visual prompts could replace it, using the text layer's JSON output.
+  - **The video node makes one clip for all scenes;** multi-clip rendering is still open (M2).
+  - **No explicit type conversions** (for example, extracting a list of titles from `text`), and no per-field mapping; by design, there is no expression language.
+  - **Ports are described by code,** not a versioned schema; renaming a port relies on the tolerant fallback.
+  - **The inspector cannot yet show resolved input values** before a run; it shows incoming edges.
+- **Depends on:** F10, F1.
+
 ## Partially Implemented
 
 ### P1. Workflow execution (run semantics beyond the single-clip path)
@@ -455,7 +572,7 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
 - **Missing:**
   - One worker process per job kind (`video`, `text`). There is no shared worker loop or registry of job kinds.
   - At most one video node per workflow: the credit reservation reference is `reserve:<run_id>`, and readiness returns `unsupported_graph`.
-  - The video prompt still comes from the run request or the project topic, not from upstream text (for example, `ai_writer → video`).
+  - Several scenes still produce one clip: the video node joins them into one prompt (F12).
   - Credits for later steps are held only when those steps become ready. A run can therefore start and then block part-way on `insufficient_credits`; readiness shows the total up front.
   - Run cancellation and re-running a single step.
   - `approval_required = false` has no effect (U6).
@@ -466,27 +583,27 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
 ### P2. Node types
 
 - **Files:** `app/workflow/registry.py` (`build_default_registry`), `app/workflow/nodes/*.py`, `app/main.py` (`NODE_TYPES`), `frontend/src/lib/workflow.ts` (`kindOf`, `nodeLibrary`, `EXECUTABLE`, `workflowTemplates`), `frontend/src/components/workflow/studio-node.tsx`.
-- **Current:** all 19 node types the API accepts are registered. Eleven of them do real work:
+- **Current:** all 19 node types the API accepts are registered, each with typed ports (F12). Twelve of them do real work:
 
   | Type | Handler | Backend behavior | Notes |
   | --- | --- | --- | --- |
   | `idea` | `IdeaNodeHandler` | Completes locally | Output is `{title, topic}` |
-  | `assets` | `AssetsNodeHandler` | Completes locally | Output lists every workspace asset |
-  | `ai_writer`, `summarize`, `rewrite`, `translate`, `hook`, `title`, `cta` | Text handlers (F11) | Durable text job | Output `{text, provider, model, usage, language}`; list nodes add `options` |
-  | `video` | `VideoNodeHandler` | Durable provider job | At most one per workflow |
+  | `assets` | `AssetsNodeHandler` | Completes locally | Output lists every workspace asset; ports split it by media kind |
+  | `scenes` | `ScenesNodeHandler` | Completes locally, free | Splits a script into `scenes` (Phase 3) |
+  | `ai_writer`, `summarize`, `rewrite`, `translate`, `hook`, `title`, `cta` | Text handlers (F11) | Durable text job | Outputs `script` / `summary` / `text` / `hook` / `title` / `cta`, plus `provider`, `model`, `usage`, `language` |
+  | `video` | `VideoNodeHandler` | Durable provider job | At most one per workflow; prompt from a connected prompt or scenes |
   | `review` | `ReviewNodeHandler` | `awaiting_review` when a parent created media, then the approve endpoint; otherwise `blocked` | Always manual |
   | `publish` | `PendingServiceHandler` | Always `blocked` | Publishing is a separate manual flow (P7) |
-  | `scenes`, `subtitle`, `render` | `PendingServiceHandler` | Always `blocked` | "No executor" |
+  | `subtitle`, `render` | `PendingServiceHandler` | Always `blocked` | "No executor" |
   | `script`, `image`, `voice`, `music` | `PendingAITaskHandler` | Always `blocked` | "Provider not connected" or "no AI tool selected" |
   | any other type | `UnsupportedNodeHandler` | `blocked`, `error.code = unsupported_node_type` | Only reachable from old snapshots |
 
   - **Library:** 60 entries. 19 map to backend types; the other 41 are "Sắp có" (U2).
   - **Templates:** 4 of 10 have runnable graphs. `social-video`, `youtube-short` and `tiktok-video` are all `idea → video → review`; the fourth is `blank`.
 - **Missing:**
-  - Real handlers for 8 types. Adding one means writing a `NodeHandler` subclass and registering it in place of its placeholder; `app/main.py` needs no change.
-  - Output schemas per node type. Settings schemas exist only as `validate_config` code.
-  - Type-compatibility checks on edges. For example, a `summarize` node after a `video` node has no text to read and blocks with `missing_input` at run time.
-  - No template uses the text nodes yet.
+  - Real handlers for 7 types. Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
+  - Settings schemas exist only as `validate_config` code, not in the port catalog.
+  - No template uses the text or scenes nodes yet.
 - **Depends on:** F10, P1, M1, P5.
 
 ### P3. Video generation providers
@@ -614,9 +731,18 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
 
 ### P8. Tests
 
-- **Files:** `tests/` (27 modules, 194 tests), `.github/workflows/ci.yml`.
+- **Files:** `tests/` (28 modules, 213 tests), `.github/workflows/ci.yml`.
 - **Current:**
-  - **Unit tests:** jobs, providers, publishers, OAuth, the body limit, media maintenance, login throttling, the workflow engine, and text generation.
+  - **Unit tests:** jobs, providers, publishers, OAuth, the body limit, media maintenance, login throttling, the workflow engine, text generation, and typed ports.
+  - **Port tests** (`tests/test_workflow_ports.py`, 19, Phase 3):
+    - legacy edge fallback and explicit source/target handles;
+    - several parents feeding one input, and branching;
+    - missing required inputs;
+    - structured scenes passed from script to scenes to video;
+    - invalid mappings rejected on save but tolerated in old snapshots;
+    - input priority (edge, config, context) and Phase 2 output keys;
+    - edge normalization and catalog consistency, scene splitting, and review passing its clip on;
+    - one run over HTTP covering the catalog, validation and normalization.
   - **Text tests** (Phase 2):
     - `tests/test_text_providers.py` (12): request shape and normalization for OpenAI, Anthropic and Gemini over `httpx.MockTransport`; status-to-code mapping without secrets; transport errors; validation before any call; missing keys; the credit price setting.
     - `tests/test_text_nodes.py` (14): the AI Writer with its settings; Summarize, Rewrite and Translate reading upstream text; text flowing through writer → summarize → translate; list nodes; missing input or tool; provider rejection with a refund; transient retry and exhaustion; a crashed worker; missing keys; not enough credits at start and part-way; readiness; settings validation; and one run over HTTP.
@@ -632,8 +758,9 @@ Deployment: a `reelforge-text-worker` unit (`docs/home-server-deployment.md`, `d
     - legacy list definitions, pre-executor runs in flight, and one HTTP-level compatibility test.
   - **Integration tests:** each copies `app/` and `migrations/` to a temp directory, migrates a SQLite database with Alembic, and drives the API through `TestClient` in a subprocess. They cover projects, runs, the video worker, Dola, the YouTube flow and checkout.
   - **CI:** runs the backend tests on Python 3.13, and the frontend typecheck and build on Node 20.
-- **Results after Phase 2** (2026-09-30, Windows, Python 3.14.7, Node 22.23.2):
-  - `python -m unittest discover -s tests -v` → **Ran 194 tests, OK (skipped=3).** After Phase 1 it ran 168 tests, and before Phase 1 146 tests, both OK (skipped=3).
+- **Results after Phase 3** (2026-09-30, Windows, Python 3.14.7, Node 22.23.2):
+  - `python -m unittest discover -s tests -v` → **Ran 213 tests, OK (skipped=3).** Earlier runs: 194 after Phase 2, 168 after Phase 1, and 146 before Phase 1, all OK (skipped=3).
+    - Phase 3 changed five older assertions: AI Writer outputs are now under `script`, a connected idea beats `config.prompt`, the test source node declares a port, and `scenes` is a real node.
     - `PostgreSQLJobClaimTest.test_locked_job_is_skipped_by_another_worker` was skipped because `REELFORGE_TEST_DATABASE_URL` is not set.
     - `test_rejects_linked_root` and `test_symlinked_file_and_workspace_are_never_followed` were skipped because this Windows user cannot create symlinks.
     - One warning: Starlette's `TestClient` asks for `httpx2`, which is listed in `requirements-dev.txt`.
@@ -738,7 +865,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 
 - **Files:** `frontend/src/lib/workflow.ts` (`nodeLibrary`, `workflowTemplates`), `frontend/src/components/workflow/workflow-editor.tsx` (`NodeLibrary`).
 - **Current:**
-  - 41 of the 60 library items show as "Sắp có" and cannot be dragged. Examples: research, movie analysis/recap/review, storyboard, thumbnail, image-to-video, voice clone, audio mixer, crop, overlay, transition, timeline, TikTok, Facebook, Shorts, schedule, and the URL, YouTube and upload inputs. The seven text items became real nodes in Phase 2.
+  - 41 of the 60 library items show as "Sắp có" and cannot be dragged. Examples: research, movie analysis/recap/review, storyboard, thumbnail, image-to-video, voice clone, audio mixer, crop, overlay, transition, timeline, TikTok, Facebook, Shorts, schedule, and the URL, YouTube and upload inputs. The seven text items became real nodes in Phase 2, and "Chia kịch bản thành cảnh" (`scenes`) became one in Phase 3.
   - 6 of the 10 templates show only a preview diagram: `youtube-video`, `movie-recap`, `movie-review`, `repurpose`, `article-to-video`, `product-video`.
 - **Missing:** backend node types and executors for them.
 - **Depends on:** M1, M2.
@@ -797,12 +924,14 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
   - A settings schema the frontend can read (today the rules live only in each handler's `validate_config`).
 - **Depends on:** F10, F11.
 
-### M2. Executors for script, scenes, image, voice, music, subtitle, render and publish
+### M2. Executors for script, image, voice, music, subtitle, render and publish
 
 - **Files to change:** new handlers in `app/workflow/nodes/` registered in `app/workflow/registry.py`, a generalized worker (today `app/video_worker.py` and `app/text_worker.py`) that reports through `WorkflowExecutor.finish_step`, and new provider modules.
-- **Current:** all eight node types have placeholder handlers that always return `blocked`. Text generation itself exists (F11).
+- **Current:** all seven node types have placeholder handlers that always return `blocked`, but they already declare their ports (F12). Text generation (F11) and rule-based scene splitting (F12) exist.
 - **Missing:**
-  - Script and scene generation: `script` can subclass `TextNodeHandler` (a product decision, since it would start charging existing workflows); `scenes` needs structured (JSON) output, which the provider layer already supports.
+  - Script generation: `script` can subclass `TextNodeHandler`. That is a product decision, since it would start charging existing workflows.
+  - An AI scene splitter with better visual prompts, using JSON output from the text layer, in place of the rule-based one.
+  - One clip per scene: several video jobs per run, which needs per-step credit references instead of `reserve:<run_id>`.
   - Image generation.
   - Text-to-speech and music.
   - Subtitles, generated from the script or with speech recognition.
@@ -901,7 +1030,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 | D1 | One 1,202-line module (1,372 before Phase 1) holds 45 routes, business logic and settings access. Run and node logic moved to `app/workflow/` and provider wiring to `app/providers/catalog.py`. | `app/main.py` | Both workers still import `app.main` (for `media_root`, `MAX_UPLOAD` and the quota) and so run its import-time side effects. |
 | D2 | Importing the modules has side effects: the migration check and settings seeding in `app.main`, and the DB URL resolution in `app.db` | `app/main.py` (module level), `app/db.py` | Any import (tests, workers, tooling) needs a configured, migrated database. |
 | D3 | Every video adapter re-declares the same types. The text adapters share one base class (Phase 2). The backend has one provider map per modality, but the frontend repeats both. | `app/providers/*.py`; `app/providers/catalog.py`; `app/providers/text/__init__.py`; `VIDEO_PROVIDERS`, `TEXT_PROVIDERS` and the presets in `frontend/src/app/models/page.tsx` | Adding a provider still means editing the backend and the frontend separately. |
-| D4 | The frontend copies backend constants and hand-writes the API types | `frontend/src/lib/workflow.ts` (`NODE_TYPES`, `EXECUTABLE`, `TEXT_NODES`, `MAX_NODES`), `frontend/src/lib/studio.ts` (`ACCEPTED_UPLOADS`, `MAX_UPLOAD_BYTES`), `frontend/src/lib/types.ts` | Drift goes unnoticed, since nothing is generated from OpenAPI. |
+| D4 | The frontend copies backend constants and hand-writes the API types. Ports are the exception: they come from `GET /api/workflow-node-types` (Phase 3). | `frontend/src/lib/workflow.ts` (`NODE_TYPES`, `EXECUTABLE`, `TEXT_NODES`, `MAX_NODES`), `frontend/src/lib/studio.ts` (`ACCEPTED_UPLOADS`, `MAX_UPLOAD_BYTES`), `frontend/src/lib/types.ts` | Drift goes unnoticed, since nothing is generated from OpenAPI. `EXECUTABLE` could come from the catalog too. |
 | D5 | Some models are defined outside `app/models.py` | `app/auth_security.py`, `app/publishers/google_oauth.py`, `app/publications.py` | Complete metadata depends on the imports in `migrations/env.py`. |
 | D6 | The backend returns user-facing Vietnamese text, and the frontend translates it by exact-text lookup | `app/workflow/nodes/*.py`, `app/workflow/executor.py`, `app/main.py`, `app/video_worker.py`; `details` and `errors.server` in `frontend/src/lib/i18n/{vi,en,ja}.ts` | Rewording any backend message silently breaks its translation. `NodeError.code` now gives new failures a stable code, but the frontend does not use it yet. |
 | D7 | Endpoints and step outputs are not paginated | `/api/dashboard` returns every project, asset and workflow (with graphs); the `assets` node output embeds every asset (`ExecutionContext.assets` now loads them only when an `assets` node runs) | Cost grows with workspace size for both page loads and runs. |
@@ -1013,14 +1142,14 @@ Guiding rules:
 | 2 | Split `app/main.py` into routers and services without changing behavior <br>• remove the import-time side effects <br>• return stable error codes instead of translating by text | D1, D2, D6, P9 | 0 |
 | 3 | Provider/model registry: <br>• one adapter protocol <br>• one registry used by the API and worker and exposed to the frontend (capabilities, defaults, price) <br>• validate AI tools when they are saved | D3, D4, P5 | 2 |
 | 4 | Per-node configuration. **Backend done in Phase 2:** `config` saved, validated per handler, in the snapshot, read by text nodes. **Still open:** <br>• inspector fields for text-node settings <br>• move the video prompt and model into `config` <br>• a settings schema the frontend can read | M1 | 3 |
-| 5 | Engine refactor. **Done in Phase 1 (F10):** executor, registry, handlers, input resolution, job requests, `finish_step`, advancing after approval. **Still open:** <br>• a generic worker loop for new job kinds <br>• honor `approval_required` <br>• run cancellation <br>• more than one paid node per run | P1, U6, M4 | 4, F3 |
+| 5 | Engine refactor. **Done in Phase 1 (F10):** executor, registry, handlers, input resolution, job requests, `finish_step`, advancing after approval. **Done in Phase 3 (F12):** typed ports and required inputs. **Still open:** <br>• a generic worker loop for new job kinds <br>• honor `approval_required` <br>• run cancellation <br>• more than one paid node per run | P1, U6, M4 | 4, F3 |
 | 6 | Text generation. **Done in Phase 2 (F11):** OpenAI/Anthropic/Gemini adapters, text worker, and seven text nodes with credits. **Still open:** <br>• a smoke test with live keys (R12) <br>• token-based pricing (R11) <br>• feed upstream text into the video prompt <br>• decide whether `script` becomes a text node <br>• `scenes` with JSON output <br>• text-node templates | Part of M2, U4, R11, R12 | 5, 3, P6 pricing |
 | 7 | Asset lifecycle: <br>• delete and rename <br>• link uploads to projects <br>• ffprobe metadata <br>• a storage abstraction <br>• backups | M5, P4, R6 | 0 |
 | 8 | `image`, `voice`/`music` and `subtitle` executors, then the FFmpeg `render` node | M2, U3 | 5, 6, 7 |
 | 9 | `publish` node executor (queues a publication after approval), then scheduling (`available_at` plus calendar), then TikTok and Facebook connections built on the existing adapters | P7, M3, U5 | 5, F4 |
 | 10 | Teams, roles and workspace switching; account security (password reset, 2FA); full frontend E2E tests | M7, M8, M10 | 2 |
 
-Phase 1 took the engine part of step 5 ahead of steps 2–4, because it did not depend on them. Phase 2 then did most of step 6 and the backend half of step 4. The next highest-value work:
+Phase 1 took the engine part of step 5 ahead of steps 2–4, because it did not depend on them. Phase 2 then did most of step 6 and the backend half of step 4, and Phase 3 connected the nodes with typed data. The next highest-value work:
 
 - A live-key smoke test and a pricing decision for text (R11, R12).
 - The inspector fields for text-node settings (step 4).

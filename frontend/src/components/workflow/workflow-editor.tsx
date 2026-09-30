@@ -68,9 +68,20 @@ import {
   useWorkflowRuns,
 } from "@/lib/queries";
 import { approvedAsset, isActiveRun } from "@/lib/studio";
-import type { Graph, NodeType, Project, Readiness, ReadinessStep, Run, RunStep, Workflow } from "@/lib/types";
+import type {
+  Graph,
+  NodePorts,
+  NodeType,
+  Project,
+  Readiness,
+  ReadinessStep,
+  Run,
+  RunStep,
+  Workflow,
+} from "@/lib/types";
 import { EXECUTABLE, MAX_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } from "@/lib/workflow";
 import { kindIcon } from "./kind-icon";
+import { canConnect, edgeId, outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
 import { NodeActionsContext, NodeContext, StudioNodeComponent, type NodeActions } from "./studio-node";
 import { detailText, readinessText, runStatusToNode, type NodeStatus, type StudioNode } from "./types";
 
@@ -89,8 +100,15 @@ const toNodes = (graph: Graph): StudioNode[] =>
     data: { type: node.type, label: node.label ?? undefined, config: node.config ?? null, status: "idle" },
   }));
 
+// The API names the ports of older edges too, so almost every edge arrives with its handles.
 const toEdges = (graph: Graph): Edge[] =>
-  graph.edges.map((edge) => ({ id: `${edge.source}-${edge.target}`, source: edge.source, target: edge.target }));
+  graph.edges.map((edge) => ({
+    id: edgeId(edge),
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: edge.sourceHandle ?? null,
+    targetHandle: edge.targetHandle ?? null,
+  }));
 
 function NodeLibrary({ onAdd, className }: { onAdd: (type: NodeType) => void; className?: string }) {
   const { t } = useI18n();
@@ -238,6 +256,7 @@ function Inspector({
   readiness,
   run,
   parents,
+  ports,
   advanced,
   aspect,
   video,
@@ -254,7 +273,9 @@ function Inspector({
   readinessStep?: ReadinessStep;
   readiness?: Readiness;
   run?: Run;
+  /** One line per incoming edge, e.g. "Prompt ← AI Writer · Script". */
   parents: string[];
+  ports: NodePorts;
   advanced: boolean;
   aspect: string;
   video: VideoSettings;
@@ -286,9 +307,12 @@ function Inspector({
             ? i.publishHint
             : TEXT_NODES.has(d.type)
               ? i.textHint
-              : null;
+              : d.type === "scenes"
+                ? i.scenesHint
+                : null;
   const assetId = typeof step?.output?.asset_id === "string" ? step.output.asset_id : null;
-  const generatedText = typeof step?.output?.text === "string" ? step.output.text : null;
+  const generatedText = TEXT_NODES.has(d.type) ? outputText(step?.output, ports) : null;
+  const scenes = d.type === "scenes" ? outputScenes(step?.output) : null;
   const tool = video.tools.find((x) => x.id === video.toolId) ?? video.tools[0];
 
   return (
@@ -376,6 +400,23 @@ function Inspector({
             <div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
               {generatedText}
             </div>
+          </div>
+        )}
+
+        {scenes && scenes.length > 0 && (
+          <div>
+            <FieldLabel>{i.scenesTitle}</FieldLabel>
+            <ol className="max-h-72 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
+              {scenes.map((scene) => (
+                <li key={scene.index} className="flex gap-2">
+                  <span className="shrink-0 font-medium text-primary">{scene.index}</span>
+                  <span className="min-w-0 break-words">
+                    {scene.text}
+                    {scene.duration ? <span className="text-muted-foreground"> · {i.seconds(scene.duration)}</span> : null}
+                  </span>
+                </li>
+              ))}
+            </ol>
           </div>
         )}
 
@@ -606,10 +647,12 @@ function RunsSheet({
 
 function Editor({
   workflow,
+  catalog,
   initialRunId,
   initialProjectId,
 }: {
   workflow: Workflow;
+  catalog: PortCatalog;
   initialRunId: string | null;
   initialProjectId: string | null;
 }) {
@@ -634,7 +677,8 @@ function Editor({
   const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId);
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "");
   const [toolId, setToolId] = useState("");
-  const [prompt, setPrompt] = useState(() => projects.find((p) => p.id === (initialProjectId ?? projects[0]?.id))?.topic ?? "");
+  // Empty means the video step uses its connected input or the project topic; a typed prompt overrides both.
+  const [prompt, setPrompt] = useState("");
   const { screenToFlowPosition } = useReactFlow();
 
   const readiness = useReadiness(workflow.id, toolId).data;
@@ -731,12 +775,35 @@ function Editor({
     [setEdges, setNodes, snapshot, t],
   );
 
+  const typeOf = useCallback(
+    (id: string | null | undefined) => latest.current.nodes.find((n) => n.id === id)?.data.type,
+    [],
+  );
+
+  // Checked while dragging, so incompatible ports never light up as drop targets.
+  const isValidConnection = useCallback(
+    (connection: Edge | Connection) =>
+      connection.source !== connection.target &&
+      canConnect(catalog, typeOf(connection.source), connection.sourceHandle, typeOf(connection.target), connection.targetHandle),
+    [catalog, typeOf],
+  );
+
   const onConnect = useCallback(
     (connection: Connection) => {
-      const { source, target } = connection;
+      const { source, target, sourceHandle, targetHandle } = connection;
       if (!source || !target || source === target) return;
       const current = latest.current.edges;
-      if (current.some((e) => e.source === source && e.target === target)) return;
+      if (
+        current.some(
+          (e) =>
+            e.source === source && e.target === target && e.sourceHandle === sourceHandle && e.targetHandle === targetHandle,
+        )
+      )
+        return;
+      if (!canConnect(catalog, typeOf(source), sourceHandle, typeOf(target), targetHandle)) {
+        toast.error(t.editor.incompatible);
+        return;
+      }
       // Reject links that would let the target reach back to the source.
       const seen = new Set<string>();
       const reaches = (id: string): boolean => {
@@ -750,9 +817,16 @@ function Editor({
         return;
       }
       snapshot();
-      setEdges((es) => addEdge({ ...connection, id: `${source}-${target}` }, es));
+      const input = portsOf(catalog, typeOf(target)).inputs.find((port) => port.name === targetHandle);
+      setEdges((es) =>
+        addEdge(
+          { ...connection, id: edgeId(connection) },
+          // An input that takes one connection swaps the old one for the new one.
+          input && !input.multiple ? es.filter((e) => !(e.target === target && e.targetHandle === targetHandle)) : es,
+        ),
+      );
     },
-    [setEdges, snapshot, t],
+    [catalog, setEdges, snapshot, t, typeOf],
   );
 
   const onDrop = useCallback(
@@ -777,7 +851,12 @@ function Editor({
           label: n.data.label?.trim() || null,
           config: n.data.config ?? null,
         })),
-        edges: latest.current.edges.map((e) => ({ source: e.source, target: e.target })),
+        edges: latest.current.edges.map((e) => ({
+          source: e.source,
+          target: e.target,
+          sourceHandle: e.sourceHandle ?? null,
+          targetHandle: e.targetHandle ?? null,
+        })),
       };
       await api(`workflows/${encodeURIComponent(workflow.id)}`, jsonRequest("PUT", graph));
       setDirty(false);
@@ -884,8 +963,8 @@ function Editor({
   const orientation = settings?.workspace.video_orientation ?? "vertical";
   const video: VideoSettings = { tools: videoTools, toolId, setToolId, prompt, setPrompt };
   const nodeContext = useMemo(
-    () => ({ assetCount: data?.assets.length ?? 0, vertical: orientation !== "horizontal" }),
-    [data?.assets.length, orientation],
+    () => ({ assetCount: data?.assets.length ?? 0, vertical: orientation !== "horizontal", catalog }),
+    [catalog, data?.assets.length, orientation],
   );
   const selectProject = (id: string) => {
     setProjectId(id);
@@ -1027,6 +1106,7 @@ function Editor({
                   onEdgesChange(changes);
                 }}
                 onConnect={onConnect}
+                isValidConnection={isValidConnection}
                 onNodeDragStart={() => snapshot()}
                 deleteKeyCode={["Backspace", "Delete"]}
                 multiSelectionKeyCode={["Shift", "Meta", "Control"]}
@@ -1069,8 +1149,11 @@ function Editor({
                   .filter((e) => e.target === inspected.id)
                   .map((e) => {
                     const parent = nodes.find((n) => n.id === e.source);
-                    return parent ? parent.data.label || t.nodes[parent.data.type].name : e.source;
+                    const from = parent ? parent.data.label || t.nodes[parent.data.type].name : e.source;
+                    const origin = e.sourceHandle ? `${from} · ${portLabel(t, e.sourceHandle)}` : from;
+                    return e.targetHandle ? `${portLabel(t, e.targetHandle)} ← ${origin}` : origin;
                   })}
+                ports={portsOf(catalog, inspected.data.type)}
                 advanced={advanced}
                 aspect={ASPECT[orientation]}
                 video={video}
@@ -1125,6 +1208,7 @@ function Editor({
 
 export function WorkflowEditor(props: {
   workflow: Workflow;
+  catalog: PortCatalog;
   initialRunId: string | null;
   initialProjectId: string | null;
 }) {

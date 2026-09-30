@@ -29,7 +29,15 @@ export type GraphNode = {
   label?: string | null;
   config?: NodeConfig | null;
 };
-export type Graph = { nodes: GraphNode[]; edges: { source: string; target: string }[] };
+/** Handles name the ports an edge connects; edges saved before ports existed have none. */
+export type GraphEdge = { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null };
+export type Graph = { nodes: GraphNode[]; edges: GraphEdge[] };
+
+/** Typed ports per node type, served by the backend's node registry. */
+export type InputPort = { name: string; accepts: string[]; multiple: boolean };
+export type OutputPort = { name: string; type: string };
+export type NodePorts = { inputs: InputPort[]; outputs: OutputPort[]; requires: string[][] };
+export type NodeCatalog = { data_types: string[]; node_types: Record<string, NodePorts> };
 export type Workflow = { id: string; name: string; graph: Graph };
 
 export type Project = { id: string; title: string; topic: string; status: string; created_at: string | null };

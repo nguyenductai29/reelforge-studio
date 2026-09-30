@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { kindIcon } from "./kind-icon";
+import { outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
 import type { NodeStatus, StudioNode } from "./types";
 
 const kindWidth: Record<NodeKind, string> = {
@@ -50,11 +51,53 @@ export type NodeActions = { onDuplicate: (id: string) => void; onDelete: (id: st
 export const NodeActionsContext = createContext<NodeActions | null>(null);
 
 /** Studio facts the previews need, supplied once by the editor. */
-export const NodeContext = createContext<{ assetCount: number; vertical: boolean }>({ assetCount: 0, vertical: true });
+export const NodeContext = createContext<{ assetCount: number; vertical: boolean; catalog: PortCatalog }>({
+  assetCount: 0,
+  vertical: true,
+  catalog: {},
+});
+
+/**
+ * One row per port: inputs on the left edge, outputs on the right. A node with no
+ * inputs keeps an inert target handle so older edges into it still draw.
+ */
+function Ports({ type }: { type: StudioNode["data"]["type"] }) {
+  const { t } = useI18n();
+  const { catalog } = useContext(NodeContext);
+  const ports = portsOf(catalog, type);
+  const rows = Math.max(ports.inputs.length, ports.outputs.length);
+  if (!rows) return null;
+  return (
+    <div className="pb-1">
+      {Array.from({ length: rows }, (_, index) => {
+        const input = ports.inputs[index];
+        const output = ports.outputs[index];
+        return (
+          <div key={index} className="relative flex h-5 items-center justify-between gap-2 px-3 text-[10px] text-muted-foreground">
+            {input ? (
+              <>
+                <Handle type="target" position={Position.Left} id={input.name} className="studio-handle" />
+                <span className="truncate">{portLabel(t, input.name)}</span>
+              </>
+            ) : (
+              <span />
+            )}
+            {output && (
+              <>
+                <span className="truncate text-right">{portLabel(t, output.name)}</span>
+                <Handle type="source" position={Position.Right} id={output.name} className="studio-handle" />
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function Preview({ data }: { data: StudioNode["data"] }) {
   const { t } = useI18n();
-  const { assetCount, vertical } = useContext(NodeContext);
+  const { assetCount, vertical, catalog } = useContext(NodeContext);
   const kind = kindOf[data.type];
   const output = data.output ?? null;
   const running = data.status === "running" || data.status === "queued";
@@ -118,14 +161,28 @@ function Preview({ data }: { data: StudioNode["data"] }) {
           ))}
         </div>
       );
-    case "script":
+    case "script": {
+      const scenes = outputScenes(output);
+      if (scenes) {
+        return (
+          <div className="space-y-1 rounded-lg bg-surface-2 p-2.5 text-[11px] leading-relaxed">
+            <p className="text-muted-foreground">{t.editor.node.sceneCount(scenes.length)}</p>
+            {scenes.slice(0, 2).map((scene) => (
+              <p key={scene.index} className="line-clamp-1">
+                {scene.index}. {scene.text}
+              </p>
+            ))}
+          </div>
+        );
+      }
       return (
         <div className="rounded-lg bg-surface-2 p-2.5 text-[11px] leading-relaxed">
-          <p className="text-muted-foreground">{t.editor.node.scriptHere}</p>
+          <p className="text-muted-foreground">{data.type === "scenes" ? t.editor.node.scenesHere : t.editor.node.scriptHere}</p>
         </div>
       );
+    }
     case "ai": {
-      const text = typeof output?.text === "string" ? output.text : null;
+      const text = outputText(output, portsOf(catalog, data.type));
       return (
         <div className="rounded-lg bg-surface-2 p-2.5 text-[11px] leading-relaxed">
           {text ? (
@@ -179,6 +236,8 @@ function StudioNodeView({ id, data, selected }: NodeProps<StudioNode>) {
   const Icon = kindIcon[kind];
   const name = t.nodes[data.type].name;
   const statusLabel = t.status.node[data.status];
+  const { catalog } = useContext(NodeContext);
+  const hasInputs = portsOf(catalog, data.type).inputs.length > 0;
 
   return (
     <div
@@ -190,7 +249,9 @@ function StudioNodeView({ id, data, selected }: NodeProps<StudioNode>) {
         data.status === "failed" && "border-destructive/70",
       )}
     >
-      <Handle type="target" position={Position.Left} className="studio-handle" />
+      {!hasInputs && (
+        <Handle type="target" position={Position.Left} isConnectable={false} className="studio-handle !opacity-0" />
+      )}
 
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-surface-2">
@@ -234,7 +295,9 @@ function StudioNodeView({ id, data, selected }: NodeProps<StudioNode>) {
         <Preview data={data} />
       </div>
 
-      <div className="flex items-center justify-between px-3 pb-2 text-[10px] text-muted-foreground">
+      <Ports type={data.type} />
+
+      <div className="flex items-center px-3 pb-2 text-[10px] text-muted-foreground">
         <span
           className={cn(
             (data.status === "review" || data.status === "attention" || data.status === "blocked") && "text-warning",
@@ -245,10 +308,7 @@ function StudioNodeView({ id, data, selected }: NodeProps<StudioNode>) {
         >
           {statusLabel}
         </span>
-        <span>→ {t.editor.outputs[data.type]}</span>
       </div>
-
-      {kind !== "publish" && <Handle type="source" position={Position.Right} className="studio-handle" />}
     </div>
   );
 }

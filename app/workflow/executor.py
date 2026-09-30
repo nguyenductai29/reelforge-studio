@@ -23,7 +23,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app import jobs
 from app.models import WorkflowRun, WorkflowRunStep
-from app.workflow.context import ExecutionContext, StepState, resolve_inputs
+from app.workflow.context import ExecutionContext, NodeInputs, StepState, resolve_node_inputs
 from app.workflow.graph import ordered_nodes
 from app.workflow.registry import NodeRegistry, default_registry
 from app.workflow.results import (AWAITING_REVIEW, OPEN_STATUSES, RUNNING, SKIPPED, WAITING_DETAIL, NodeError,
@@ -68,8 +68,8 @@ class WorkflowExecutor:
         context.steps = {step.node_id: step for step in steps}
         states: dict[str, StepState] = {}
         evaluated = {}
-        for (node, parent_ids), step in zip(order, steps):
-            result = self._evaluate(context, node, resolve_inputs(node, parent_ids, states), starting=True)
+        for (node, _), step in zip(order, steps):
+            result = self._evaluate(context, node, self._inputs(context, node, states), starting=True)
             self._apply(step, result, context)
             self._enqueue(context, step, result)
             states[node["id"]] = StepState(node["id"], node["type"], result.status, result.stored_output())
@@ -89,11 +89,11 @@ class WorkflowExecutor:
         states = {step.node_id: StepState(step.node_id, step.node_type, step.status, _stored_output(step))
                   for step in steps}
         evaluated = {}
-        for node, parent_ids in ordered_nodes(context.graph):
+        for node, _ in ordered_nodes(context.graph):
             step = context.steps.get(node["id"])
             if step is None or step.status != SKIPPED:
                 continue
-            inputs = resolve_inputs(node, parent_ids, states)
+            inputs = self._inputs(context, node, states)
             if not inputs.ready:
                 continue
             result = self._evaluate(context, node, inputs, starting=False)
@@ -116,11 +116,18 @@ class WorkflowExecutor:
         return [(node, self.registry.resolve(node["type"]).readiness(context, node))
                 for node in context.graph["nodes"]]
 
+    def _inputs(self, context, node, states) -> NodeInputs:
+        return resolve_node_inputs(node, context.graph, states, registry=self.registry, context=context)
+
     def _evaluate(self, context, node, inputs, *, starting: bool) -> NodeExecutionResult:
         if not inputs.ready:
             return NodeExecutionResult.waiting()
         handler = self.registry.resolve(node["type"])
         try:
+            if missing := handler.missing_inputs(context, inputs):
+                return NodeExecutionResult.blocked(
+                    handler.missing_input_detail, NodeError("missing_input", f"Needs input: {' or '.join(missing)}"),
+                    output={"missing_inputs": missing})
             result = handler.execute(context, node, inputs)
             if not isinstance(result, NodeExecutionResult):
                 raise TypeError(f"{type(handler).__name__} returned {type(result).__name__}")

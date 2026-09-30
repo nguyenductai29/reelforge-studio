@@ -185,6 +185,8 @@ def _store_result(job_id: str, token: str, result, download):
             output.pop("error_count", None)
             output["asset_id"] = asset_id
             output["filename"] = f"video-{asset_id[:8]}.mp4"
+            # The standard key the video's output port reads (app/workflow/ports.py).
+            output["video_assets"] = [{"id": asset_id, "filename": output["filename"], "content_type": "video/mp4"}]
             if not db.scalar(select(UsageEvent.id).where(UsageEvent.reference == f"video:{step.id}")):
                 db.add(UsageEvent(id=str(uuid.uuid4()), workspace_id=job.workspace_id,
                                   tool=f"{payload['provider']}/video", units=1, credits=payload["credits"],

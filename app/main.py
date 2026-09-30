@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -27,6 +27,7 @@ from app.publishers import google_oauth
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
                           parse_graph)
 from app.workflow.nodes import ReviewNodeHandler
+from app.workflow.ports import DATA_TYPES, describe_node_types, edge_problems, normalize_edges
 
 
 SYSTEM_DEFAULTS = {
@@ -207,6 +208,12 @@ class GraphNode(BaseModel):
 class GraphEdge(BaseModel):
     source: str
     target: str
+    # Port names, named as in React Flow. Edges saved before ports existed have none and
+    # connect default ports (app/workflow/ports.py).
+    sourceHandle: str | None = Field(default=None, max_length=40,
+                                     validation_alias=AliasChoices("sourceHandle", "source_handle"))
+    targetHandle: str | None = Field(default=None, max_length=40,
+                                     validation_alias=AliasChoices("targetHandle", "target_handle"))
 
 
 class WorkflowGraph(BaseModel):
@@ -219,6 +226,11 @@ NODE_TYPES = default_registry.node_types
 MAX_NODE_CONFIG_CHARS = 8000
 
 
+def workflow_graph(definition: str) -> dict:
+    """A stored definition with every edge naming the ports it connects; old edges get their default ports."""
+    return normalize_edges(parse_graph(definition), default_registry)
+
+
 def default_graph():
     types = ["idea", "video", "review"]
     coords = [(40, 210), (340, 210), (640, 210)]
@@ -227,7 +239,8 @@ def default_graph():
     return {"nodes": nodes, "edges": [{"source": f"n{a}", "target": f"n{b}"} for a, b in links]}
 
 
-def validate_graph(graph: WorkflowGraph):
+def validate_graph(graph: WorkflowGraph, *, check_ports: bool = True):
+    """Reject malformed graphs. Port names are checked only when editing; stored snapshots are bound tolerantly."""
     ids = [node.id for node in graph.nodes]
     if len(ids) != len(set(ids)):
         raise HTTPException(422, "Duplicate node ID")
@@ -243,8 +256,12 @@ def validate_graph(graph: WorkflowGraph):
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, f"Invalid settings for step {node.id}: {exc}") from exc
     links = [(edge.source, edge.target) for edge in graph.edges]
-    if len(links) != len(set(links)) or any(a not in ids or b not in ids or a == b for a, b in links):
+    # Two nodes may be joined more than once, through different ports.
+    wiring = [(edge.source, edge.sourceHandle, edge.target, edge.targetHandle) for edge in graph.edges]
+    if len(wiring) != len(set(wiring)) or any(a not in ids or b not in ids or a == b for a, b in links):
         raise HTTPException(422, "Invalid or duplicate connection")
+    if check_ports and (problems := edge_problems(graph.model_dump(), default_registry)):
+        raise HTTPException(422, f"Invalid connection: {problems[0]}")
     pending = {key: 0 for key in ids}
     onward = {key: [] for key in ids}
     for a, b in links:
@@ -475,7 +492,7 @@ def dashboard(request: Request):
         user = authorize(request, db)
         subscription = db.get(Subscription, ws.id)
         plan = db.get(Plan, subscription.plan_code) if subscription else None
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": workflow_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
 
 
 @app.get("/api/settings")
@@ -1024,8 +1041,9 @@ def public_run(run, steps=None):
 
 def persist_run(db, ws, workflow, project, snapshot, retry_of_id=None, prompt_override=None, tool_id=None, frozen_video=None):
     # The graph, steps, credit hold and queued jobs are committed together, even if nodes block.
-    graph = parse_graph(snapshot)
-    validate_graph(WorkflowGraph.model_validate(graph))
+    validate_graph(WorkflowGraph.model_validate(parse_graph(snapshot)), check_ports=False)
+    # The snapshot records which port each edge feeds, so the run's data flow is inspectable later.
+    graph = workflow_graph(snapshot)
     now = datetime.now(timezone.utc)
     run = WorkflowRun(id=ident(), workspace_id=ws.id, workflow_id=workflow.id, project_id=project.id,
                       retry_of_id=retry_of_id, graph_snapshot=json.dumps(graph), status="running", created_at=now)
@@ -1152,7 +1170,7 @@ def create_workflow(data: NewWorkflow, request: Request):
         if not workflow.name:
             raise HTTPException(400, "Name required")
         db.add(workflow)
-        return {"id": workflow.id, "name": workflow.name, "graph": parse_graph(workflow.definition)}
+        return {"id": workflow.id, "name": workflow.name, "graph": workflow_graph(workflow.definition)}
 
 
 @app.put("/api/workflows/{workflow_id}")
@@ -1168,8 +1186,17 @@ def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
         workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
         if not workflow:
             raise HTTPException(404, "Workflow not found")
-        workflow.definition = graph.model_dump_json()
-        return {"id": workflow.id, "name": workflow.name, "graph": graph.model_dump()}
+        stored = normalize_edges(graph.model_dump(), default_registry)
+        workflow.definition = json.dumps(stored)
+        return {"id": workflow.id, "name": workflow.name, "graph": stored}
+
+
+@app.get("/api/workflow-node-types")
+def workflow_node_types(request: Request):
+    """Each node type's typed input and output ports, for the canvas's connection handles."""
+    with Session() as db:
+        workspace_for(request, db)
+    return {"data_types": list(DATA_TYPES), "node_types": describe_node_types(default_registry)}
 
 
 @app.post("/api/assets", status_code=201)

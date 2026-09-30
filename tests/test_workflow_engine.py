@@ -22,7 +22,8 @@ from app.workflow import (ExecutionContext, NodeError, NodeExecutionResult, Node
                           default_registry, derive_run_status, parse_graph, resolve_inputs)
 from app.workflow.executor import HANDLER_FAILED_DETAIL
 from app.workflow.nodes import (AssetsNodeHandler, IdeaNodeHandler, PendingAITaskHandler, PendingServiceHandler,
-                                ReviewNodeHandler, TextNodeHandler, UnsupportedNodeHandler, VideoNodeHandler)
+                                ReviewNodeHandler, ScenesNodeHandler, TextNodeHandler, UnsupportedNodeHandler,
+                                VideoNodeHandler)
 from app.workflow.nodes.pending import UNSUPPORTED_DETAIL
 from app.workflow.results import JobRequest
 
@@ -87,8 +88,9 @@ class RegistryTest(unittest.TestCase):
             self.assertIsInstance(default_registry.resolve(node_type), handler_type)
         for node_type in ("script", "image", "voice", "music"):
             self.assertIsInstance(default_registry.resolve(node_type), PendingAITaskHandler)
-        for node_type in ("scenes", "subtitle", "render", "publish"):
+        for node_type in ("subtitle", "render", "publish"):
             self.assertIsInstance(default_registry.resolve(node_type), PendingServiceHandler)
+        self.assertIsInstance(default_registry.resolve("scenes"), ScenesNodeHandler)
         for node_type in TEXT_TYPES:
             self.assertIsInstance(default_registry.resolve(node_type), TextNodeHandler)
         for node_type in KNOWN_TYPES:

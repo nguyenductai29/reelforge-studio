@@ -4,11 +4,46 @@ from app.providers.catalog import (ORIENTATION_ASPECT, PROVIDER_ERRORS, VIDEO_PR
                                    video_provider_config_issue, video_request_defaults)
 from app.workflow.nodes.base import INSUFFICIENT_CREDITS_DETAIL, NodeHandler
 from app.workflow.nodes.pending import pending_ai_task
-from app.workflow.results import JobRequest, NodeExecutionResult, NodeReadiness, RunRequestError
+from app.workflow.ports import BRIEF, SCENES, TEXT, VIDEO_ASSETS, InputPort, OutputPort
+from app.workflow.results import JobRequest, NodeExecutionResult, NodeReadiness, RunRequestError, produced_asset_ids
+
+
+MAX_CONNECTED_PROMPT_CHARS = 1000
+
+
+def clip_prompt(text) -> str:
+    """Connected text as a clip prompt, cut at a word boundary to fit every provider (Runway allows 1000)."""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    text = text.strip()
+    if len(text) <= MAX_CONNECTED_PROMPT_CHARS:
+        return text
+    return " ".join(text.split())[:MAX_CONNECTED_PROMPT_CHARS].rsplit(" ", 1)[0]
+
+
+def scenes_prompt(scenes) -> str:
+    """One clip covers every scene until multi-clip rendering exists."""
+    if not isinstance(scenes, list):
+        return ""
+    shots = [scene.get("visual_prompt") or scene.get("text") for scene in scenes if isinstance(scene, dict)]
+    shots = [shot for shot in shots if isinstance(shot, str) and shot.strip()]
+    if len(shots) == 1:
+        return clip_prompt(shots[0])
+    return clip_prompt(" ".join(f"Shot {index}: {shot.strip()}" for index, shot in enumerate(shots, 1)))
+
+
+def _video_assets(output):
+    assets = output.get("video_assets")
+    if isinstance(assets, list) and assets:
+        return assets
+    return [{"id": asset_id, "filename": output.get("filename"), "content_type": "video/mp4"}
+            for asset_id in produced_asset_ids(output)] or None
 
 
 class VideoNodeHandler(NodeHandler):
     node_type = "video"
+    inputs = (InputPort("prompt", (TEXT, BRIEF), multiple=True), InputPort("scenes", (SCENES,), multiple=True))
+    outputs = (OutputPort("video_assets", VIDEO_ASSETS, extract=_video_assets),)
 
     def _aspect_ratio(self, context):
         return ORIENTATION_ASPECT.get(context.workspace_settings.get("video_orientation", "vertical"))
@@ -43,8 +78,12 @@ class VideoNodeHandler(NodeHandler):
             model_id = tool.model if tool else None
             tool_reference = tool.id if tool else None
             project = context.project
-            prompt = (options.prompt_override if options.prompt_override is not None
-                      else project.topic or project.title).strip()
+            if options.prompt_override is not None:
+                # A prompt typed when starting the run beats connected inputs.
+                prompt = options.prompt_override.strip()
+            else:
+                prompt = (clip_prompt(inputs.get("prompt")) or scenes_prompt(inputs.get("scenes"))
+                          or (project.topic or project.title or "").strip())
             aspect_ratio = self._aspect_ratio(context)
             duration, resolution, generate_audio = video_request_defaults(provider_name)
             cost = video_credit_cost()

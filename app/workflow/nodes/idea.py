@@ -1,10 +1,13 @@
 """Idea: the project's title and topic, resolved locally."""
 from app.workflow.nodes.base import NodeHandler
+from app.workflow.ports import BRIEF, OutputPort
 from app.workflow.results import NodeExecutionResult
 
 
 class IdeaNodeHandler(NodeHandler):
     node_type = "idea"
+    # "topic" falls back to the title when the project has no topic.
+    outputs = (OutputPort("topic", BRIEF, keys=("topic", "title")), OutputPort("title", BRIEF))
 
     def execute(self, context, node, inputs):
         project = context.project

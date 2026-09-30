@@ -7,6 +7,7 @@ import type {
   AiTool,
   Billing,
   Dashboard,
+  NodeCatalog,
   Publication,
   Readiness,
   Run,
@@ -32,7 +33,17 @@ export const keys = {
   publications: ["youtube", "publications"] as const,
   settings: ["settings"] as const,
   admin: ["admin"] as const,
+  nodeTypes: ["workflow-node-types"] as const,
 };
+
+/** Each node type's ports; fixed for a server release, so fetched once. */
+export function useNodeTypes() {
+  return useQuery({
+    queryKey: keys.nodeTypes,
+    queryFn: () => api<NodeCatalog>("workflow-node-types"),
+    staleTime: Infinity,
+  });
+}
 
 export function useDashboard() {
   return useQuery({ queryKey: keys.dashboard, queryFn: () => api<Dashboard>("dashboard") });

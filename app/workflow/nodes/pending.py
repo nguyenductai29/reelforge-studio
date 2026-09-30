@@ -1,5 +1,10 @@
-"""Node types the editor offers but the server cannot execute yet, and unknown types."""
+"""Node types the editor offers but the server cannot execute yet, and unknown types.
+
+Placeholders still declare their ports, so the canvas can show what they will
+consume and produce once an executor exists.
+"""
 from app.workflow.nodes.base import NodeHandler
+from app.workflow.ports import InputPort, OutputPort
 from app.workflow.results import NodeError, NodeExecutionResult, NodeReadiness
 
 
@@ -9,11 +14,15 @@ def pending_ai_task(context, task: str) -> NodeExecutionResult:
     return NodeExecutionResult.blocked("Chưa chọn công cụ AI cho tác vụ này.")
 
 
-class PendingAITaskHandler(NodeHandler):
-    """An AI task (script, image, voice, music) whose provider is not connected yet."""
-
-    def __init__(self, node_type: str):
+class _Placeholder(NodeHandler):
+    def __init__(self, node_type: str, inputs: tuple[InputPort, ...] = (), outputs: tuple[OutputPort, ...] = ()):
         self.node_type = node_type
+        self.inputs = inputs
+        self.outputs = outputs
+
+
+class PendingAITaskHandler(_Placeholder):
+    """An AI task (script, image, voice, music) whose provider is not connected yet."""
 
     def execute(self, context, node, inputs):
         return pending_ai_task(context, self.node_type)
@@ -24,11 +33,8 @@ class PendingAITaskHandler(NodeHandler):
         return NodeReadiness("missing_tool", "Chưa chọn công cụ AI cho tác vụ này.")
 
 
-class PendingServiceHandler(NodeHandler):
-    """A processing step (scenes, subtitle, render, publish) without an executor yet."""
-
-    def __init__(self, node_type: str):
-        self.node_type = node_type
+class PendingServiceHandler(_Placeholder):
+    """A processing step (subtitle, render, publish) without an executor yet."""
 
     def execute(self, context, node, inputs):
         return NodeExecutionResult.blocked("Bước này chưa có bộ thực thi.")
