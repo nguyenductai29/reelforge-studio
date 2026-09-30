@@ -1,11 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, RotateCcw, Send } from "lucide-react";
+import { ExternalLink, Loader2, RotateCcw, Send } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { FieldLabel } from "@/components/reelforge/primitives";
 import {
   PageHeader,
   PlatformIcon,
@@ -14,36 +26,145 @@ import {
   platformLabel,
   type Platform,
 } from "@/components/reelforge/primitives";
-import { PublishDialog } from "@/components/reelforge/publish-dialog";
-import { api } from "@/lib/api";
+import { PublishDialog, splitTags, tagsLength } from "@/components/reelforge/publish-dialog";
+import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { keys, usePublications, useYouTubeConnection } from "@/lib/queries";
+import type { PrivacyStatus, Publication } from "@/lib/types";
 
 const soonPlatforms: Platform[] = ["tiktok", "facebook", "instagram"];
+
+/**
+ * Retries a failed upload that never sent media: only a new upload job is queued, from the same video.
+ * The metadata can be corrected first (for example a title YouTube rejected).
+ */
+function RetryDialog({ publication, onClose }: { publication: Publication | null; onClose: () => void }) {
+  const { t } = useI18n();
+  const d = t.publishing.dialog;
+  const client = useQueryClient();
+  const showError = useErrorToast();
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState<{ title: string; description: string; tags: string; privacy: PrivacyStatus } | null>(
+    null,
+  );
+  const current = form ?? {
+    title: publication?.title ?? "",
+    description: publication?.description ?? "",
+    tags: (publication?.tags ?? []).join(", "),
+    privacy: publication?.privacy_status ?? "private",
+  };
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!publication) return;
+    setBusy(true);
+    try {
+      await api(
+        `youtube/publications/${encodeURIComponent(publication.id)}/retry`,
+        jsonRequest("POST", {
+          title: current.title.trim(),
+          description: current.description,
+          tags: splitTags(current.tags),
+          privacy_status: current.privacy,
+        }),
+      );
+      await client.invalidateQueries({ queryKey: keys.publications });
+      toast.success(t.publishing.retried);
+      setForm(null);
+      onClose();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={Boolean(publication)}
+      onOpenChange={(open) => {
+        if (!open) {
+          setForm(null);
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{t.publishing.retryTitle}</DialogTitle>
+          <DialogDescription>{t.publishing.retryDescription}</DialogDescription>
+        </DialogHeader>
+        <form id="retry-form" onSubmit={submit} className="space-y-4">
+          <div>
+            <FieldLabel htmlFor="retry-title">{d.titleLabel}</FieldLabel>
+            <Input
+              id="retry-title"
+              value={current.title}
+              maxLength={100}
+              required
+              onChange={(e) => setForm({ ...current, title: e.target.value.replace(/[\r\n]/g, " ") })}
+              className="bg-surface"
+            />
+          </div>
+          <div>
+            <FieldLabel htmlFor="retry-description">{d.descriptionLabel}</FieldLabel>
+            <Textarea
+              id="retry-description"
+              rows={3}
+              maxLength={5000}
+              value={current.description}
+              onChange={(e) => setForm({ ...current, description: e.target.value })}
+              className="resize-none bg-surface"
+            />
+          </div>
+          <div>
+            <FieldLabel htmlFor="retry-tags">{d.tagsLabel}</FieldLabel>
+            <Input
+              id="retry-tags"
+              value={current.tags}
+              onChange={(e) => setForm({ ...current, tags: e.target.value })}
+              className="bg-surface"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">{d.tagsHint(tagsLength(splitTags(current.tags)))}</p>
+          </div>
+          <div>
+            <FieldLabel>{d.privacyLabel}</FieldLabel>
+            <Select value={current.privacy} onValueChange={(value) => setForm({ ...current, privacy: value as PrivacyStatus })}>
+              <SelectTrigger className="bg-surface" aria-label={d.privacyLabel}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(["private", "unlisted", "public"] as const).map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {t.publishing.privacy[value]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </form>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            {t.common.cancel}
+          </Button>
+          <Button type="submit" form="retry-form" disabled={busy || !current.title.trim()}>
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {t.publishing.retry}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default function PublishingPage() {
   const { t, formatDateTime } = useI18n();
   useDocumentTitle(t.publishing.title);
-  const client = useQueryClient();
-  const showError = useErrorToast();
   const connection = useYouTubeConnection().data;
   const publications = usePublications().data ?? [];
-  const [retrying, setRetrying] = useState<string | null>(null);
-
-  async function retry(id: string) {
-    setRetrying(id);
-    try {
-      await api(`youtube/publications/${encodeURIComponent(id)}/retry`, { method: "POST" });
-      await client.invalidateQueries({ queryKey: keys.publications });
-      toast.success(t.publishing.retried);
-    } catch (error) {
-      showError(error);
-    } finally {
-      setRetrying(null);
-    }
-  }
+  const [retrying, setRetrying] = useState<Publication | null>(null);
 
   return (
     <div className="space-y-8">
@@ -121,12 +242,34 @@ export default function PublishingPage() {
             >
               <div className="min-w-0">
                 <p className="truncate font-medium">{publication.title}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {t.publishing.privacy[publication.privacy_status ?? "private"]}
+                  {publication.tags?.length ? ` · ${publication.tags.map((tag) => `#${tag}`).join(" ")}` : ""}
+                </p>
+                {publication.state === "succeeded" && publication.remote_status === "uploaded" && (
+                  <p className="mt-0.5 text-xs text-muted-foreground">{t.publishing.processing}</p>
+                )}
+                {publication.remote_privacy && publication.remote_privacy !== publication.privacy_status && (
+                  <p className="mt-0.5 text-xs text-warning">
+                    {t.publishing.keptAs(t.publishing.privacy[publication.remote_privacy])}
+                  </p>
+                )}
                 {publication.last_error && (
                   <p className="mt-0.5 text-xs text-warning">
                     {t.publishing.errors[publication.last_error] ?? publication.last_error}
                   </p>
                 )}
                 <div className="mt-1 flex flex-wrap gap-3 text-xs">
+                  {publication.youtube_url && (
+                    <a
+                      href={publication.youtube_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-primary hover:underline"
+                    >
+                      {t.publishing.openYoutube} <ExternalLink className="size-3" />
+                    </a>
+                  )}
                   {publication.remote_id && (
                     <a
                       href={`https://studio.youtube.com/video/${encodeURIComponent(publication.remote_id)}/edit`}
@@ -140,8 +283,7 @@ export default function PublishingPage() {
                   {publication.can_retry && connection?.connected && (
                     <button
                       type="button"
-                      disabled={retrying === publication.id}
-                      onClick={() => void retry(publication.id)}
+                      onClick={() => setRetrying(publication)}
                       className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
                     >
                       <RotateCcw className="size-3" /> {t.publishing.retry}
@@ -163,6 +305,7 @@ export default function PublishingPage() {
           ))}
         </div>
       </section>
+      <RetryDialog publication={retrying} onClose={() => setRetrying(null)} />
     </div>
   );
 }

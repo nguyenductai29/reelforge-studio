@@ -1,4 +1,8 @@
-"""Upload approved MP4 assets to YouTube privately with resumable sessions."""
+"""Upload approved MP4 assets to YouTube with resumable sessions.
+
+Each publication chooses its visibility (private by default, or unlisted or
+public) and tags; YouTube's reported upload status and visibility are stored.
+"""
 import argparse
 from dataclasses import asdict
 import os
@@ -70,6 +74,7 @@ def run_one(*, client: httpx.Client | None = None, poll_seconds: int = 15,
             return True
         file_path = media_root(db) / publication.workspace_id / asset.id
         title, description, workspace_id = publication.title, publication.description, publication.workspace_id
+        privacy, tags = publication.privacy_status or "private", tuple(publications.publication_tags(publication))
         had_session = publication.upload_session_ciphertext is not None
         was_queued = publication.state == "queued"
     owned_client = client is None
@@ -97,7 +102,7 @@ def run_one(*, client: httpx.Client | None = None, poll_seconds: int = 15,
             return True
 
         request = youtube.YouTubeUploadRequest(file_path=file_path, title=title, description=description,
-                                               contains_synthetic_media=True)
+                                               contains_synthetic_media=True, privacy_status=privacy, tags=tags)
         if not _connection_matches(workspace_id, expected_generation):
             _fail(publication_id, job_id, token, "connection_changed", needs_attention=True)
             return True
@@ -144,7 +149,8 @@ def run_one(*, client: httpx.Client | None = None, poll_seconds: int = 15,
             return True
         with Session.begin() as db:
             publications.finish_publication(db, publication_id=publication_id, job_id=job_id,
-                                            lease_token=token, remote_id=result.video_id)
+                                            lease_token=token, remote_id=result.video_id,
+                                            upload_status=result.upload_status, privacy_status=result.privacy_status)
         return True
     finally:
         if owned_client:

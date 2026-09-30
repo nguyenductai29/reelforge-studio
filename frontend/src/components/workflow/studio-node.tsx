@@ -19,6 +19,7 @@ import {
   clockTime,
   outputJobs,
   outputMedia,
+  outputMetadata,
   outputScenes,
   outputSubtitle,
   outputText,
@@ -258,6 +259,17 @@ function Preview({ data }: { data: StudioNode["data"] }) {
       );
     }
     case "ai": {
+      const prepared = data.type === "metadata" ? outputMetadata(output) : null;
+      if (prepared) {
+        return (
+          <div className="space-y-1 rounded-lg bg-surface-2 p-2.5 text-[11px] leading-relaxed">
+            <p className="line-clamp-2 font-medium">{prepared.title}</p>
+            {prepared.tags.length > 0 && (
+              <p className="line-clamp-1 text-primary">{prepared.tags.map((tag) => `#${tag}`).join(" ")}</p>
+            )}
+          </div>
+        );
+      }
       const text = outputText(output, portsOf(catalog, data.type));
       return (
         <div className="rounded-lg bg-surface-2 p-2.5 text-[11px] leading-relaxed">
@@ -293,13 +305,19 @@ function Preview({ data }: { data: StudioNode["data"] }) {
         <p className="rounded-lg bg-surface-2 p-2.5 text-[11px] text-muted-foreground">{t.editor.node.fromProject}</p>
       );
     }
-    case "publish":
+    case "publish": {
+      const prepared = outputMetadata(output);
       return (
         <div className="flex items-center gap-2 rounded-lg bg-surface-2 p-2">
           {data.type === "publish" ? <PlatformIcon platform="youtube" /> : <Send className="size-4 text-muted-foreground" />}
-          <span className="truncate text-[11px]">{t.editor.node.youtubePrivate}</span>
+          <span className="min-w-0 truncate text-[11px]">
+            {prepared
+              ? `${prepared.title} · ${t.publishing.privacy[(prepared.privacy_status ?? "private") as "private"]}`
+              : t.editor.node.youtubeHandoff}
+          </span>
         </div>
       );
+    }
     default:
       return <p className="rounded-lg bg-surface-2 p-2.5 text-[11px] text-muted-foreground">{t.editor.node.reviewSummary}</p>;
   }

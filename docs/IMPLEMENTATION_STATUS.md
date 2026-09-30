@@ -8,6 +8,8 @@
 
 > Phases 6, 7 and 8 add text-to-speech (Gemini TTS, one narration per script or scene), local SRT/WebVTT subtitles, and an FFmpeg render that joins the clips, narration and burned-in subtitles into one final MP4 that Review previews and publishing prefers; see [Phase 6, 7 and 8 changes](#phase-6-7-and-8-changes), [VOICE_GENERATION.md](VOICE_GENERATION.md), [SUBTITLES.md](SUBTITLES.md) and [RENDERING.md](RENDERING.md). They use offline tests only; no paid call and no real FFmpeg run were made here, because FFmpeg is not installed on the development machine.
 
+> Phase 9 turns these steps into one creator workflow and completes YouTube publishing: starter templates, a Metadata step, the Publish hand-off, run summaries with credits, and publication visibility and tags (migration 0013); see [Phase 9 changes](#phase-9-changes) and [SOCIAL_VIDEO_WORKFLOW.md](SOCIAL_VIDEO_WORKFLOW.md). Offline tests only; no paid call and no real upload.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -37,7 +39,7 @@ Each item uses the same fields:
 | Video providers | `app/providers/{fal,runware,replicate,runway,dola}.py`, `app/providers/catalog.py` | One text-to-video model per adapter. Each adapter validates the request and checks provider and media URLs (SSRF guard). The catalog is the single provider map (module, client, credential) shared by the API, the video handler and the worker. |
 | Text providers | `app/providers/text/` (`base.py`, `openai.py`, `anthropic.py`, `gemini.py`) | One `TextGenerationProvider` interface; each adapter calls its vendor's HTTP API with `httpx` and returns a normalized `TextResult` (F11). |
 | Text worker | `app/text_worker.py` (`python -m app.text_worker`) | Claims `text:*` jobs, calls the provider outside any DB transaction, settles or refunds credits, and reports the step to the executor, which continues the run. |
-| YouTube worker | `app/youtube_worker.py` (`python -m app.youtube_worker`) | Claims `publish:youtube:*` jobs, refreshes OAuth tokens and runs resumable private uploads. |
+| YouTube worker | `app/youtube_worker.py` (`python -m app.youtube_worker`) | Claims `publish:youtube:*` jobs, refreshes OAuth tokens and runs resumable uploads (private by default; unlisted or public since Phase 9). |
 | Publishing | `app/publications.py`, `app/publishers/*` | Publication records with a channel-generic schema, plus YouTube OAuth and upload. The Facebook and TikTok adapters exist only as libraries. |
 | Billing and credits | `app/billing.py`, `app/payments.py`, `app/usage.py` | payOS VNQR checkout, webhook and refresh reconciliation, and the credit ledger. |
 | Maintenance | `app/media_maintenance.py` | Cleans up stale `.part` downloads. Dry-run by default. |
@@ -46,7 +48,7 @@ Each item uses the same fields:
 
 ### Data model
 
-Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0012.
+Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0013.
 
 - **Tenancy:** `users`, `login_sessions`, `workspaces`, `memberships(role)`, `workspace_settings`, `system_settings`, `auth_login_attempts`.
 - **Content:** `projects`, `assets` (with lineage `project_id`, `run_id`, `step_id`, `provider`, `model`), `workflows` (graph JSON in `definition`).
@@ -383,6 +385,51 @@ These phases turn the scene-aware workflow into one final video. No completed ph
 - **Schema:** no migration. Assets, jobs, ledger and usage tables already fit; the newest migration is still `0012_job_reconciliation`.
 - **Tests:** `tests/test_voice_provider.py`, `tests/test_voice_nodes.py`, `tests/test_voice_worker.py`, `tests/test_subtitles.py`, `tests/test_render.py`, `tests/test_render_worker.py`. The render tests include a real FFmpeg render of synthetic media, skipped where FFmpeg is missing.
 
+### Phase 9 changes
+
+Phase 9 makes the pipeline usable as one product. It adds no new provider or worker, and existing workflows and runs keep working.
+
+- **Templates:**
+  - `app/workflow/templates.py` builds **YouTube Short** (`youtube_short`: 9:16, 50 s script, 5 s scenes, 6 s clips) and **YouTube landscape** (`youtube_landscape`: 16:9, 120 s, 7 s scenes, 8 s clips). Each is Idea → AI Writer → Scene Splitter → Video + Voice + Subtitle → Render → Review → Publish, with Metadata.
+  - They are created by `POST /api/workflows` with `template` and listed by `GET /api/workflow-templates`.
+  - Templates set no `tool_id`; readiness now returns each step's resolved `tool` (the first enabled model for its task, or the step's own choice).
+- **Metadata step:** `metadata`, a `TextNodeHandler` with `response_format = "json"`. It uses the same text worker, credits and reconciliation, and outputs `{title, description, tags}` (new port type `publish_metadata`), fitted to YouTube's limits and never failing on a non-JSON reply.
+- **Publish step:**
+  - The placeholder became a hand-off (`app/workflow/nodes/publish.py`). After Review, it completes with the final video and prepared metadata, and never uploads.
+  - Metadata comes, in order, from its own settings, then the Metadata step, then connected text, then the project title.
+  - Runs with Publish now end *completed* instead of *blocked*.
+- **Run summary:** `GET /api/workflow-runs/{id}/summary` (`app/run_summary.py`), derived from steps, jobs, the ledger and usage events. It returns:
+  - current and failed steps, needs-attention and blocked steps, and the render error;
+  - active jobs;
+  - counts of script words, scenes, images, clips, narrations and subtitle cues;
+  - the final video;
+  - credits reserved, used, refunded and held;
+  - elapsed time;
+  - publishing readiness and defaults.
+- **Publishing:**
+  - `app/publications.py` validates metadata like YouTube (title ≤ 100 characters, description ≤ 5,000 bytes, tags ≤ 500 characters, no `<` or `>`) before queueing.
+  - It picks the final render (`final_video`) and refuses scene clips when a render exists.
+  - It stores `privacy_status` and `tags`; the uploader sends them and accepts a more private result than requested, which YouTube applies to unverified projects.
+  - Retry can correct metadata and queues only an upload job.
+  - The API exposes tags, visibility, YouTube's upload status and applied visibility, and a watch URL.
+- **Schema:** migration `0013_publication_metadata` adds `privacy_status` (default `private`), `tags` (default `[]`), `remote_status` and `remote_privacy`, with a visibility check constraint. It is tested for upgrade and downgrade with existing rows.
+- **Frontend:**
+  - Templates on the Workflows page.
+  - The Run dialog shows the project topic and models.
+  - A Summary panel in the run bar.
+  - **Download final MP4** and **Prepare publishing**.
+  - The publish form has tags and visibility, with live limit checks.
+  - The Publishing page shows visibility, tags, processing, applied visibility, a watch link and retry with corrections.
+  - The Metadata and Publish nodes show their results.
+- **Tests:**
+  - `tests/test_social_workflow.py`:
+    - templates, defaults and model resolution;
+    - the Short template run end to end with fake providers, through the summary, the hand-off, publication validation and idempotency, and a mocked YouTube upload;
+    - retry without regeneration;
+    - a legacy workflow.
+  - `tests/test_publication_metadata_migration.py`.
+  - Existing tests were updated for the Publish hand-off, the new node type and final-render-only publishing.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -409,7 +456,7 @@ These phases turn the scene-aware workflow into one final video. No completed ph
 | 1 | Workflow graph persistence | Fully implemented, including per-node `config` (edited in the inspector since Phase 3.5) and edge ports | F1, F13 |
 | 2 | Workflow execution engine | Fully implemented (modular executor and registry); some run semantics still partial | F10, P1 |
 | 2b | Typed data passing between nodes | Fully implemented (ports, legacy fallback, required inputs) | F12 |
-| 3 | Node types | Partial (19 registered; 16 do real work) | P2, U2, U3 |
+| 3 | Node types | Partial (20 registered; 18 do real work) | P2, U2, U3 |
 | 4 | Job architecture | Fully implemented (core) | F3 |
 | 5 | Video generation providers | Partial | P3 |
 | 5b | Text generation providers | Fully implemented; Gemini live-verified by the operator, other providers mock-tested | F11 |
@@ -417,7 +464,7 @@ These phases turn the scene-aware workflow into one final video. No completed ph
 | 7 | AI tool/provider configuration | Partial | P5 |
 | 8 | Credits reservation and usage tracking | Hold, usage, refund and manual reconciliation implemented; pricing/grants remain open | P6, F11, M6, R1 |
 | 9 | Publishing architecture | Partial | P7, M3 |
-| 10 | YouTube integration | Fully implemented (private uploads) | F4 |
+| 10 | YouTube integration | Fully implemented (private by default; unlisted/public and tags since Phase 9) | F4 |
 | 11 | Frontend API integration | Fully implemented | F7 |
 | 12 | Workflow node status rendering | Fully implemented (polling) | F8 |
 | 13 | Tests | Partial | P8 |
@@ -444,7 +491,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 | Gemini | voice | `gemini-2.5-flash-preview-tts` | yes | no | — | Mock tested only (`python -m app.smoke_test voice --live` not run) |
 | FFmpeg (local) | render | system `ffmpeg` | yes (fake runner) | no | — | Real render test skipped: FFmpeg not installed on the development machine |
 | Dola (experimental) | video | `seedance-2.0`, `seedance-2.5` | yes | no | — | Mock tested only; out of scope |
-| YouTube Data API | publishing | — | yes | no | — | Mock tested only |
+| YouTube Data API | publishing | — | yes | no | — | Mock tested only (visibility and tags since Phase 9) |
 
 "Mock tested" means the adapter's request shape, response parsing, error mapping and timeouts are covered offline with `httpx.MockTransport` or fake clients, and the workflow path is covered with fake providers. Additional providers still require live verification. Preserve the exact date/model/command and latency/tokens or job ID/duration/size when further operator evidence becomes available.
 
@@ -509,7 +556,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
   - A meaningful retry count for video jobs: `attempt_count` increases on every poll.
 - **Depends on:** nothing. P1, P3 and P7 depend on it.
 
-### F4. YouTube integration (private uploads)
+### F4. YouTube integration (uploads with chosen visibility)
 
 - **Files:**
   - Backend: `app/publishers/google_oauth.py`, `app/publishers/youtube.py`, `app/youtube_worker.py`, `app/publications.py`, and the `/api/youtube/*` routes in `app/main.py`.
@@ -527,7 +574,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
     - At most one publication per workspace, run and channel.
   - **Uploading:**
     - The worker saves the encrypted resumable session URL before sending any bytes, and resumes by probing the uploaded offset.
-    - It uploads in 8 MiB chunks with `containsSyntheticMedia=true` and `privacyStatus=private`.
+    - It uploads in 8 MiB chunks with `containsSyntheticMedia=true` and the chosen `privacyStatus` (private by default; unlisted or public since Phase 9) and tags. A more private answer than requested (unverified Google projects) is accepted and recorded; a more public one needs attention.
     - It checks that YouTube reports the video as private; anything else becomes `needs_attention`.
   - **Failures:**
     - Transient errors back off exponentially, for at most 6 attempts.
@@ -860,7 +907,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 ### P2. Node types
 
 - **Files:** `app/workflow/registry.py` (`build_default_registry`), `app/workflow/nodes/*.py`, `app/main.py` (`NODE_TYPES`), `frontend/src/lib/workflow.ts` (`kindOf`, `nodeLibrary`, `EXECUTABLE`, `workflowTemplates`), `frontend/src/components/workflow/studio-node.tsx`.
-- **Current:** all 19 node types the API accepts are registered, each with typed ports (F12). Sixteen of them do real work:
+- **Current:** all 20 node types the API accepts are registered, each with typed ports (F12). Eighteen of them do real work:
 
   | Type | Handler | Backend behavior | Notes |
   | --- | --- | --- | --- |
@@ -874,14 +921,15 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
   | `subtitle` | `SubtitleNodeHandler` | Completes locally, free | SRT/WebVTT file asset timed by narration, clips or scenes (Phase 7) |
   | `render` | `RenderNodeHandler` | Durable local FFmpeg job | One final MP4 from clips, narration and subtitles (Phase 8) |
   | `review` | `ReviewNodeHandler` | `awaiting_review` when a parent created media, then the approve endpoint; otherwise `blocked` | Always manual |
-  | `publish` | `PendingServiceHandler` | Always `blocked` | Publishing is a separate manual flow (P7) |
+  | `metadata` | `MetadataNodeHandler` (text) | Durable text job | YouTube title, description and tags as JSON (Phase 9) |
+  | `publish` | `PublishNodeHandler` | Completes after Review as a hand-off; never uploads | Final video and prepared metadata for the Publishing page (Phase 9) |
   | `script`, `music` | `PendingAITaskHandler` | Always `blocked` | "Provider not connected" or "no AI tool selected" |
   | any other type | `UnsupportedNodeHandler` | `blocked`, `error.code = unsupported_node_type` | Only reachable from old snapshots |
 
   - **Library:** 60 entries. 19 map to backend types; the other 41 are "Sắp có" (U2).
   - **Templates:** 4 of 10 have runnable graphs. `social-video`, `youtube-short` and `tiktok-video` are all `idea → video → review`; the fourth is `blank`.
 - **Missing:**
-  - Real handlers for 3 types (`script`, `music`, `publish`). Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
+  - Real handlers for 2 types (`script`, `music`). Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
   - No template uses the text or scenes nodes yet.
 - **Depends on:** F10, P1, F13, P5.
 
@@ -1223,14 +1271,14 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 ### M2. Executors for script, image, voice, music, subtitle, render and publish
 
 - **Files to change:** new handlers in `app/workflow/nodes/` registered in `app/workflow/registry.py`, a generalized worker (today `app/video_worker.py` and `app/text_worker.py`) that reports through `WorkflowExecutor.finish_step`, and new provider modules.
-- **Current:** image generation (Phase 4), one clip per scene (Phase 5), voice (Phase 6), subtitles (Phase 7) and FFmpeg render (Phase 8) are done; see [Phase 4 and 5 changes](#phase-4-and-5-changes) and [Phase 6, 7 and 8 changes](#phase-6-7-and-8-changes). The three other node types have placeholder handlers that always return `blocked`, but they already declare their ports (F12). Text generation (F11) and rule-based scene splitting (F12) exist.
+- **Current:** image generation (Phase 4), one clip per scene (Phase 5), voice (Phase 6), subtitles (Phase 7) and FFmpeg render (Phase 8) are done; see [Phase 4 and 5 changes](#phase-4-and-5-changes) and [Phase 6, 7 and 8 changes](#phase-6-7-and-8-changes). Metadata and the Publish hand-off came in Phase 9. The two other node types have placeholder handlers that always return `blocked`, but they already declare their ports (F12). Text generation (F11) and rule-based scene splitting (F12) exist.
 - **Missing:**
   - Script generation: `script` can subclass `TextNodeHandler`. That is a product decision, since it would start charging existing workflows.
   - An AI scene splitter with better visual prompts, using JSON output from the text layer, in place of the rule-based one.
   - Music generation and mixing a music bed under the narration.
   - Subtitles aligned to speech (speech recognition or forced alignment); Phase 7 times them by narration, clip or scene length.
   - Image slideshows and transitions in Render; Phase 8 joins video clips only.
-  - A publish executor that queues a publication after approval.
+  - Publishing to other channels (TikTok, Facebook) and scheduled publishing; YouTube publishing stays a human action after approval (Phase 9).
   - A price and a job kind for every paid executor.
 - **Depends on:**
   - F13 (done: settings declared with `config_fields` appear in the inspector without frontend changes).
@@ -1241,7 +1289,7 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 ### M3. Scheduling and more channels
 
 - **Files to change:** `app/publications.py`, new workers modeled on `app/youtube_worker.py`, `app/publishers/{facebook,tiktok}.py`, `frontend/src/app/{calendar,channels,publishing}/page.tsx`.
-- **Current:** YouTube private upload only, published immediately.
+- **Current:** YouTube uploads only (private, unlisted or public), queued when the owner presses Publish after approval.
 - **Missing:**
   - Facebook and TikTok OAuth, connection tables, workers and UI.
   - A scheduled time (`available_at`) for publications, and a calendar UI to set it.

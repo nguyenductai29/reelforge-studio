@@ -151,7 +151,7 @@ Generate a Fernet key once with `python -c "from cryptography.fernet import Fern
 python -m app.youtube_worker
 ```
 
-The workspace owner connects YouTube in **Kênh**, approves a completed clip from the workflow run bar, then chooses **Đăng nội dung → Tải riêng tư lên YouTube** on **Đăng tải**. A fresh OAuth callback must include a refresh token; otherwise it fails without replacing the existing connection. The API creates one publication record and durable upload job for that run/channel. The queued job is tied to that connection; disconnecting and reconnecting requires a new manual action before an upload can proceed. The worker starts a resumable upload, encrypts the session URL, and records the YouTube video ID when the private upload succeeds. Temporary Google failures use bounded retries with backoff. The UI shows queued/uploading/succeeded/error states, without a byte-percentage progress bar. A failed job that never started a resumable upload can be retried manually; an uncertain upload is marked **Cần kiểm tra** and is never sent again automatically. Change visibility in YouTube Studio only after checking the uploaded video. Google project verification, consent and API quota determine whether a real channel can use this flow; repository tests use fake provider/Google responses, not a live channel.
+The workspace owner connects YouTube in **Kênh**, approves a completed video from the workflow run bar, then chooses **Chuẩn bị đăng** (or **Đăng nội dung** on **Đăng tải**). Since Phase 9 the form also sets tags and visibility (private by default, unlisted or public), and a run with a Render step publishes its final MP4. A fresh OAuth callback must include a refresh token; otherwise it fails without replacing the existing connection. The API creates one publication record and durable upload job for that run/channel. The queued job is tied to that connection; disconnecting and reconnecting requires a new manual action before an upload can proceed. The worker starts a resumable upload, encrypts the session URL, and records the YouTube video ID when the private upload succeeds. Temporary Google failures use bounded retries with backoff. The UI shows queued/uploading/succeeded/error states, without a byte-percentage progress bar. A failed job that never started a resumable upload can be retried manually; an uncertain upload is marked **Cần kiểm tra** and is never sent again automatically. Change visibility in YouTube Studio only after checking the uploaded video. Google project verification, consent and API quota determine whether a real channel can use this flow; repository tests use fake provider/Google responses, not a live channel.
 
 The Facebook Page Reels and TikTok Content Posting HTTP adapters in `app/publishers/` are building blocks only. They have no workspace account connection, publication worker or UI action yet. TikTok's inbox flow requires the creator to finish posting in TikTok and must not be represented as a published post.
 
@@ -162,6 +162,25 @@ An **Image** step generates images with Runway `gen4_image` (AI tool task **Imag
 ### Multi-scene video (Phase 5)
 
 A Video step with Scenes connected and no prompt override makes **one clip per scene**, each its own job with its own credit reservation (`video-reserve:<step>:scene:<n>`); clips are not joined. A prompt override, or only connected text, still makes one clip (`video-reserve:<step>:single`). A workflow may now contain several Video steps. The step completes, and Review can approve every clip, only when all clips are stored. Each uncertain clip is reconciled on its own. Jobs queued before this change keep their per-run references. See [docs/MULTI_SCENE_VIDEO.md](docs/MULTI_SCENE_VIDEO.md), including the retry limitations.
+
+### Social video workflow and YouTube publishing (Phase 9)
+
+- **Templates:** **Workflows → From a template** creates a **YouTube Short** (9:16, about 50 s) or a **YouTube landscape video** (16:9, about 2 min). Each is the full pipeline: Idea → AI Writer → Scene Splitter → Video + Voice + Subtitle → Render → Review → Publish, plus a Metadata step. Templates name no model; each step uses the first enabled model for its task unless its settings choose one.
+- **Running:** the Run dialog shows the project topic and models. The run bar's **Summary** shows:
+  - steps and active jobs;
+  - what was made;
+  - the final video;
+  - the run's credits (reserved, used, refunded, held);
+  - failed steps and steps that need reconciliation.
+
+  **Download final MP4** serves the render through the asset endpoint.
+- **Publishing:** after **Approve video**, the Publish step hands the final render and the prepared metadata to **Prepare publishing**:
+  - the form holds title, description, tags and visibility (private, unlisted or public), checked against YouTube's limits;
+  - nothing is uploaded until you press Publish;
+  - uploads use the existing durable YouTube worker;
+  - a failed upload that sent no media can be retried, with corrected metadata, without generating anything again.
+
+  Migration `0013_publication_metadata` adds visibility and tags. See [docs/SOCIAL_VIDEO_WORKFLOW.md](docs/SOCIAL_VIDEO_WORKFLOW.md).
 
 ### Voice, subtitles and the final render (Phases 6–8)
 

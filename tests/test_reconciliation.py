@@ -46,7 +46,6 @@ with Session.begin() as db:
     admin_id = db.scalar(select(User.id).where(User.email == 'admin@example.com'))
 historical = admin.post(f'/api/workflows/{workflow}/runs', json={'project_id':project}).json()['id']
 with Session.begin() as db:
-    from app.publications import Publication
     historical_job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == historical))
     historical_job.state = 'succeeded'
     historical_step = db.get(WorkflowRunStep, historical_job.step_id)
@@ -57,13 +56,18 @@ with Session.begin() as db:
     db.add(UsageEvent(id='migration-usage',workspace_id=workspace,tool='fal/video',units=1,credits=10,
                       reference=f'video:{historical_step.id}',created_at=datetime.now(timezone.utc)))
     db.flush()
-    db.add(Publication(id='migration-publication',workspace_id=workspace,run_id=historical,asset_id='migration-asset',
-                       channel='youtube',title='Old',description='',state='succeeded',remote_id='remote1',
-                       created_at=datetime.now(timezone.utc),updated_at=datetime.now(timezone.utc)))
+    # Raw SQL: the Publication model already has the columns migration 0013 adds later.
+    db.execute(text("INSERT INTO publications (id, workspace_id, run_id, asset_id, channel, title, description, state, "
+                    "remote_id, created_at, updated_at) VALUES ('migration-publication', :workspace, :run, "
+                    "'migration-asset', 'youtube', 'Old', '', 'succeeded', 'remote1', :now, :now)"),
+               {"workspace": workspace, "run": historical, "now": datetime.now(timezone.utc)})
 old_tables = [table for table in inspect(engine).get_table_names() if table != 'alembic_version']
+# Later migrations may add columns (0013 adds publication privacy and tags); the old columns must not change.
+old_columns = {table: [column['name'] for column in inspect(engine).get_columns(table)] for table in old_tables}
 def snapshot():
     with engine.connect() as connection:
-        return {table: sorted([repr(tuple(row)) for row in connection.execute(text('SELECT * FROM '+table))])
+        return {table: sorted([repr(tuple(row)) for row in connection.execute(
+                    text('SELECT ' + ', '.join(old_columns[table]) + ' FROM ' + table))])
                 for table in old_tables}
 before_upgrade = snapshot()
 command.upgrade(Config('alembic.ini'), 'head')

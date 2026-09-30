@@ -4,6 +4,12 @@ The HTTP layer checks the requester's permissions. This module verifies the
 approved run and asset lineage again before creating an idempotent publication
 and its queue job in the caller's transaction. Workers must use the lease-
 fenced helpers to persist resumable sessions and final results.
+
+Metadata follows YouTube's limits (``validate_metadata``): a title of 1–100
+characters, a description of at most 5,000 bytes, tags of at most 500
+characters in total, no ``<`` or ``>``, and a visibility of ``private``,
+``unlisted`` or ``public``. When a run has a completed Render step, only its
+final MP4 can be published; runs without one keep publishing their clip.
 """
 
 from datetime import datetime, timezone
@@ -21,9 +27,112 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from app import jobs
 from app.models import Asset, Base, WorkflowJob, WorkflowRun, WorkflowRunStep
 from app.publishers import google_oauth
+from app.publishers.youtube import MAX_TAGS_LENGTH, PRIVACY_STATUSES, tags_length
 
 
 _CHANNEL_RE = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+MAX_TITLE_CHARS = 100
+MAX_DESCRIPTION_BYTES = 5000
+MAX_TAG_CHARS = 100
+_ANGLES = re.compile(r"[<>]")
+
+
+class MetadataError(ValueError):
+    """Invalid publication metadata; ``code`` and ``field`` say which value to fix."""
+
+    def __init__(self, code: str, field: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.field = field
+
+
+def normalize_tags(tags: Any) -> list[str]:
+    """Tags without "#", surrounding spaces, blanks or repeats (case-insensitive), in order."""
+    if tags is None:
+        return []
+    if not isinstance(tags, (list, tuple)) or not all(isinstance(tag, str) for tag in tags):
+        raise MetadataError("invalid_tags", "tags", "Tags must be a list of text values")
+    seen, result = set(), []
+    for tag in tags:
+        clean = " ".join(tag.strip().lstrip("#").split())
+        if clean and clean.lower() not in seen:
+            seen.add(clean.lower())
+            result.append(clean)
+    return result
+
+
+def validate_metadata(title: Any, description: Any, tags: Any = None,
+                      privacy_status: Any = "private") -> tuple[str, str, list[str], str]:
+    """YouTube-compatible (title, description, tags, privacy), or ``MetadataError``."""
+    if not isinstance(title, str) or not title.strip():
+        raise MetadataError("invalid_title", "title", "A title is required")
+    title = title.strip()
+    if len(title) > MAX_TITLE_CHARS or "\n" in title or "\r" in title or _ANGLES.search(title):
+        raise MetadataError("invalid_title", "title", "The title must be one line of at most 100 characters without < or >")
+    if not isinstance(description, str):
+        raise MetadataError("invalid_description", "description", "The description must be text")
+    if len(description.encode("utf-8")) > MAX_DESCRIPTION_BYTES or _ANGLES.search(description):
+        raise MetadataError("invalid_description", "description",
+                            "The description must be at most 5000 bytes without < or >")
+    tags = normalize_tags(tags)
+    if (any(len(tag) > MAX_TAG_CHARS or _ANGLES.search(tag) or "," in tag for tag in tags)
+            or tags_length(tags) > MAX_TAGS_LENGTH):
+        raise MetadataError("invalid_tags", "tags",
+                            "Tags must total at most 500 characters, each without commas, < or >")
+    if privacy_status not in PRIVACY_STATUSES:
+        raise MetadataError("invalid_privacy", "privacy_status", "Visibility must be private, unlisted or public")
+    return title, description, tags, privacy_status
+
+
+def fit_metadata(title: Any, description: Any, tags: Any = None) -> dict[str, Any]:
+    """Generated or connected text made to fit YouTube's limits, never raising: for prefilling, not validating."""
+    title = " ".join(_ANGLES.sub("", title).split()) if isinstance(title, str) else ""
+    if len(title) > MAX_TITLE_CHARS:
+        title = title[:MAX_TITLE_CHARS].rsplit(" ", 1)[0] or title[:MAX_TITLE_CHARS]
+    description = _ANGLES.sub("", description).strip() if isinstance(description, str) else ""
+    description = description.encode("utf-8")[:MAX_DESCRIPTION_BYTES].decode("utf-8", "ignore")
+    fitted: list[str] = []
+    for tag in normalize_tags([tag for tag in tags if isinstance(tag, str)] if isinstance(tags, (list, tuple)) else []):
+        tag = " ".join(_ANGLES.sub("", tag.replace(",", " ")).split())[:MAX_TAG_CHARS]
+        if tag and tags_length([*fitted, tag]) <= MAX_TAGS_LENGTH:
+            fitted.append(tag)
+    return {"title": title, "description": description, "tags": fitted}
+
+
+def publication_tags(publication: "Publication") -> list[str]:
+    try:
+        value = json.loads(publication.tags or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [tag for tag in value if isinstance(tag, str)] if isinstance(value, list) else []
+
+
+def final_video(db: Session, run: WorkflowRun) -> Asset | None:
+    """The run's video to publish: its final render when a Render step completed, else its first clip."""
+    steps = db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id,
+                                                     WorkflowRunStep.status == "completed",
+                                                     WorkflowRunStep.node_type.in_(("render", "video")))
+                       .order_by(WorkflowRunStep.position)).all()
+    for node_type in ("render", "video"):
+        for step in steps:
+            if step.node_type != node_type:
+                continue
+            try:
+                output = json.loads(step.output or "{}")
+            except (TypeError, ValueError):
+                continue
+            output = output if isinstance(output, dict) else {}
+            clips = output.get("video_assets") if isinstance(output.get("video_assets"), list) else []
+            candidates = [output.get("asset_id"), *(clip.get("id") for clip in clips if isinstance(clip, dict))]
+            for asset_id in candidates:
+                if not isinstance(asset_id, str):
+                    continue
+                asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.run_id == run.id,
+                                                      Asset.step_id == step.id, Asset.content_type == "video/mp4",
+                                                      Asset.bytes > 0))
+                if asset is not None:
+                    return asset
+    return None
 
 
 class Publication(Base):
@@ -35,6 +144,7 @@ class Publication(Base):
             "state IN ('queued', 'uploading', 'succeeded', 'failed', 'needs_attention')",
             name="ck_publications_state",
         ),
+        CheckConstraint("privacy_status IN ('private', 'unlisted', 'public')", name="ck_publications_privacy"),
         UniqueConstraint("workspace_id", "run_id", "channel", name="uq_publications_run_channel"),
         UniqueConstraint("job_id", name="uq_publications_job_id"),
         Index("ix_publications_workspace_state", "workspace_id", "state", "updated_at"),
@@ -52,6 +162,11 @@ class Publication(Base):
     remote_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     upload_session_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Migration 0013: the requested visibility and tags, and what YouTube reported after the upload.
+    privacy_status: Mapped[str] = mapped_column(String(16), default="private", server_default="private")
+    tags: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    remote_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    remote_privacy: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -82,6 +197,10 @@ def _approved_review(db: Session, *, workspace_id: str, run_id: str, asset_id: s
                                                        WorkflowRunStep.status == "completed"))
     if video_step is None:
         raise ValueError("asset is not linked to a completed video or render step")
+    if video_step.node_type == "video" and db.scalar(select(WorkflowRunStep.id).where(
+            WorkflowRunStep.run_id == run_id, WorkflowRunStep.node_type == "render",
+            WorkflowRunStep.status == "completed")):
+        raise ValueError("the run has a final render; publish it instead of a scene clip")
     reviews = db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run_id,
                                                         WorkflowRunStep.node_type == "review",
                                                         WorkflowRunStep.status == "completed")
@@ -98,7 +217,8 @@ def _approved_review(db: Session, *, workspace_id: str, run_id: str, asset_id: s
 
 def queue_publication(
     db: Session, *, workspace_id: str, run_id: str, asset_id: str,
-    channel: str, title: str, description: str,
+    channel: str, title: str, description: str, tags: list[str] | None = None,
+    privacy_status: str = "private",
 ) -> Publication:
     """Create once per run and channel, with an immutable queued job.
 
@@ -107,11 +227,11 @@ def queue_publication(
     """
     if not isinstance(channel, str) or not _CHANNEL_RE.fullmatch(channel):
         raise ValueError("invalid publication channel")
-    if (not isinstance(title, str) or not title.strip() or len(title) > 100
-            or "\n" in title or "\r" in title):
-        raise ValueError("invalid publication title")
-    if not isinstance(description, str) or len(description) > 5000:
-        raise ValueError("invalid publication description")
+    try:
+        title, description, tags, privacy_status = validate_metadata(title, description, tags, privacy_status)
+    except MetadataError as exc:
+        raise ValueError(f"invalid publication {exc.field}") from exc
+    tags_json = json.dumps(tags, ensure_ascii=False)
     review = _approved_review(db, workspace_id=workspace_id, run_id=run_id, asset_id=asset_id)
     connection_generation = None
     if channel == "youtube":
@@ -122,6 +242,7 @@ def queue_publication(
     now = datetime.now(timezone.utc)
     values = dict(id=str(uuid4()), workspace_id=workspace_id, run_id=run_id,
                   asset_id=asset_id, channel=channel, title=title, description=description,
+                  tags=tags_json, privacy_status=privacy_status,
                   state="queued", created_at=now, updated_at=now)
     dialect = db.get_bind().dialect.name
     if dialect == "postgresql":
@@ -136,7 +257,8 @@ def queue_publication(
     publication = db.scalar(select(Publication).where(Publication.workspace_id == workspace_id,
                                                       Publication.run_id == run_id,
                                                       Publication.channel == channel))
-    if (publication.asset_id, publication.title, publication.description) != (asset_id, title, description):
+    if ((publication.asset_id, publication.title, publication.description, publication_tags(publication),
+         publication.privacy_status) != (asset_id, title, description, tags, privacy_status)):
         raise ValueError("publication already exists with different input")
     payload = {"publication_id": publication.id, "channel": channel, "asset_id": asset_id}
     if connection_generation is not None:
@@ -166,8 +288,14 @@ def can_retry_publication(publication: Publication) -> bool:
             and not (publication.last_error or "").startswith("upload:"))
 
 
-def retry_publication(db: Session, *, workspace_id: str, publication_id: str) -> Publication:
-    """Explicitly retry only a terminal publication that never uploaded media."""
+def retry_publication(db: Session, *, workspace_id: str, publication_id: str,
+                      metadata: Mapping[str, Any] | None = None) -> Publication:
+    """Explicitly retry only a terminal publication that never uploaded media.
+
+    Only a new upload job is queued: the run, its steps and its media are reused
+    as they are. ``metadata`` (title, description, tags, privacy_status) may
+    correct the values that made the previous attempt fail.
+    """
     publication = db.scalar(select(Publication).where(Publication.id == publication_id,
         Publication.workspace_id == workspace_id, Publication.channel == "youtube").with_for_update())
     if publication is None:
@@ -189,6 +317,13 @@ def retry_publication(db: Session, *, workspace_id: str, publication_id: str) ->
         raise ValueError("publication has an uncertain upload outcome")
     review = _approved_review(db, workspace_id=workspace_id, run_id=publication.run_id,
                               asset_id=publication.asset_id)
+    if metadata:
+        title, description, tags, privacy_status = validate_metadata(
+            metadata.get("title", publication.title), metadata.get("description", publication.description),
+            metadata.get("tags", publication_tags(publication)),
+            metadata.get("privacy_status", publication.privacy_status))
+        publication.title, publication.description = title, description
+        publication.tags, publication.privacy_status = json.dumps(tags, ensure_ascii=False), privacy_status
     payload = {"publication_id": publication.id, "channel": "youtube",
                "asset_id": publication.asset_id, "connection_generation": generation}
     new_job = jobs.enqueue_job(db, workspace_id=workspace_id, run_id=publication.run_id,
@@ -285,7 +420,8 @@ def load_upload_session(publication: Publication, *, encryption_key: str) -> dic
 
 def finish_publication(
     db: Session, *, publication_id: str, job_id: str, lease_token: str,
-    remote_id: str, now: datetime | None = None,
+    remote_id: str, now: datetime | None = None, upload_status: str | None = None,
+    privacy_status: str | None = None,
 ) -> bool:
     if not isinstance(remote_id, str) or not remote_id or len(remote_id) > 255:
         raise ValueError("invalid remote publication ID")
@@ -305,6 +441,11 @@ def finish_publication(
         return False
     publication.state, publication.remote_id = "succeeded", remote_id
     publication.last_error, publication.upload_session_ciphertext = None, None
+    # What YouTube reported: e.g. "uploaded" (still processing) and the visibility it actually applied.
+    if isinstance(upload_status, str) and re.fullmatch(r"[a-z_]{1,32}", upload_status):
+        publication.remote_status = upload_status
+    if privacy_status in PRIVACY_STATUSES:
+        publication.remote_privacy = privacy_status
     publication.updated_at, publication.finished_at = now, now
     return True
 

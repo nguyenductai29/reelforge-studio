@@ -74,7 +74,8 @@ assert video_worker.run_one(client=FakeFal(), download=download, poll_seconds=0)
 video_run = client.get(f"/api/workflow-runs/{run['id']}").json()
 asset_id = video_run["steps"][1]["output"]["asset_id"]
 approved = client.post(f"/api/workflow-runs/{run['id']}/approve")
-assert approved.status_code == 200 and approved.json()["status"] == "blocked", approved.text
+# The Publish step hands over to the Publishing page after approval, so the run completes.
+assert approved.status_code == 200 and approved.json()["status"] == "completed", approved.text
 now = datetime.now(timezone.utc)
 cipher = Fernet(os.environ["REELFORGE_TOKEN_ENCRYPTION_KEY"].encode())
 with Session.begin() as db:

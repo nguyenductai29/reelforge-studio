@@ -1,9 +1,9 @@
 """Maps each node type to the one handler that executes it."""
 from app.workflow.nodes import (TEXT_HANDLERS, AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, NodeHandler,
-                                PendingAITaskHandler, PendingServiceHandler, RenderNodeHandler, ReviewNodeHandler,
+                                PendingAITaskHandler, PublishNodeHandler, RenderNodeHandler, ReviewNodeHandler,
                                 ScenesNodeHandler, SubtitleNodeHandler, UnsupportedNodeHandler, VideoNodeHandler,
                                 VoiceNodeHandler)
-from app.workflow.ports import AUDIO_ASSETS, BRIEF, TEXT, VIDEO_ASSETS, InputPort, OutputPort
+from app.workflow.ports import AUDIO_ASSETS, BRIEF, TEXT, InputPort, OutputPort
 
 
 class NodeRegistry:
@@ -36,15 +36,11 @@ class NodeRegistry:
 
 def _placeholders():
     """Types without an executor yet, with the ports they will have."""
-    text = (TEXT, BRIEF)
     return (
         PendingAITaskHandler("script", (InputPort("topic", (BRIEF, TEXT), multiple=True),),
                              (OutputPort("script", TEXT),)),
         PendingAITaskHandler("music", (InputPort("mood", (BRIEF, TEXT), multiple=True),),
                              (OutputPort("audio_assets", AUDIO_ASSETS),)),
-        # Publishing ends a workflow, so the node has no output yet (PUBLICATION is reserved for it).
-        PendingServiceHandler("publish", (InputPort("video", (VIDEO_ASSETS,)), InputPort("title", text),
-                                          InputPort("description", (TEXT,)))),
     )
 
 
@@ -52,7 +48,8 @@ def build_default_registry() -> NodeRegistry:
     registry = NodeRegistry()
     for handler in (IdeaNodeHandler(), AssetsNodeHandler(), ScenesNodeHandler(), ImageNodeHandler(),
                     VideoNodeHandler(), VoiceNodeHandler(), SubtitleNodeHandler(), RenderNodeHandler(),
-                    ReviewNodeHandler(), *(handler_type() for handler_type in TEXT_HANDLERS), *_placeholders()):
+                    ReviewNodeHandler(), PublishNodeHandler(), *(handler_type() for handler_type in TEXT_HANDLERS),
+                    *_placeholders()):
         registry.register(handler)
     return registry
 

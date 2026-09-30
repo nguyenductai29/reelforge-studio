@@ -211,7 +211,12 @@ assert client.post(f"/api/workflow-runs/{run['id']}/approve").json()["status"] =
 from app.publications import _approved_review
 with Session.begin() as db:
     assert _approved_review(db, workspace_id=workspace, run_id=run["id"], asset_id=entry["id"]).node_type == "review"
-    assert _approved_review(db, workspace_id=workspace, run_id=run["id"], asset_id=clips[0]["id"])
+    # With a final render, a scene clip is not eligible for publishing.
+    try:
+        _approved_review(db, workspace_id=workspace, run_id=run["id"], asset_id=clips[0]["id"])
+        raise AssertionError("a scene clip must not be publishable when the run has a final render")
+    except ValueError as exc:
+        assert "final render" in str(exc)
 # A finished render is never run again.
 with Session.begin() as db:
     db.scalar(select(WorkflowJob).where(WorkflowJob.logical_key.like("render:%"))).state = "queued"

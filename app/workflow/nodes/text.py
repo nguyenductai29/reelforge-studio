@@ -8,6 +8,7 @@ Credits: ``TEXT_CREDITS_PER_GENERATION`` (default 1) is held when the step is
 queued (``text-reserve:<step>``), charged on success as a usage event
 (``text:<step>``), and refunded if generation fails (``text-refund:<step>``).
 """
+import json
 import re
 from typing import Any, Mapping
 
@@ -15,7 +16,7 @@ from app import usage
 from app.providers.text import TEXT_PROVIDERS, TEXT_TASK, TextResult, text_credit_cost, text_provider_config_issue
 from app.workflow.config import INTEGER, NUMBER, SELECT, TEXT as TEXT_FIELD, TOOL, ConfigField, advanced
 from app.workflow.nodes.base import INSUFFICIENT_CREDITS_DETAIL, NodeHandler
-from app.workflow.ports import BRIEF, PROJECT_TOPIC, TEXT, InputPort, OutputPort
+from app.workflow.ports import BRIEF, PROJECT_TOPIC, PUBLISH_METADATA, TEXT, InputPort, OutputPort
 from app.workflow.results import JobRequest, NodeError, NodeExecutionResult, NodeReadiness, RunRequestError
 
 QUEUED_DETAIL = "Đã xếp hàng tạo nội dung."
@@ -97,6 +98,8 @@ class TextNodeHandler(NodeHandler):
                      max_tokens_field(2048))
     system_prompt = ("You are a senior content writer for social video. Return only the requested content, "
                      "with no preamble, notes or markdown headings.")
+    # "json" asks the provider for one JSON object (see app/providers/text/base.py).
+    response_format = "text"
 
     # Inputs -----------------------------------------------------------------
 
@@ -163,7 +166,7 @@ class TextNodeHandler(NodeHandler):
         payload = {"kind": "text.generate", "node_type": self.node_type, "provider": tool.provider,
                    "model": tool.model, "tool_id": tool.id, "system_prompt": self.system_prompt, "prompt": prompt,
                    "temperature": config.get("temperature"), "max_tokens": config["max_tokens"],
-                   "response_format": "text", "language": language, "credits": cost}
+                   "response_format": self.response_format, "language": language, "credits": cost}
         return NodeExecutionResult.queued(QUEUED_DETAIL, JobRequest("text", payload),
                                           {"provider": tool.provider, "model": tool.model},
                                           metadata={"credits_reserved": cost,
@@ -344,5 +347,69 @@ class CTANodeHandler(ListNodeHandler):
            "each one short sentence that asks viewers to do one clear thing.")
 
 
+def parse_metadata(text: str) -> dict[str, Any]:
+    """Title, description and tags from a JSON reply (code fences allowed), fitted to YouTube's limits.
+
+    A reply that is not the expected JSON still gives usable values: its first
+    line becomes the title and the rest the description, with no tags.
+    """
+    from app.publications import fit_metadata
+
+    body = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text or "")
+    try:
+        value = json.loads(body)
+    except ValueError:
+        value = None
+    if isinstance(value, dict) and isinstance(value.get("title"), str):
+        return fit_metadata(value.get("title"), value.get("description"), value.get("tags"))
+    lines = (text or "").strip().splitlines()
+    return fit_metadata(lines[0] if lines else "", "\n".join(lines[1:]), [])
+
+
+class MetadataNodeHandler(TextNodeHandler):
+    """YouTube title, description and tags for the finished video, in one JSON generation (Phase 9)."""
+
+    node_type = "metadata"
+    inputs = (TOPIC_IN, SOURCE)
+    outputs = (OutputPort("metadata", PUBLISH_METADATA, extract=lambda output: output.get("metadata") or None),
+               OutputPort("title", TEXT), OutputPort("description", TEXT))
+    requires = (("topic", "source"),)
+    response_format = "json"
+    config_fields = (
+        LANGUAGE,
+        ConfigField("platform", SELECT, default="youtube", options=tuple(PLATFORMS), code="invalid_platform"),
+        ConfigField("tag_count", INTEGER, default=8, minimum=0, maximum=20, code="invalid_count"),
+        ConfigField("cta", SELECT, default="include", options=("include", "omit"), label="metadata_cta",
+                    code="invalid_cta"),
+        MODEL, advanced(TONE), advanced(INSTRUCTIONS), TEMPERATURE, max_tokens_field(1024),
+    )
+    system_prompt = "You write YouTube publishing metadata. Reply with one JSON object and nothing else."
+
+    def build_prompt(self, context, config, inputs):
+        topic = self.text_input(inputs, "topic")
+        source = self.text_input(inputs, "source")
+        if not topic and not source:
+            return None
+        ending = " End it with one short call to action." if config["cta"] == "include" else ""
+        lines = [f"Write YouTube publishing metadata in {language_name(self.language(context, config))} "
+                 "for the video described below.",
+                 'Return exactly: {"title": string, "description": string, "tags": [string]}.',
+                 "title: one line of at most 90 characters, specific and clickable, without < or >.",
+                 f"description: 2 to 4 short paragraphs, at most 1500 characters, without < or >.{ending}",
+                 f"tags: {config['tag_count']} short search keywords or phrases, without # or commas.",
+                 *self.extras(config)]
+        if topic:
+            lines.append(f"Topic: {topic}")
+        if source:
+            lines.append(self.quoted("Video script", source))
+        return "\n".join(lines)
+
+    def output_from(self, payload, result):
+        metadata = parse_metadata(result.text)
+        return {"metadata": metadata, "title": metadata["title"], "description": metadata["description"],
+                "tags": metadata["tags"], "text": result.text, "provider": result.provider, "model": result.model,
+                "usage": result.usage.as_dict(), "language": payload.get("language")}
+
+
 TEXT_HANDLERS = (AIWriterNodeHandler, SummarizeNodeHandler, RewriteNodeHandler, TranslateNodeHandler,
-                 HookNodeHandler, TitleNodeHandler, CTANodeHandler)
+                 HookNodeHandler, TitleNodeHandler, CTANodeHandler, MetadataNodeHandler)

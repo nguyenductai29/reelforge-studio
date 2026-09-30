@@ -784,6 +784,14 @@ Subtitles need no worker: the Subtitle step writes its SRT/VTT file while the ru
 
 The YouTube worker is needed only when YouTube OAuth and upload are configured.
 
+The full social-video workflow (`docs/SOCIAL_VIDEO_WORKFLOW.md`) runs on these processes:
+
+- the API and frontend;
+- the text worker (AI Writer and Metadata), the video worker, the voice worker and the render worker (FFmpeg and fonts from section 1);
+- this YouTube worker, for publishing.
+
+Subtitles need no worker. Publishing needs no new process or variable: visibility (private, unlisted or public) and tags use the same `youtube.upload` scope. Google keeps uploads from unverified API projects private, and the Publishing page shows the visibility YouTube applied. Apply migration `0013_publication_metadata` with `python -m alembic upgrade head`; `deploy.sh` already does this.
+
 Create:
 
 ```bash

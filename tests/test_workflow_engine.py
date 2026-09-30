@@ -15,21 +15,21 @@ from uuid import uuid4
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
-from app.models import (AITool, Base, CreditAccount, CreditLedger, Project, User, Workflow, WorkflowJob,
+from app.models import (AITool, Asset, Base, CreditAccount, CreditLedger, Project, User, Workflow, WorkflowJob,
                         WorkflowRun, WorkflowRunStep, Workspace, WorkspaceSetting)
 from app.workflow import (ExecutionContext, NodeError, NodeExecutionResult, NodeHandler, NodeInputs, NodeRegistry,
                           RunOptions, RunRequestError, StepState, WorkflowExecutor, build_default_registry,
                           default_registry, derive_run_status, parse_graph, resolve_inputs)
 from app.workflow.config import SELECT, ConfigField
 from app.workflow.executor import HANDLER_FAILED_DETAIL
-from app.workflow.nodes import (RenderNodeHandler, SubtitleNodeHandler, VoiceNodeHandler, AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, PendingAITaskHandler, PendingServiceHandler,
+from app.workflow.nodes import (PublishNodeHandler, RenderNodeHandler, SubtitleNodeHandler, VoiceNodeHandler, AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, PendingAITaskHandler, PendingServiceHandler,
                                 ReviewNodeHandler, ScenesNodeHandler, TextNodeHandler, UnsupportedNodeHandler,
                                 VideoNodeHandler)
 from app.workflow.nodes.pending import UNSUPPORTED_DETAIL
 from app.workflow.results import JobRequest
 
 ROOT = Path(__file__).resolve().parents[1]
-TEXT_TYPES = {"ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta"}
+TEXT_TYPES = {"ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta", "metadata"}
 KNOWN_TYPES = {"idea", "script", "scenes", "image", "video", "assets", "voice", "music", "subtitle", "render",
                "review", "publish"} | TEXT_TYPES
 VIDEO_ENV = {"FAL_KEY": "test-key", "VIDEO_CREDITS_PER_CLIP": "10"}
@@ -93,7 +93,7 @@ class RegistryTest(unittest.TestCase):
             self.assertIsInstance(default_registry.resolve(node_type), PendingAITaskHandler)
         self.assertIsInstance(default_registry.resolve("image"), ImageNodeHandler)
         self.assertIsInstance(default_registry.resolve("voice"), VoiceNodeHandler)
-        self.assertIsInstance(default_registry.resolve("publish"), PendingServiceHandler)
+        self.assertIsInstance(default_registry.resolve("publish"), PublishNodeHandler)
         self.assertIsInstance(default_registry.resolve("render"), RenderNodeHandler)
         self.assertIsInstance(default_registry.resolve("subtitle"), SubtitleNodeHandler)
         self.assertIsInstance(default_registry.resolve("scenes"), ScenesNodeHandler)
@@ -270,7 +270,8 @@ class ExecutorTest(DatabaseCase):
                                            {"id": "publish", "type": "publish", "x": 0, "y": 0}], "edges": []})
         self.assertEqual(run.status, "blocked")
         self.assertEqual(steps["script"].detail, "Chưa chọn công cụ AI cho tác vụ này.")
-        self.assertEqual(steps["publish"].detail, "Bước này chưa có bộ thực thi.")
+        # Publish without an approved video to hand over waits for its input.
+        self.assertEqual(steps["publish"].detail, "Chưa có video hoàn chỉnh để đăng.")
         with self.Session.begin() as db:
             db.add(AITool(id="tool-2", workspace_id="space-1", task="script", provider="openai", model="x"))
         _, steps = self.start(chain("script"))
@@ -352,13 +353,21 @@ class ExecutorTest(DatabaseCase):
         self.add_video_tool()
         self.fund(10)
         run, _ = self.start(chain("idea", "video", "review", "publish"))
+        with self.Session.begin() as db:
+            video_step = db.scalar(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id,
+                                                                 WorkflowRunStep.node_type == "video"))
+            db.add(Asset(id="asset-1", workspace_id="space-1", project_id=run.project_id, run_id=run.id,
+                         step_id=video_step.id, filename="clip.mp4", content_type="video/mp4", bytes=12))
         self.finish_video(run.id)
         self.assertEqual(self.steps(run.id)["publish"].status, "skipped")
         run = self.approve(run.id)
         steps = self.steps(run.id)
-        self.assertEqual(run.status, "blocked")
+        # Publish hands the approved video to the Publishing page; it never uploads by itself.
+        self.assertEqual(run.status, "completed")
         self.assertEqual((steps["publish"].status, steps["publish"].detail),
-                         ("blocked", "Bước này chưa có bộ thực thi."))
+                         ("completed", "Sẵn sàng đăng: xem lại thông tin và bấm Đăng trong mục Đăng tải."))
+        handoff = json.loads(steps["publish"].output)
+        self.assertEqual((handoff["video"]["asset_id"], handoff["metadata"]["privacy_status"]), ("asset-1", "private"))
         self.assertEqual(steps["review"].status, "completed")
 
     @patch.dict(os.environ, VIDEO_ENV)

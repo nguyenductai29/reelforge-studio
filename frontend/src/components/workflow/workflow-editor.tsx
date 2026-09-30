@@ -25,6 +25,7 @@ import {
   ChevronDown,
   Download,
   History,
+  ListChecks,
   Loader2,
   Maximize,
   Minus,
@@ -34,6 +35,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  Send,
   Undo2,
   X,
 } from "lucide-react";
@@ -53,6 +55,8 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FieldLabel, SoonBadge, StatusBadge } from "@/components/reelforge/primitives";
 import { NewProjectDialog } from "@/components/reelforge/new-project-dialog";
+import { PublishDialog } from "@/components/reelforge/publish-dialog";
+import { RunSummaryPanel } from "./run-summary";
 import { api, ApiError, assetUrl, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
@@ -63,6 +67,7 @@ import {
   useReadiness,
   useRefreshStudio,
   useRun,
+  useRunSummary,
   useSettings,
   useWorkflowRuns,
 } from "@/lib/queries";
@@ -90,6 +95,7 @@ import {
   edgeId,
   outputJobs,
   outputMedia,
+  outputMetadata,
   outputScenes,
   outputSubtitle,
   outputText,
@@ -245,6 +251,7 @@ function Inspector({
   onDelete,
   onRun,
   onApprove,
+  onPublish,
 }: {
   node: StudioNode;
   step?: RunStep;
@@ -266,6 +273,7 @@ function Inspector({
   onDelete: () => void;
   onRun: () => void;
   onApprove: () => void;
+  onPublish: () => void;
 }) {
   const { t } = useI18n();
   const i = t.editor.inspector;
@@ -301,7 +309,9 @@ function Inspector({
                       : d.type === "render"
                         ? i.renderHint
                         : null;
-  const generatedText = TEXT_NODES.has(d.type) ? outputText(step?.output, ports) : null;
+  // Metadata keeps its reply as JSON; its fields are shown instead.
+  const generatedText = TEXT_NODES.has(d.type) && d.type !== "metadata" ? outputText(step?.output, ports) : null;
+  const prepared = d.type === "metadata" || d.type === "publish" ? outputMetadata(step?.output) : null;
   const scenes = d.type === "scenes" ? outputScenes(step?.output) : null;
   const media =
     d.type === "image"
@@ -332,7 +342,7 @@ function Inspector({
   const jobs = d.type === "image" || d.type === "video" || d.type === "voice" ? outputJobs(step?.output) : null;
   const subtitle = d.type === "subtitle" ? outputSubtitle(step?.output) : null;
   const hasResult = Boolean(
-    generatedText || (scenes && scenes.length) || media.length || jobs || subtitle || reviewed.length || renderFacts,
+    generatedText || (scenes && scenes.length) || media.length || jobs || subtitle || reviewed.length || renderFacts || prepared,
   );
   // The model this node will use: its own setting, else the first enabled model for the task.
   const toolField = ports.config.find((field) => field.type === "tool");
@@ -606,6 +616,24 @@ function Inspector({
                 </ol>
               </div>
             )}
+            {prepared && (
+              <div className="space-y-2 rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
+                <p className="text-sm font-medium">{prepared.title}</p>
+                {prepared.description && (
+                  <p className="max-h-40 overflow-y-auto whitespace-pre-line break-words text-muted-foreground">
+                    {prepared.description}
+                  </p>
+                )}
+                {prepared.tags.length > 0 && (
+                  <p className="break-words text-primary">{prepared.tags.map((tag) => `#${tag}`).join(" ")}</p>
+                )}
+                {prepared.privacy_status && (
+                  <p className="text-muted-foreground">
+                    {i.visibility}: {t.publishing.privacy[prepared.privacy_status as "private"] ?? prepared.privacy_status}
+                  </p>
+                )}
+              </div>
+            )}
             {generatedText && (
               <div>
                 <FieldLabel>{i.generatedText}</FieldLabel>
@@ -631,6 +659,12 @@ function Inspector({
               </div>
             )}
           </Section>
+        )}
+
+        {d.type === "publish" && step?.status === "completed" && (
+          <Button className="w-full" onClick={onPublish}>
+            <Send className="size-3.5" /> {t.editor.runs.preparePublish}
+          </Button>
         )}
 
         {d.type === "review" && run?.status === "awaiting_review" && (
@@ -735,6 +769,7 @@ function RunDialog({
   readiness,
   busy,
   onStart,
+  nodeName,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -746,9 +781,12 @@ function RunDialog({
   readiness?: Readiness;
   busy: boolean;
   onStart: () => void;
+  nodeName: (id: string) => string;
 }) {
   const { t } = useI18n();
   const r = t.editor.runDialog;
+  const project = projects.find((item) => item.id === projectId);
+  const models = (readiness?.steps ?? []).filter((step) => step.tool);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
@@ -786,6 +824,31 @@ function RunDialog({
               </Select>
             )}
           </div>
+          {project && (
+            <div className="rounded-lg border border-border bg-surface p-3 text-xs">
+              <p className="text-muted-foreground">{r.topicUsed}</p>
+              <p className="mt-1 whitespace-pre-line break-words text-sm">{project.topic || project.title}</p>
+              <Link href={`/projects/${project.id}`} className="mt-1 inline-block text-primary hover:underline">
+                {r.editProject}
+              </Link>
+            </div>
+          )}
+          {models.length > 0 && (
+            <div className="rounded-lg border border-border bg-surface p-3 text-xs">
+              <p className="mb-1 text-muted-foreground">{r.models}</p>
+              <ul className="space-y-0.5">
+                {models.map((step) => (
+                  <li key={step.node_id} className="flex justify-between gap-3">
+                    <span>{nodeName(step.node_id)}</span>
+                    <span className="min-w-0 break-words text-right text-muted-foreground">
+                      {step.tool!.provider} · {step.tool!.model}
+                      {step.tool!.chosen ? "" : ` (${r.firstEnabled})`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {issues.length > 0 && (
             <div className="rounded-lg border border-warning/40 bg-[color-mix(in_oklab,var(--warning)_10%,transparent)] p-3 text-xs">
               <p className="mb-1 font-medium">{r.issues}</p>
@@ -909,6 +972,15 @@ function Editor({
   const readiness = useReadiness(workflow.id).data;
   const runQuery = useRun(selectedRunId);
   const run = runQuery.data;
+  const summaryQuery = useRunSummary(selectedRunId, Boolean(run && isActiveRun(run)));
+  const summary = summaryQuery.data;
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const runProgress = `${run?.status}:${(run?.steps ?? []).filter((step) => step.status === "completed").length}`;
+  // A step that finishes (or a run that stops) changes the summary; refresh it with the run.
+  useEffect(() => {
+    if (selectedRunId) void client.invalidateQueries({ queryKey: keys.runSummary(selectedRunId) });
+  }, [runProgress, selectedRunId, client]);
 
   const past = useRef<Snapshot[]>([]);
   const future = useRef<Snapshot[]>([]);
@@ -1342,17 +1414,40 @@ function Editor({
                       <RotateCcw className="size-3.5" /> {t.editor.runs.retry}
                     </Button>
                   )}
-                  {approvedId && (
-                    <>
-                      <Button asChild size="sm" variant="outline" className="h-7">
-                        <a href={assetUrl(approvedId)}>
-                          <Download className="size-3.5" /> {t.editor.runs.downloadMp4}
-                        </a>
-                      </Button>
-                      <Button asChild size="sm" className="h-7">
-                        <Link href="/publishing">{t.editor.runs.publishOnPublishing}</Link>
-                      </Button>
-                    </>
+                  {(summary?.final_video?.asset_id ?? approvedId) && (
+                    <Button asChild size="sm" variant="outline" className="h-7">
+                      <a href={assetUrl((summary?.final_video?.asset_id ?? approvedId)!)} download>
+                        <Download className="size-3.5" />{" "}
+                        {summary?.final_video?.final ? t.editor.runs.downloadFinal : t.editor.runs.downloadMp4}
+                      </a>
+                    </Button>
+                  )}
+                  {summary?.publishing.ready && !summary.publishing.publication && (
+                    <Button size="sm" className="h-7" onClick={() => setPublishOpen(true)}>
+                      <Send className="size-3.5" /> {t.editor.runs.preparePublish}
+                    </Button>
+                  )}
+                  {summary?.publishing.publication && (
+                    <Button asChild size="sm" variant="outline" className="h-7">
+                      <Link href="/publishing">
+                        {t.editor.runs.publication(t.status.publication[summary.publishing.publication.state])}
+                      </Link>
+                    </Button>
+                  )}
+                  {!summary && approvedId && (
+                    <Button asChild size="sm" className="h-7">
+                      <Link href="/publishing">{t.editor.runs.publishOnPublishing}</Link>
+                    </Button>
+                  )}
+                  {summary && (
+                    <Button
+                      size="sm"
+                      variant={summaryOpen ? "secondary" : "ghost"}
+                      className="h-7"
+                      onClick={() => setSummaryOpen((open) => !open)}
+                    >
+                      <ListChecks className="size-3.5" /> {t.editor.summary.title}
+                    </Button>
                   )}
                   <Button
                     size="icon"
@@ -1369,6 +1464,7 @@ function Editor({
                   )}
                   {hasConfirmedCharge && <p className="w-full text-warning">{t.editor.runs.chargeConfirmed}</p>}
                   {hasRefund && <p className="w-full text-muted-foreground">{t.editor.runs.creditsRefunded}</p>}
+                  {summaryOpen && summary && <RunSummaryPanel summary={summary} nodeName={nodeName} />}
                 </div>
               )}
               <ReactFlow
@@ -1463,6 +1559,7 @@ function Editor({
                 onDelete={() => actions.onDelete(inspected.id)}
                 onRun={() => void openRun()}
                 onApprove={() => void runAction("approve", t.editor.runs.approved)}
+                onPublish={() => setPublishOpen(true)}
               />
             )}
           </div>
@@ -1484,7 +1581,9 @@ function Editor({
           readiness={readiness}
           busy={busy}
           onStart={() => void startRun()}
+          nodeName={nodeName}
         />
+        <PublishDialog runId={run?.id} open={publishOpen} onOpenChange={setPublishOpen} />
         <RunsSheet
           open={runsOpen}
           onOpenChange={setRunsOpen}

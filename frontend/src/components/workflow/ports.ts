@@ -97,6 +97,20 @@ export function outputSubtitle(output: Record<string, unknown> | null | undefine
   return { ...(value as Omit<SubtitleFile, "cues">), id: value.id, cues };
 }
 
+/** Publishing metadata a Metadata step generated or a Publish step prepared. */
+export function outputMetadata(
+  output: Record<string, unknown> | null | undefined,
+): { title: string; description: string; tags: string[]; privacy_status?: string } | null {
+  const value = output?.metadata as Record<string, unknown> | undefined;
+  if (!value || typeof value.title !== "string") return null;
+  return {
+    title: value.title,
+    description: typeof value.description === "string" ? value.description : "",
+    tags: Array.isArray(value.tags) ? value.tags.filter((tag): tag is string => typeof tag === "string") : [],
+    privacy_status: typeof value.privacy_status === "string" ? value.privacy_status : undefined,
+  };
+}
+
 /** "1:05.2", for cue times. */
 export function clockTime(seconds: number) {
   const minutes = Math.floor(seconds / 60);

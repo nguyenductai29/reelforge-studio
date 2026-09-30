@@ -17,7 +17,8 @@ export type NodeType =
   | "translate"
   | "hook"
   | "title"
-  | "cta";
+  | "cta"
+  | "metadata";
 
 /** Per-node settings; the backend validates them for each node type. */
 export type NodeConfig = Record<string, unknown>;
@@ -165,6 +166,8 @@ export type ReadinessStep = {
   field?: string | null;
   /** Credits this step holds when it starts; per scene when `code` is "per_scene". */
   credits?: number;
+  /** The AI model the step will use: its own setting (`chosen`), else the first enabled one for its task. */
+  tool?: { id: string; provider: string; model: string; chosen: boolean } | null;
 };
 export type Readiness = {
   workflow_id: string;
@@ -207,6 +210,7 @@ export type Usage = {
   events: { id: string; tool: string; units: number; credits: number; created_at: string }[];
 };
 
+export type PrivacyStatus = "private" | "unlisted" | "public";
 export type Publication = {
   id: string;
   run_id: string;
@@ -214,12 +218,52 @@ export type Publication = {
   channel: string;
   title: string;
   description: string;
+  tags: string[];
+  privacy_status: PrivacyStatus;
   state: "queued" | "uploading" | "succeeded" | "failed" | "needs_attention";
   remote_id: string | null;
+  /** What YouTube reported after the upload: "uploaded" means it is still processing. */
+  remote_status: string | null;
+  remote_privacy: PrivacyStatus | null;
+  youtube_url: string | null;
   last_error: string | null;
   can_retry: boolean;
   created_at: string;
   finished_at: string | null;
+};
+
+export type PublishMetadata = { title: string; description: string; tags: string[]; privacy_status: PrivacyStatus };
+export type RunStepItem = { node_id: string; node_type: NodeType; status: RunStatus; detail: string; error_code: string | null };
+/** GET /api/workflow-runs/{id}/summary: progress, results, credits and publishing of one run. */
+export type RunSummary = {
+  run_id: string;
+  status: RunStatus;
+  elapsed_seconds: number;
+  steps: { total: number; completed: number };
+  current: RunStepItem[];
+  failed: RunStepItem[];
+  needs_attention: RunStepItem[];
+  blocked: RunStepItem[];
+  render_failed: (RunStepItem & { message?: string | null }) | null;
+  active_jobs: number;
+  counts: { script_words: number; scenes: number; images: number; clips: number; narrations: number; subtitle_cues: number };
+  final_video: {
+    asset_id: string;
+    filename: string;
+    bytes: number;
+    final: boolean;
+    duration: number | null;
+    width: number | null;
+    height: number | null;
+  } | null;
+  review: { present: boolean; status: RunStatus | null; approved: boolean };
+  credits: { reserved: number; refunded: number; consumed: number; held: number };
+  publishing: {
+    ready: boolean;
+    defaults: PublishMetadata & { source: "publish" | "metadata" | "project" };
+    publication: Publication | null;
+    youtube_connected: boolean;
+  };
 };
 export type YouTubeConnection = { connected: boolean; expires_at: string | null; scope: string | null };
 

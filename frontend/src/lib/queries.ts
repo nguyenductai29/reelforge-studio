@@ -12,6 +12,7 @@ import type {
   Readiness,
   ReconciliationPage,
   Run,
+  RunSummary,
   Settings,
   Usage,
   YouTubeConnection,
@@ -26,6 +27,7 @@ export const keys = {
   runs: ["runs"] as const,
   workflowRuns: (id: string) => ["workflow-runs", id] as const,
   run: (id: string) => ["run", id] as const,
+  runSummary: (id: string) => ["run", id, "summary"] as const,
   readiness: (id: string) => ["readiness", id] as const,
   usage: ["usage"] as const,
   billing: ["billing"] as const,
@@ -74,6 +76,16 @@ export function useRun(runId: string | null) {
     queryFn: () => api<Run>(`workflow-runs/${encodeURIComponent(runId!)}`),
     enabled: Boolean(runId),
     refetchInterval: (query) => (query.state.data && ACTIVE_RUN.has(query.state.data.status) ? POLL_MS : false),
+  });
+}
+
+/** A run's progress, results, credits and publishing state; polled with the run while it is active. */
+export function useRunSummary(runId: string | null, active: boolean) {
+  return useQuery({
+    queryKey: keys.runSummary(runId ?? ""),
+    queryFn: () => api<RunSummary>(`workflow-runs/${encodeURIComponent(runId!)}/summary`),
+    enabled: Boolean(runId),
+    refetchInterval: active ? POLL_MS : false,
   });
 }
 

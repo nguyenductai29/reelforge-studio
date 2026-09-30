@@ -81,7 +81,7 @@ class SchemaTest(unittest.TestCase):
                     self.assertTrue({"key", "type", "label", "default", "required", "advanced", "code"} <= set(field))
                     # Every default passes its own validation.
                     default_registry.resolve(node_type).validate_config({field["key"]: field["default"]})
-        for node_type in ("idea", "assets", "review", "script", "publish"):
+        for node_type in ("idea", "assets", "review", "script"):
             self.assertEqual(catalog[node_type]["config"], [])
 
     def test_fields_match_the_editor_contract(self):

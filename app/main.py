@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import auth_security, billing, payments, publications, reconciliation, usage
+from app import auth_security, billing, payments, publications, reconciliation, run_summary, usage
 from app.models import CreditReconciliation
 # Re-exported: existing callers import video_provider_config_issue from app.main.
 from app.providers.catalog import video_provider_config_issue  # noqa: F401
@@ -29,7 +29,8 @@ from app.publishers import google_oauth
 from app.runtime_env import start_process
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
                           parse_graph)
-from app.workflow.config import ConfigError, check_tools
+from app.workflow.config import TOOL, ConfigError, check_tools
+from app.workflow.templates import TEMPLATES, describe_templates, template_graph
 from app.workflow.nodes import ReviewNodeHandler
 from app.workflow.results import produced_asset_ids
 from app.subtitles import CONTENT_TYPES as SUBTITLE_TYPES
@@ -202,13 +203,26 @@ class YouTubeCallbackInput(BaseModel):
 
 class YouTubePublicationInput(BaseModel):
     run_id: str
-    asset_id: str
+    # Omitted: the run's final render, else its clip (publications.final_video).
+    asset_id: str | None = None
     title: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=5000)
+    tags: list[str] = Field(default_factory=list, max_length=60)
+    privacy_status: Literal["private", "unlisted", "public"] = "private"
+
+
+class YouTubeRetryInput(BaseModel):
+    """Corrections for a failed upload that never sent media; omitted values stay as they were."""
+    title: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=5000)
+    tags: list[str] | None = Field(default=None, max_length=60)
+    privacy_status: Literal["private", "unlisted", "public"] | None = None
 
 
 class NewWorkflow(BaseModel):
     name: str = Field(min_length=1, max_length=150)
+    # A starter template (app/workflow/templates.py); omitted: idea → video → review.
+    template: str | None = Field(default=None, max_length=40)
 
 
 class GraphNode(BaseModel):
@@ -995,12 +1009,20 @@ def youtube_disconnect(request: Request):
 
 
 def public_publication(row):
+    succeeded = row.state == "succeeded" and bool(row.remote_id)
     return {"id": row.id, "run_id": row.run_id, "asset_id": row.asset_id, "channel": row.channel,
-            "title": row.title, "description": row.description, "state": row.state,
-            "remote_id": row.remote_id, "last_error": row.last_error,
+            "title": row.title, "description": row.description, "tags": publications.publication_tags(row),
+            "privacy_status": row.privacy_status, "state": row.state,
+            "remote_id": row.remote_id, "remote_status": row.remote_status, "remote_privacy": row.remote_privacy,
+            "youtube_url": f"https://www.youtube.com/watch?v={row.remote_id}" if succeeded else None,
+            "last_error": row.last_error,
             "can_retry": publications.can_retry_publication(row),
             "created_at": row.created_at.isoformat(),
             "finished_at": row.finished_at.isoformat() if row.finished_at else None}
+
+
+def metadata_error(exc: publications.MetadataError):
+    raise HTTPException(422, {"code": exc.code, "field": exc.field, "message": str(exc)}) from exc
 
 
 @app.get("/api/youtube/publications")
@@ -1023,14 +1045,25 @@ def create_youtube_publication(data: YouTubePublicationInput, request: Request, 
         active_plan(db, ws)
         if google_oauth.connection_status(db, workspace_id=ws.id) is None:
             raise HTTPException(409, "Connect YouTube before uploading")
+        try:
+            publications.validate_metadata(data.title, data.description, data.tags, data.privacy_status)
+        except publications.MetadataError as exc:
+            metadata_error(exc)
         existing = db.scalar(select(publications.Publication).where(
             publications.Publication.workspace_id == ws.id,
             publications.Publication.run_id == data.run_id,
             publications.Publication.channel == "youtube"))
+        asset_id = data.asset_id
+        if asset_id is None:
+            run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == data.run_id, WorkflowRun.workspace_id == ws.id))
+            video = publications.final_video(db, run) if run else None
+            if video is None:
+                raise HTTPException(409, "The run has no finished video to publish")
+            asset_id = video.id
         try:
             row = publications.queue_publication(db, workspace_id=ws.id, run_id=data.run_id,
-                asset_id=data.asset_id, channel="youtube", title=data.title.strip(),
-                description=data.description)
+                asset_id=asset_id, channel="youtube", title=data.title.strip(),
+                description=data.description, tags=data.tags, privacy_status=data.privacy_status)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         if existing:
@@ -1039,13 +1072,18 @@ def create_youtube_publication(data: YouTubePublicationInput, request: Request, 
 
 
 @app.post("/api/youtube/publications/{publication_id}/retry", status_code=202)
-def retry_youtube_publication(publication_id: str, request: Request):
+def retry_youtube_publication(publication_id: str, request: Request, data: YouTubeRetryInput | None = None):
+    """Queue only a new upload job; the run's script, media and render are reused, never generated again."""
     same_origin(request)
     with Session.begin() as db:
         ws = youtube_owner(request, db)
         active_plan(db, ws)
+        changes = data.model_dump(exclude_none=True) if data else {}
         try:
-            row = publications.retry_publication(db, workspace_id=ws.id, publication_id=publication_id)
+            row = publications.retry_publication(db, workspace_id=ws.id, publication_id=publication_id,
+                                                 metadata=changes or None)
+        except publications.MetadataError as exc:
+            metadata_error(exc)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return public_publication(row)
@@ -1075,13 +1113,27 @@ def workflow_readiness(workflow_id: str, request: Request, tool_id: str | None =
                                    options=RunOptions(tool_id=tool_id))
         checks = default_executor.readiness(context)
         steps = [{"node_id": node["id"], "task": node["type"], "status": check.status, "detail": check.detail,
-                  "code": check.code, "field": check.field, "credits": check.credits}
+                  "code": check.code, "field": check.field, "credits": check.credits,
+                  "tool": resolved_tool(context, node)}
                  for node, check in checks]
         required = sum(check.credits for _, check in checks)
         return {"workflow_id": workflow.id,
                 "runnable": all(step["status"] in {"ready", "configured"} for step in steps)
                 and context.credit_balance >= required,
                 "credits_required": required, "credits_available": context.credit_balance, "steps": steps}
+
+
+def resolved_tool(context, node):
+    """The AI model a step will use: its own setting, else the first enabled model for its task."""
+    handler = default_registry.resolve(node["type"])
+    field = next((field for field in handler.config_fields if field.type == TOOL), None)
+    if field is None:
+        return None
+    config = node.get("config") if isinstance(node.get("config"), dict) else {}
+    chosen = config.get(field.key) if isinstance(config.get(field.key), str) else None
+    tool = context.find_tool(field.task, field.providers, chosen or (context.options.tool_id if field.task == "video" else None))
+    return {"id": tool.id, "provider": tool.provider, "model": tool.model,
+            "chosen": bool(chosen)} if tool else None
 
 
 def public_step_output(step):
@@ -1179,6 +1231,23 @@ def get_workflow_run(run_id: str, request: Request):
         return public_run(run, list(steps))
 
 
+@app.get("/api/workflow-runs/{run_id}/summary")
+def get_workflow_run_summary(run_id: str, request: Request):
+    """Progress, results, the final video, credits and publishing state of one run (app/run_summary.py)."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id))
+        if not run:
+            raise HTTPException(404, "Workflow run not found")
+        summary = run_summary.summarize(db, run)
+        publication = db.scalar(select(publications.Publication).where(
+            publications.Publication.workspace_id == ws.id, publications.Publication.run_id == run.id,
+            publications.Publication.channel == "youtube"))
+        summary["publishing"]["publication"] = public_publication(publication) if publication else None
+        summary["publishing"]["youtube_connected"] = google_oauth.connection_status(db, workspace_id=ws.id) is not None
+        return summary
+
+
 @app.post("/api/workflow-runs/{run_id}/approve")
 def approve_workflow_run(run_id: str, request: Request):
     same_origin(request)
@@ -1260,12 +1329,29 @@ def create_workflow(data: NewWorkflow, request: Request):
     same_origin(request)
     with Session.begin() as db:
         ws = workspace_for(request, db)
+        if data.template is not None and data.template not in TEMPLATES:
+            raise HTTPException(422, {"code": "unknown_template", "message": "Unknown workflow template"})
         enforce_limit(db, ws, Workflow, "workflow_limit")
-        workflow = Workflow(id=ident(), workspace_id=ws.id, name=data.name.strip(), definition=json.dumps(default_graph()))
+        if data.template:
+            # Templates name no AI tool: each step uses the first enabled model for its task at run time.
+            graph = WorkflowGraph.model_validate(template_graph(data.template))
+            validate_graph(graph)
+            definition = normalize_edges(graph.model_dump(), default_registry)
+        else:
+            definition = default_graph()
+        workflow = Workflow(id=ident(), workspace_id=ws.id, name=data.name.strip(), definition=json.dumps(definition))
         if not workflow.name:
             raise HTTPException(400, "Name required")
         db.add(workflow)
         return {"id": workflow.id, "name": workflow.name, "graph": workflow_graph(workflow.definition)}
+
+
+@app.get("/api/workflow-templates")
+def workflow_templates(request: Request):
+    """The starter workflows a new workflow can be created from."""
+    with Session() as db:
+        workspace_for(request, db)
+    return {"templates": describe_templates()}
 
 
 @app.put("/api/workflows/{workflow_id}")

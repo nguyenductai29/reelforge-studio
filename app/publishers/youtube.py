@@ -1,8 +1,14 @@
-"""Private YouTube video uploads using the documented resumable protocol.
+"""YouTube video uploads using the documented resumable protocol.
 
 OAuth consent, token refresh, approval, and durable session storage belong to
 the caller. Call ``start_private_upload`` and persist its result before calling
 ``upload_private_video`` when a worker must survive a process restart.
+
+The request chooses the visibility (``private`` by default, or ``unlisted`` or
+``public``) and optional tags; the ``youtube.upload`` scope allows all three.
+YouTube may answer with a *more* restrictive visibility than requested (videos
+uploaded through Google projects that are not verified stay private); that is
+accepted and reported. A *less* restrictive answer is never accepted.
 """
 
 from dataclasses import dataclass
@@ -22,6 +28,10 @@ MAX_FILE_SIZE = 256 * 1024**3
 _CHUNK_GRANULARITY = 256 * 1024
 _RANGE_RE = re.compile(r"bytes=0-(\d+)\Z")
 _VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}\Z")
+PRIVACY_STATUSES = ("private", "unlisted", "public")
+# How open each visibility is; an answer above the requested rank is refused.
+_OPENNESS = {"private": 0, "unlisted": 1, "public": 2}
+MAX_TAGS_LENGTH = 500
 
 
 class YouTubeUploadError(Exception):
@@ -51,6 +61,8 @@ class YouTubeUploadRequest:
     title: str
     description: str = ""
     contains_synthetic_media: bool = True
+    privacy_status: str = "private"
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,11 @@ def _validate_file(request: YouTubeUploadRequest) -> int:
     return size
 
 
+def tags_length(tags) -> int:
+    """How YouTube counts the tag limit: tags joined by commas, a tag with spaces counted with quotes."""
+    return sum(len(tag) + (2 if " " in tag else 0) for tag in tags) + max(len(tags) - 1, 0)
+
+
 def _validate_request(request: YouTubeUploadRequest, access_token: str) -> int:
     if not isinstance(request, YouTubeUploadRequest):
         raise YouTubeUploadError("invalid_upload", "Invalid upload request")
@@ -95,6 +112,10 @@ def _validate_request(request: YouTubeUploadRequest, access_token: str) -> int:
         or not isinstance(request.description, str)
         or len(request.description) > 5000
         or not isinstance(request.contains_synthetic_media, bool)
+        or request.privacy_status not in PRIVACY_STATUSES
+        or not isinstance(request.tags, tuple)
+        or not all(isinstance(tag, str) and tag.strip() for tag in request.tags)
+        or tags_length(request.tags) > MAX_TAGS_LENGTH
     ):
         raise YouTubeUploadError("invalid_upload", "Invalid YouTube video metadata")
     if not isinstance(access_token, str) or not access_token.strip() or any(ch.isspace() for ch in access_token):
@@ -159,7 +180,7 @@ def _raise_http_error(response: httpx.Response, session: UploadSession | None = 
     )
 
 
-def _parse_result(response: httpx.Response, session: UploadSession) -> UploadResult:
+def _parse_result(response: httpx.Response, session: UploadSession, requested: str = "private") -> UploadResult:
     try:
         payload = response.json()
         video_id = payload["id"]
@@ -170,9 +191,10 @@ def _parse_result(response: httpx.Response, session: UploadSession) -> UploadRes
         raise YouTubeUploadError("invalid_response", "YouTube upload response is incomplete", session=session) from exc
     if not isinstance(video_id, str) or not _VIDEO_ID_RE.fullmatch(video_id):
         raise YouTubeUploadError("invalid_response", "YouTube upload returned an invalid video ID", session=session)
-    if privacy != "private":
+    if privacy not in _OPENNESS or _OPENNESS[privacy] > _OPENNESS.get(requested, 0):
         raise YouTubeUploadError(
-            "unexpected_visibility", "YouTube video is not private", session=session, remote_id=video_id
+            "unexpected_visibility", f"YouTube video is more visible than {requested}", session=session,
+            remote_id=video_id,
         )
     if upload_status is not None and not isinstance(upload_status, str):
         raise YouTubeUploadError("invalid_response", "YouTube upload status is invalid", session=session)
@@ -200,11 +222,15 @@ def start_private_upload(
     *,
     client: httpx.Client,
 ) -> UploadSession:
-    """Start a private upload; persist the returned session before transfer."""
+    """Start an upload with the requested visibility; persist the returned session before transfer."""
     size = _validate_request(request, access_token)
+    snippet = {"title": request.title.strip(), "description": request.description}
+    if request.tags:
+        snippet["tags"] = list(request.tags)
     metadata = {
-        "snippet": {"title": request.title.strip(), "description": request.description},
-        "status": {"privacyStatus": "private", "containsSyntheticMedia": request.contains_synthetic_media},
+        "snippet": snippet,
+        "status": {"privacyStatus": request.privacy_status,
+                   "containsSyntheticMedia": request.contains_synthetic_media},
     }
     body = json.dumps(metadata, ensure_ascii=False).encode("utf-8")
     response = _request(
@@ -227,7 +253,8 @@ def start_private_upload(
     return UploadSession(session_url, size)
 
 
-def _probe_offset(client: httpx.Client, session: UploadSession, access_token: str) -> int | UploadResult:
+def _probe_offset(client: httpx.Client, session: UploadSession, access_token: str,
+                  requested: str = "private") -> int | UploadResult:
     response = _request(
         client,
         "PUT",
@@ -243,7 +270,7 @@ def _probe_offset(client: httpx.Client, session: UploadSession, access_token: st
     if response.status_code == 308:
         return _acknowledged_offset(response, session)
     if response.status_code in (200, 201):
-        return _parse_result(response, session)
+        return _parse_result(response, session, requested)
     _raise_http_error(response, session)
 
 
@@ -271,7 +298,7 @@ def upload_private_video(
         if not isinstance(session, UploadSession) or session.file_size != size:
             raise YouTubeUploadError("invalid_upload", "MP4 size changed since upload started")
         _validate_session_url(session.url)
-        probed = _probe_offset(client, session, access_token)
+        probed = _probe_offset(client, session, access_token, request.privacy_status)
         if isinstance(probed, UploadResult):
             return probed
         offset = probed
@@ -299,7 +326,7 @@ def upload_private_video(
                     session=session,
                 )
                 if response.status_code in (200, 201):
-                    return _parse_result(response, session)
+                    return _parse_result(response, session, request.privacy_status)
                 if response.status_code == 308:
                     next_offset = _acknowledged_offset(response, session)
                 else:
@@ -315,3 +342,8 @@ def upload_private_video(
     except OSError as exc:
         raise YouTubeUploadError("invalid_upload", "MP4 became unavailable", session=session) from exc
     raise YouTubeUploadError("invalid_response", "YouTube did not confirm upload completion", session=session)
+
+
+# The functions above now honor ``request.privacy_status``; these names say so.
+start_upload = start_private_upload
+upload_video = upload_private_video

@@ -28,11 +28,17 @@ export function useCreateFromTemplate() {
 
   async function create(id: TemplateId) {
     const template = templateById(id);
-    if (!template.graph || pending) return;
+    if ((!template.graph && !template.backend) || pending) return;
     setPending(id);
     try {
-      const workflow = await api<Workflow>("workflows", jsonRequest("POST", { name: t.templates[id].name }));
-      await api(`workflows/${encodeURIComponent(workflow.id)}`, jsonRequest("PUT", template.graph));
+      // Starter templates are built by the backend; the others are saved from their local graph.
+      const workflow = await api<Workflow>(
+        "workflows",
+        jsonRequest("POST", { name: t.templates[id].name, ...(template.backend ? { template: template.backend } : {}) }),
+      );
+      if (!template.backend && template.graph) {
+        await api(`workflows/${encodeURIComponent(workflow.id)}`, jsonRequest("PUT", template.graph));
+      }
       await client.invalidateQueries({ queryKey: keys.dashboard });
       toast.success(t.create.created);
       router.push(`/workflows/${workflow.id}`);

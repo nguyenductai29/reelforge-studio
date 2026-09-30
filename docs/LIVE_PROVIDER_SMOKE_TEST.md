@@ -213,7 +213,7 @@ Steps (the UI labels are the English ones; Vietnamese is the default language):
 8. Add and enable one real video model (for example Runware Seedance 2.5).
 9. Create a project.
 10. Give it a topic, for example "Sunrise over a quiet mountain lake".
-11. Create or open a workflow with `Idea → AI Writer → Scene Splitter → Video → Review`, connected port to port: Topic → Prompt, Script → Script, Scenes → Scenes, Video → Media.
+11. Create or open a workflow with `Idea → AI Writer → Scene Splitter → Video → Review` (or, for the full pipeline with narration, subtitles, render and publishing, create it from the **YouTube Short** template; see `docs/SOCIAL_VIDEO_WORKFLOW.md`), connected port to port: Topic → Prompt, Script → Script, Scenes → Scenes, Video → Media.
 12. Select **AI Writer** and set Language, Tone, Target platform, Target duration, Additional instructions and AI model in the inspector.
 13. Select **Video** and set AI model, Aspect ratio, Clip duration (4 s keeps the cost down) and, optionally, Prompt override. With Scenes connected and no Prompt override, the step makes **one paid clip per scene**. To keep the test to one clip, set the Scene Splitter's **Maximum scenes** to 1 or give the Video step a Prompt override (see `docs/MULTI_SCENE_VIDEO.md`).
 14. Optional, for the final video (Phases 6–8): add **Voice** (Scenes → Scenes), **Subtitle** (Scenes → Scenes, Voice's Audio → Audio) and **Render** (Video → Media, Voice → Audio, Subtitle → Subtitle), and connect Render → Review instead of Video → Review. Enable a Voice model (Google · Gemini 2.5 Flash TTS) and start the voice and render workers. Voice costs one narration per scene; Subtitle and Render are free.

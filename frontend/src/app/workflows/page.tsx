@@ -77,10 +77,10 @@ export default function WorkflowsPage() {
                 {template.steps ? t.common.steps(template.steps) : t.workflows.emptyCanvas}
                 {template.branches ? ` · ${t.workflows.outputs(template.branches)}` : ""}
               </p>
-              {template.graph ? (
+              {template.graph || template.backend ? (
                 <Button
                   size="sm"
-                  variant={template.id === "social-video" ? "default" : "outline"}
+                  variant={template.backend ? "default" : "outline"}
                   disabled={Boolean(pending)}
                   onClick={() => void create(template.id)}
                 >

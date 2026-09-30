@@ -34,11 +34,21 @@ export const kindOf: Record<NodeType, NodeKind> = {
   translate: "ai",
   hook: "ai",
   title: "ai",
+  metadata: "ai",
   cta: "ai",
 };
 
 /** Nodes that generate text with the workspace's text model. */
-export const TEXT_NODES: ReadonlySet<NodeType> = new Set(["ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta"]);
+export const TEXT_NODES: ReadonlySet<NodeType> = new Set([
+  "ai_writer",
+  "summarize",
+  "rewrite",
+  "translate",
+  "hook",
+  "title",
+  "cta",
+  "metadata",
+]);
 
 export const NODE_TYPES = Object.keys(kindOf) as NodeType[];
 export const MAX_NODES = 30;
@@ -83,6 +93,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "endingExplained", kind: "ai" },
       { id: "keyMoments", kind: "ai" },
       { id: "generateCta", kind: "ai", type: "cta" },
+      { id: "publishMetadata", kind: "ai", type: "metadata" },
     ],
   },
   {
@@ -148,7 +159,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
 ];
 
 /** Node types the backend can execute today; every other step stops a run with a reason. */
-export const EXECUTABLE: ReadonlySet<NodeType> = new Set(["idea", "assets", "scenes", "image", "video", "voice", "subtitle", "render", "review", ...TEXT_NODES]);
+export const EXECUTABLE: ReadonlySet<NodeType> = new Set(["idea", "assets", "scenes", "image", "video", "voice", "subtitle", "render", "review", "publish", ...TEXT_NODES]);
 
 export type TemplateId = keyof Dictionary["templates"];
 
@@ -156,6 +167,8 @@ export type WorkflowTemplate = {
   id: TemplateId;
   /** Present when the template can be created and run with today's backend. */
   graph?: Graph;
+  /** A starter workflow the backend builds (app/workflow/templates.py), with its own node settings. */
+  backend?: "youtube_short" | "youtube_landscape";
   /** Design preview for templates that are not available yet. */
   preview: NodeKind[];
   branches?: number;
@@ -175,10 +188,13 @@ const clipGraph: Graph = {
   ],
 };
 
+// Idea → AI Writer → Scenes → Video + Voice + Subtitle → Render → Review → Publish (with Metadata).
+const fullPreview: NodeKind[] = ["input", "ai", "script", "video", "voice", "subtitle", "render", "review", "publish"];
+
 export const workflowTemplates: WorkflowTemplate[] = [
   { id: "social-video", graph: clipGraph, preview: ["input", "video", "review"], steps: 3 },
-  { id: "youtube-video", preview: ["input", "ai", "script", "image", "video", "publish"], steps: 12 },
-  { id: "youtube-short", graph: clipGraph, preview: ["input", "video", "review"], steps: 3 },
+  { id: "youtube-short", backend: "youtube_short", preview: fullPreview, steps: 10 },
+  { id: "youtube-video", backend: "youtube_landscape", preview: fullPreview, steps: 10 },
   { id: "tiktok-video", graph: clipGraph, preview: ["input", "video", "review"], steps: 3 },
   { id: "movie-recap", preview: ["input", "ai", "script", "video", "voice", "publish"], branches: 4, steps: 17 },
   { id: "movie-review", preview: ["input", "ai", "script", "image", "voice", "publish"], steps: 11 },

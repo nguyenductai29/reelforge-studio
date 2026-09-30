@@ -21,7 +21,10 @@ VIDEO_ASSETS = "video_assets"
 AUDIO_ASSETS = "audio_assets"
 SUBTITLE_ASSET = "subtitle_asset"
 PUBLICATION = "publication"
-DATA_TYPES = (BRIEF, TEXT, SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SUBTITLE_ASSET, PUBLICATION)
+# {"title", "description", "tags"} for publishing, from the Metadata node (Phase 9).
+PUBLISH_METADATA = "publish_metadata"
+DATA_TYPES = (BRIEF, TEXT, SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SUBTITLE_ASSET, PUBLICATION,
+              PUBLISH_METADATA)
 TEXT_TYPES = frozenset({BRIEF, TEXT})
 LIST_TYPES = frozenset({SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS})
 
