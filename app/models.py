@@ -220,15 +220,15 @@ class WorkflowJob(Base):
 
 
 class CreditReconciliation(Base):
-    """One final, append-only operator decision for a reserved paid step."""
+    """One final, append-only operator decision for a reserved paid job (migration 0012; 0011 keyed it by step)."""
 
     __tablename__ = "credit_reconciliations"
     __table_args__ = (
         CheckConstraint("decision IN ('confirmed_charge', 'refunded')", name="ck_reconciliation_decision"),
         CheckConstraint("credits > 0", name="ck_reconciliation_credits"),
     )
-    step_id: Mapped[str] = mapped_column(ForeignKey("workflow_run_steps.id"), primary_key=True)
-    job_id: Mapped[str] = mapped_column(ForeignKey("workflow_jobs.id"), unique=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("workflow_jobs.id"), primary_key=True)
+    step_id: Mapped[str] = mapped_column(ForeignKey("workflow_run_steps.id"), index=True)
     reservation_id: Mapped[str] = mapped_column(ForeignKey("credit_ledger.id"), unique=True)
     decision: Mapped[str] = mapped_column(String(24))
     credits: Mapped[int] = mapped_column(Integer)

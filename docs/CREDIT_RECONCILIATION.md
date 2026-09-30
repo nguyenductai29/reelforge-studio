@@ -6,13 +6,21 @@ Phase 3.7 resolves uncertain paid workflow operations using the existing credit 
 
 The balance is debited when a paid step is queued, in the same transaction as the run, step and durable job. The queued payload freezes the credit amount. A successful step records usage without debiting the balance again.
 
-| Operation | Video reference | Text reference | Balance change |
-| --- | --- | --- | --- |
-| Reserve | `reserve:<run_id>` | `text-reserve:<step_id>` | minus reserved credits |
-| Finalize usage | `video:<step_id>` | `text:<step_id>` | none; append a usage event |
-| Refund | `refund:<run_id>` | `text-refund:<step_id>` | plus exactly reserved credits |
+| Operation | Video and image (per job, Phases 4–5) | Legacy video | Text reference | Balance change |
+| --- | --- | --- | --- | --- |
+| Reserve | `<kind>-reserve:<step_id>:<operation>` | `reserve:<run_id>` | `text-reserve:<step_id>` | minus reserved credits |
+| Finalize usage | `<kind>:<step_id>:<operation>` | `video:<step_id>` | `text:<step_id>` | none; append a usage event |
+| Refund | `<kind>-refund:<step_id>:<operation>` | `refund:<run_id>` | `text-refund:<step_id>` | plus exactly reserved credits |
 
-Video retains its historical run-based references because one video node per workflow is still enforced. Text retains step-based references. The shared reconciliation service resolves a paid job kind to these references; future paid node kinds can add a reference policy without introducing another ledger. No future executor is implemented here.
+`<kind>` is `video` or `image`, and `<operation>` names one paid provider call:
+
+- `scene:<n>`: one scene's clip or image;
+- `image:<n>`: the n-th image of one prompt;
+- `single`: one clip.
+
+Every video or image job carries its three references in its payload. Reconciliation accepts them only when they name that job's step and operation. Video jobs queued before Phase 5 carry no references and keep the per-run references in the "Legacy video" column. Those incidents and their past decisions still resolve unchanged. Text keeps its step-based references. See `docs/IMAGE_GENERATION.md` and `docs/MULTI_SCENE_VIDEO.md`.
+
+A step that makes several files (one per scene or image) has one job per file. Its credits are reserved together, after checking that the balance covers all of them, so the step never holds part of its cost.
 
 `reserved → charged` and `reserved → refunded` are mutually exclusive outcomes. `needs_attention` means the reservation is still awaiting a decision, not that the provider definitely charged. The credit amount is checked against the original debit and immutable job quote; the operator cannot enter a different amount.
 
@@ -63,8 +71,12 @@ All routes use existing system-admin session authorization; mutation routes enfo
 | --- | --- |
 | `GET /api/admin/reconciliation?status=pending&limit=50&offset=0` | Pending paid steps, `{items, total}`; default status is pending |
 | `GET /api/admin/reconciliation?status=resolved&limit=50&offset=0` | Final decisions and operator history |
-| `POST /api/admin/reconciliation/{step_id}/confirm-charge` | Body `{ "note": "optional evidence" }`; finalize usage without another debit |
-| `POST /api/admin/reconciliation/{step_id}/refund` | Same body; restore the exact reservation |
+| `POST /api/admin/reconciliation/jobs/{job_id}/confirm-charge` | Body `{ "note": "optional evidence" }`; finalize this job's usage without another debit |
+| `POST /api/admin/reconciliation/jobs/{job_id}/refund` | Same body; restore this job's exact reservation |
+| `POST /api/admin/reconciliation/{step_id}/confirm-charge` | Older form for a step with one paid job; 409 for a step with several jobs |
+| `POST /api/admin/reconciliation/{step_id}/refund` | Same |
+
+Each item carries `job_id`, plus `scene_index` and `operation` for jobs that make one file per scene or image; the admin page decides by `job_id`.
 
 Page size is 1–100. Both mutation routes accept `{}`. Successful actions return the current item. Repeating the same decision returns 200 with the original decision and note; the opposite decision returns 409. Missing steps return 404; non-admins return 403 and unauthenticated callers 401. Invalid quotes, ownership relationships, nonterminal jobs, existing contrary accounting and balance-limit violations return 409 without partial changes.
 
@@ -74,7 +86,14 @@ Only explicitly selected operator fields are returned. Prompts, raw provider res
 
 Migration `0011_credit_reconciliation` adds `credit_reconciliations`; it does not rewrite existing data. Each row links a step, job, original reservation ledger entry, final decision, credits, administrator, time and note. The step primary key and unique job/reservation constraints prevent multiple decisions for one operation. Allowed decisions and positive credits are constrained by the database. There are no history editing/deletion API routes; the application only inserts decision rows and never updates past ledger entries.
 
-Pending is derived from an unreconciled paid step in `needs_attention` with a terminal failed job. Therefore old incidents work without a speculative backfill. Rows without matching paid reservations/relationships cannot be resolved through this API; inspect corrupted data separately.
+Migration `0012_job_reconciliation` moves the primary key from `step_id` to `job_id` (keeping an index on `step_id`), so a step with several paid jobs has one decision per job. Existing rows keep their data; each was already tied to its step's single job.
+
+Pending is derived per job:
+
+- a failed paid job whose own record in `output["jobs"]` is `needs_attention`, for steps with several jobs;
+- otherwise, a failed job whose step is `needs_attention`.
+
+An uncertain job can therefore be decided while its sibling jobs still run. The step leaves `needs_attention` once no job waits for a decision and none was confirmed as charged. The step-level `reconciliation` summary appears once no job is waiting. Old incidents work without a speculative backfill. Rows without matching paid reservations/relationships cannot be resolved through this API; inspect corrupted data separately.
 
 Resolution locks the run, validates job/step/workspace/project/workflow relationships and the original debit, then locks the credit account. SQLite uses a write-locking no-op run update; PostgreSQL takes a row lock on the same run. Accounting, usage, decision and step/run state changes commit together. Existing usage/refund references are checked for matching ownership and amount. Same-action replays never update the original note, and conflicting actions cannot reverse a final decision.
 

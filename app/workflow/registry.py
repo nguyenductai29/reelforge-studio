@@ -1,8 +1,8 @@
 """Maps each node type to the one handler that executes it."""
-from app.workflow.nodes import (TEXT_HANDLERS, AssetsNodeHandler, IdeaNodeHandler, NodeHandler, PendingAITaskHandler,
-                                PendingServiceHandler, ReviewNodeHandler, ScenesNodeHandler, UnsupportedNodeHandler,
-                                VideoNodeHandler)
-from app.workflow.ports import (AUDIO_ASSETS, BRIEF, IMAGE_ASSETS, SCENES, SUBTITLE_ASSET, TEXT, VIDEO_ASSETS,
+from app.workflow.nodes import (TEXT_HANDLERS, AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, NodeHandler,
+                                PendingAITaskHandler, PendingServiceHandler, ReviewNodeHandler, ScenesNodeHandler,
+                                UnsupportedNodeHandler, VideoNodeHandler)
+from app.workflow.ports import (AUDIO_ASSETS, BRIEF, IMAGE_ASSETS, SUBTITLE_ASSET, TEXT, VIDEO_ASSETS,
                                 InputPort, OutputPort)
 
 
@@ -40,9 +40,6 @@ def _placeholders():
     return (
         PendingAITaskHandler("script", (InputPort("topic", (BRIEF, TEXT), multiple=True),),
                              (OutputPort("script", TEXT),)),
-        PendingAITaskHandler("image", (InputPort("prompt", text, multiple=True),
-                                       InputPort("scenes", (SCENES,), multiple=True)),
-                             (OutputPort("image_assets", IMAGE_ASSETS),)),
         PendingAITaskHandler("voice", (InputPort("script", text, multiple=True),),
                              (OutputPort("audio_assets", AUDIO_ASSETS),)),
         PendingAITaskHandler("music", (InputPort("mood", (BRIEF, TEXT), multiple=True),),
@@ -62,8 +59,8 @@ def _placeholders():
 
 def build_default_registry() -> NodeRegistry:
     registry = NodeRegistry()
-    for handler in (IdeaNodeHandler(), AssetsNodeHandler(), ScenesNodeHandler(), VideoNodeHandler(),
-                    ReviewNodeHandler(), *(handler_type() for handler_type in TEXT_HANDLERS), *_placeholders()):
+    for handler in (IdeaNodeHandler(), AssetsNodeHandler(), ScenesNodeHandler(), ImageNodeHandler(),
+                    VideoNodeHandler(), ReviewNodeHandler(), *(handler_type() for handler_type in TEXT_HANDLERS), *_placeholders()):
         registry.register(handler)
     return registry
 

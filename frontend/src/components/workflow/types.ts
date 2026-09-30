@@ -34,11 +34,13 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
   const r = t.readiness;
   switch (step.status) {
     case "ready":
-      return step.task === "video" ? r.ready(readiness.credits_required) : r.readyText;
+      if (step.code === "per_scene") return r.readyPerScene(step.credits ?? 0);
+      if (step.task === "image") return r.readyImage(step.credits ?? 0);
+      return step.task === "video" ? r.ready(step.credits ?? readiness.credits_required) : r.readyText;
     case "configured":
       return r.configured;
     case "missing_tool":
-      return step.task === "video" ? r.missingVideoTool : r.missingTool;
+      return step.task === "video" ? r.missingVideoTool : step.task === "image" ? r.missingImageTool : r.missingTool;
     case "needs_connection":
       return AI_TASKS.has(step.task) ? r.needsProvider : r.needsService;
     case "unsupported_graph":

@@ -702,6 +702,28 @@ journalctl -u reelforge-text-worker -f
 
 The text worker gets `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` and `TEXT_CREDITS_PER_GENERATION` (default 1, credits per text step) from the same `EnvironmentFile` as the API, because it copies the video worker unit.
 
+### Image worker
+
+The image worker runs Image steps (one image per scene, or the chosen number of images from one prompt; see `docs/IMAGE_GENERATION.md`). Create `/etc/systemd/system/reelforge-image-worker.service` with the same contents as the video worker, changing only these two lines:
+
+```ini
+Description=ReelForge Studio Image Worker
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.image_worker
+```
+
+Enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable reelforge-image-worker
+sudo systemctl start reelforge-image-worker
+journalctl -u reelforge-image-worker -f
+```
+
+It needs `RUNWAYML_API_SECRET` and `RUNWAY_OUTPUT_HOSTS` (the same Runway credentials video uses), and optionally `IMAGE_CREDITS_PER_GENERATION` (default 2 credits per image) and `IMAGE_JOB_MAX_AGE_SECONDS` (default 3600), from the same `EnvironmentFile`. `deploy.sh` restarts it when the unit is enabled. It writes to the same media directory as the video worker.
+
+Multi-scene video needs no new process: the video worker also runs the one-clip-per-scene jobs (see `docs/MULTI_SCENE_VIDEO.md`).
+
 ---
 
 ## 13. YouTube worker systemd service

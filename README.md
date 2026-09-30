@@ -32,19 +32,20 @@ Open http://localhost:3000 to create the first admin account, or run `npm run cr
 
 ### Provider keys, processes and logs
 
-Provider keys and prices are environment variables that the API and every worker must share: a worker that finishes one step also starts the next (the text worker queues the video step after an AI Writer). Copy `.env.runtime.example` to `.env.runtime` (git-ignored) and fill in only the providers you use. The API loads it at startup, and so do `python -m app.text_worker`, `app.video_worker`, `app.youtube_worker`, `app.provider_check` and `app.smoke_test`. A variable already set in the process wins, and `REELFORGE_ENV_FILE` names another file (production uses one `EnvironmentFile=` for every systemd unit). Start each process in its own terminal:
+Provider keys and prices are environment variables that the API and every worker must share: a worker that finishes one step also starts the next (the text worker queues the video step after an AI Writer). Copy `.env.runtime.example` to `.env.runtime` (git-ignored) and fill in only the providers you use. The API loads it at startup, and so do `python -m app.text_worker`, `app.image_worker`, `app.video_worker`, `app.youtube_worker`, `app.provider_check` and `app.smoke_test`. A variable already set in the process wins, and `REELFORGE_ENV_FILE` names another file (production uses one `EnvironmentFile=` for every systemd unit). Start each process in its own terminal:
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000   # API
 python -m app.text_worker                                      # AI Writer, Summarize, … steps
-python -m app.video_worker                                     # video steps
+python -m app.image_worker                                     # image steps
+python -m app.video_worker                                     # video steps (one clip, or one per scene)
 python -m app.youtube_worker                                   # only for YouTube publishing
 cd frontend && npm run dev                                     # dashboard
 ```
 
 Each process logs structured JSON lines to stderr. The first is `process_started`, with the runtime file it loaded and an 8-character fingerprint per provider key, so a process started with different keys stands out. Run events follow: `workflow_step_*`, `job_claimed`, `provider_request_*`, `credit_reserved` and `credit_refunded`, with run, step, job, provider and model IDs. Keys are redacted and prompts are logged by length only. `REELFORGE_LOG_FORMAT=text` switches to `key=value` lines, and `REELFORGE_LOG_LEVEL` sets the level.
 
-`python -m app.provider_check` reports, without calling any provider, whether the selected text and video providers have their keys, supported models and settings. `python -m app.smoke_test text|video --live` sends one small paid request, and `python -m app.smoke_test run-report <run_id>` checks that a run's requests match its node settings. See [docs/LIVE_PROVIDER_SMOKE_TEST.md](docs/LIVE_PROVIDER_SMOKE_TEST.md), including the full workflow test and troubleshooting.
+`python -m app.provider_check` reports, without calling any provider, whether the selected text and video providers (and, with `--only image`, the image provider) have their keys, supported models and settings. `python -m app.smoke_test text|video|image --live` sends one small paid request, and `python -m app.smoke_test run-report <run_id>` checks that a run's requests match its node settings. See [docs/LIVE_PROVIDER_SMOKE_TEST.md](docs/LIVE_PROVIDER_SMOKE_TEST.md), including the full workflow test and troubleshooting.
 
 ### Studio interface
 
@@ -97,7 +98,7 @@ For an existing instance using `instance/config.json`, the backend reads it if `
 
 - Projects, assets, workflows and workspace settings are scoped to the signed-in user's workspace. The first user is the system admin.
 - Active subscriptions enforce the configured project and workflow limits on new records. Workspace owners can buy or renew paid plans through payOS when prices and merchant credentials are configured. Confirmed orders update subscriptions and credit balances; admins can make manual subscription and credit adjustments.
-- Workflow diagrams support adding, moving, connecting and removing nodes; the saved graph is validated as an acyclic graph and scoped to a workspace. Old linear workflow templates are displayed as graphs without a schema change. Starting a workflow persists ordered step outcomes and a graph snapshot. Local `idea` and `assets` nodes complete; one configured supported `video` node queues a job; unsupported nodes are blocked, and their dependents are skipped. See the run details below.
+- Workflow diagrams support adding, moving, connecting and removing nodes; the saved graph is validated as an acyclic graph and scoped to a workspace. Old linear workflow templates are displayed as graphs without a schema change. Starting a workflow persists ordered step outcomes and a graph snapshot. Local `idea`, `assets` and `scenes` nodes complete; text, `image` and `video` nodes reserve credits and queue jobs; unsupported nodes are blocked, and their dependents are skipped. See the run details below.
 - Projects can be opened to edit their topic and preview/download generated MP4 assets. The AI tool catalog is persisted per workspace. The Channels panel connects YouTube; approved runs can queue a private YouTube upload and show its status. Calendar and analytics remain planning views.
 
 ### AI tools and workflow readiness
@@ -152,6 +153,14 @@ The workspace owner connects YouTube in **Kênh**, approves a completed clip fro
 
 The Facebook Page Reels and TikTok Content Posting HTTP adapters in `app/publishers/` are building blocks only. They have no workspace account connection, publication worker or UI action yet. TikTok's inbox flow requires the creator to finish posting in TikTok and must not be represented as a published post.
 
+### Image steps (Phase 4)
+
+An **Image** step generates images with Runway `gen4_image` (AI tool task **Image**; `RUNWAYML_API_SECRET` and `RUNWAY_OUTPUT_HOSTS`, the same as Runway video). With Scenes connected it makes one image per scene from each scene's visual prompt. Otherwise it makes 1–4 images of the prompt override, the connected text or the project topic. Each image is a separate job with its own reservation of `IMAGE_CREDITS_PER_GENERATION` credits (default 2). Run `python -m app.image_worker`, which checks every file's bytes (PNG, JPEG or WEBP only, at most 20 MB) before storing it as a private asset. Successful images are kept when others fail. Uncertain images are reconciled one by one. See [docs/IMAGE_GENERATION.md](docs/IMAGE_GENERATION.md).
+
+### Multi-scene video (Phase 5)
+
+A Video step with Scenes connected and no prompt override makes **one clip per scene**, each its own job with its own credit reservation (`video-reserve:<step>:scene:<n>`); clips are not joined. A prompt override, or only connected text, still makes one clip (`video-reserve:<step>:single`). A workflow may now contain several Video steps. The step completes, and Review can approve every clip, only when all clips are stored. Each uncertain clip is reconciled on its own. Jobs queued before this change keep their per-run references. See [docs/MULTI_SCENE_VIDEO.md](docs/MULTI_SCENE_VIDEO.md), including the retry limitations.
+
 ### Text nodes
 
 AI Writer, Summarize, Rewrite, Translate, Hook, Title and CTA steps generate text with the Text model chosen in the step's settings, or else the first enabled **Text** model (AI tool task `script`) whose provider is `openai`, `anthropic` or `gemini`. Keys come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` in the shared runtime environment and are never stored in PostgreSQL. A text step holds `TEXT_CREDITS_PER_GENERATION` credits (default 1) when it is queued, charges them as one usage event when the text arrives, and refunds deterministic rejections. `python -m app.text_worker` calls the provider outside any database transaction and retries rate-limit rejections up to three times. Ambiguous outcomes (including timeouts, a worker interrupted mid-call, or empty/content-filtered output that may have incurred a charge) require [reconciliation](docs/CREDIT_RECONCILIATION.md). Successful steps let the next steps run. A node's optional `config` (prompt, language, tone, platform, duration, target language, count…) is saved with the workflow graph and validated per node type (see Node settings).
@@ -166,7 +175,7 @@ Select a step on the canvas to edit its settings in the right-hand inspector: la
 
 ### Worker and storage settings
 
-Run `python -m app.video_worker`, `python -m app.text_worker` and `python -m app.youtube_worker` continuously as separate processes. All support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and video worker; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys through `.env.runtime` or one `EnvironmentFile=` (see Provider keys, processes and logs). Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
+Run `python -m app.video_worker`, `python -m app.text_worker`, `python -m app.image_worker` and `python -m app.youtube_worker` continuously as separate processes. All support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and the video and image workers; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys through `.env.runtime` or one `EnvironmentFile=` (see Provider keys, processes and logs). Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
 
 If a worker crashes during download, preview abandoned temporary files with `python -m app.media_maintenance`. Run `python -m app.media_maintenance --apply` to remove eligible `.part` files older than 24 hours. The command restricts cleanup to known workspace directories and is a dry run unless `--apply` is supplied.
 

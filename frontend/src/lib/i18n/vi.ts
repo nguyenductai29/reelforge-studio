@@ -482,6 +482,9 @@ export const vi = {
       scriptHere: "Kịch bản sẽ được viết ở đây.",
       scenesHere: "Các cảnh sẽ hiện ở đây.",
       sceneCount: (n: number) => `${n} cảnh`,
+      images: (n: number) => `${n} ảnh`,
+      clips: (n: number) => `${n} clip`,
+      progress: (done: number, total: number) => `Đang tạo ${done}/${total}`,
       textHere: "Nội dung AI viết sẽ hiện ở đây.",
       fromProject: "Lấy tên và chủ đề từ dự án",
       media: (n: number) => `${n} tệp media`,
@@ -513,8 +516,21 @@ export const vi = {
       result: "Kết quả",
       usedModel: "Model đã dùng",
       scenesHint: "Chia kịch bản nối vào thành các cảnh, ngay trên máy chủ và không tốn credits.",
+      imageHint: "Tạo ảnh bằng model Ảnh đang bật. Khi nối Cảnh, mỗi cảnh một ảnh; nếu không, tạo số ảnh đã chọn từ prompt.",
       scenesTitle: "Các cảnh",
       seconds: (n: number) => `~${n} giây`,
+      sceneLabel: (n: number) => `Cảnh ${n}`,
+      fileLabel: (n: number) => `Tệp ${n}`,
+      download: "Tải về",
+      jobsTitle: (done: number, total: number) => `Tiến độ · ${done}/${total} xong`,
+      jobStatus: {
+        queued: "Chờ",
+        submitting: "Đang gửi",
+        running: "Đang tạo",
+        succeeded: "Xong",
+        failed: "Lỗi, đã hoàn credits",
+        needs_attention: "Cần đối soát",
+      },
       generatedText: "Nội dung đã tạo",
       approve: "Duyệt video",
       nodeId: "ID bước",
@@ -619,6 +635,9 @@ export const vi = {
     invalidSettings: "Cài đặt của bước này không hợp lệ.",
     missingInput: (port: string) => `Chưa nối dữ liệu vào cổng ${port}.`,
     toolUnavailable: "Model đã chọn đang tắt; bật lại trong Model AI hoặc chọn model khác.",
+    readyImage: (credits: number) => `Sẵn sàng tạo ảnh; dự kiến giữ ${credits} credits.`,
+    readyPerScene: (credits: number) => `Sẵn sàng; giữ ${credits} credits cho mỗi cảnh khi bước bắt đầu.`,
+    missingImageTool: "Chọn một model ảnh được hỗ trợ trong Model AI.",
   },
   /** Node settings in the workflow inspector, keyed by the backend's field labels, option values and error codes. */
   config: {
@@ -657,6 +676,9 @@ export const vi = {
       aspect_ratio: "Tỷ lệ khung hình",
       clip_duration: "Thời lượng clip",
       prompt_override: "Prompt ghi đè",
+      image_count: "Số ảnh",
+      quality: "Chất lượng",
+      seed: "Seed",
     } as Record<string, string>,
     hints: {
       brief: "Dùng khi không có gì nối vào cổng Prompt; để trống sẽ dùng chủ đề dự án.",
@@ -701,8 +723,9 @@ export const vi = {
         documentary: "Tài liệu",
         minimal: "Tối giản",
       },
-      aspect_ratio: { auto: "Theo cài đặt workspace", "9:16": "9:16 · dọc", "16:9": "16:9 · ngang" },
+      aspect_ratio: { auto: "Theo cài đặt workspace", "1:1": "1:1 · vuông", "9:16": "9:16 · dọc", "16:9": "16:9 · ngang" },
       clip_duration: { auto: "Mặc định của model", "4s": "4 giây", "6s": "6 giây", "8s": "8 giây" },
+      quality: { standard: "Tiêu chuẩn (720p)", high: "Cao (1080p)" },
     } as Record<string, Record<string, string>>,
     errors: {
       invalid_config: "Cài đặt không hợp lệ.",
@@ -722,6 +745,8 @@ export const vi = {
       invalid_max_tokens: "Số token không hợp lệ.",
       unsupported_model: "Model này không dùng được cho bước này.",
       tool_unavailable: "Model đã chọn đang tắt; bật lại trong Model AI hoặc chọn model khác.",
+      invalid_quality: "Chất lượng này chưa được hỗ trợ.",
+      invalid_seed: "Seed không hợp lệ.",
     } as Record<string, string>,
   },
   /** Backend run-step messages are Vietnamese; other locales translate them here. */
@@ -735,6 +760,8 @@ export const vi = {
       workflow: (project: string) => `Workflow · ${project}`,
       workflowOnly: "Tạo bởi workflow",
       upload: "Tải lên",
+      image_count: "Dùng khi tạo từ prompt; khi nối Cảnh, mỗi cảnh một ảnh.",
+      seed: "Cùng seed và prompt cho kết quả gần giống nhau.",
     },
     empty: "Thư viện còn trống",
     emptyHint: "Video do workflow tạo và media bạn tải lên sẽ hiện ở đây.",
@@ -828,7 +855,7 @@ export const vi = {
   models: {
     title: "Model AI",
     subtitle:
-      "Các model đứng sau mỗi lượt tạo. Video qua fal, Runware, Replicate, Runway và văn bản qua OpenAI, Anthropic, Gemini chạy được khi server có API key; tác vụ khác hiện chỉ lưu cấu hình.",
+      "Các model đứng sau mỗi lượt tạo. Video qua fal, Runware, Replicate, Runway, ảnh qua Runway và văn bản qua OpenAI, Anthropic, Gemini chạy được khi server có API key; tác vụ khác hiện chỉ lưu cấu hình.",
     categories: { script: "Văn bản", image: "Hình ảnh", video: "Video", voice: "Giọng đọc", music: "Âm nhạc" },
     capability: {
       script: "Kịch bản, hook, caption",
@@ -1007,7 +1034,7 @@ export const vi = {
         workflow: "Workflow", node: "Bước", workspaceId: "ID studio", workflowId: "ID workflow", runId: "ID lần chạy", stepId: "ID bước chạy", jobId: "ID tác vụ",
         provider: "Provider / model", remoteRequestId: "ID yêu cầu provider", stage: "Giai đoạn cuối", createdAt: "Thời gian tạo", submittedAt: "Thời gian gửi", lastPolledAt: "Kiểm tra gần nhất",
         providerStatus: "Trạng thái provider gần nhất", submissionSucceeded: "Provider đã xác nhận nhận yêu cầu", asset: "Media đã lưu", errorCategory: "Loại lỗi", errorMessage: "Chi tiết lỗi",
-        reconciledAt: "Thời gian quyết định", reconciledBy: "Quản trị viên", note: "Ghi chú quản trị viên",
+        scene: "Cảnh", reconciledAt: "Thời gian quyết định", reconciledBy: "Quản trị viên", note: "Ghi chú quản trị viên",
       },
     },
     users: {

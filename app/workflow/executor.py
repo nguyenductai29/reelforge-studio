@@ -223,14 +223,19 @@ class WorkflowExecutor:
         if result.job is not None:
             # What will be sent to the provider, as resolved from the node's settings in the run snapshot.
             fields.update(job_id=result.job_id, job=payload_summary(result.job.payload))
-            if node is not None:
-                fields["settings"] = config_summary(self.registry.resolve(step.node_type), node.get("config"))
+        elif result.jobs:
+            fields["jobs"] = [{"job_id": job_id, **payload_summary(job.payload)}
+                              for job_id, job in zip(result.job_ids, result.jobs)]
+        if result.all_jobs and node is not None:
+            fields["settings"] = config_summary(self.registry.resolve(step.node_type), node.get("config"))
         level = logging.WARNING if result.status in (FAILED, NEEDS_ATTENTION) else logging.INFO
         context.events.append((event, level, fields))
         if result.metadata.get("credits_reserved"):
+            references = result.metadata.get("credit_references")
             context.events.append(("credit_reserved", logging.INFO, {
                 **self._run_fields(context), "step_id": step.id, "credits": result.metadata["credits_reserved"],
-                "reference": result.metadata.get("credit_reference")}))
+                **({"references": references} if references else
+                   {"reference": result.metadata.get("credit_reference")})}))
 
     @staticmethod
     def _run_fields(context: ExecutionContext) -> dict[str, Any]:
@@ -254,13 +259,18 @@ class WorkflowExecutor:
 
     @staticmethod
     def _enqueue(context: ExecutionContext, step: WorkflowRunStep, result: NodeExecutionResult) -> None:
-        if result.job is None:
+        if not result.all_jobs:
             return
         context.db.flush()
-        job = jobs.enqueue_job(context.db, workspace_id=context.workspace.id, run_id=context.run.id,
-                               step_id=step.id, logical_key=f"{result.job.kind}:{context.run.id}:{step.id}",
-                               payload=result.job.payload)
-        result.job_id = job.id
+        ids = []
+        for request in result.all_jobs:
+            job = jobs.enqueue_job(context.db, workspace_id=context.workspace.id, run_id=context.run.id,
+                                   step_id=step.id,
+                                   logical_key=request.logical_key or f"{request.kind}:{context.run.id}:{step.id}",
+                                   payload=request.payload)
+            ids.append(job.id)
+        result.job_ids = tuple(ids)
+        result.job_id = ids[0]
 
     @staticmethod
     def _lock_run(context: ExecutionContext) -> None:

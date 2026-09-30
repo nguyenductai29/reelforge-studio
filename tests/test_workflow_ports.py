@@ -258,6 +258,11 @@ class PortExecutionTest(unittest.TestCase):
         with self.Session() as db:
             return db.scalar(select(WorkflowJob).where(WorkflowJob.step_id == step.id)).payload
 
+    def payloads(self, step):
+        with self.Session() as db:
+            jobs = db.scalars(select(WorkflowJob).where(WorkflowJob.step_id == step.id))
+            return sorted((job.payload for job in jobs), key=lambda payload: payload["index"])
+
     def test_structured_scenes_flow_from_script_to_video(self):
         graph = {"nodes": [node("writer", "script_source"), node("scenes", "scenes"), node("video", "video")],
                  "edges": [edge("writer", "scenes", "script", "script"), edge("scenes", "video", "scenes", "scenes")]}
@@ -266,8 +271,9 @@ class PortExecutionTest(unittest.TestCase):
         self.assertEqual([s["visual_prompt"] for s in scenes],
                          ["Rừng đêm tĩnh lặng.", "Một con cú bay qua.", "Bình minh lên."])
         self.assertEqual(steps["video"].status, "queued")
-        self.assertEqual(self.payload(steps["video"])["prompt"],
-                         "Shot 1: Rừng đêm tĩnh lặng. Shot 2: Một con cú bay qua. Shot 3: Bình minh lên.")
+        # One clip per scene, each from its own visual prompt; scenes are never joined.
+        self.assertEqual([(payload["scene_index"], payload["prompt"]) for payload in self.payloads(steps["video"])],
+                         [(1, "Rừng đêm tĩnh lặng."), (2, "Một con cú bay qua."), (3, "Bình minh lên.")])
 
     def test_connected_script_becomes_a_bounded_video_prompt(self):
         long_script = "Một cảnh quay rất dài. " * 100
@@ -395,15 +401,16 @@ legacy = next(w for w in client.get("/api/dashboard").json()["workflows"] if w["
 assert [(e["sourceHandle"], e["targetHandle"]) for e in legacy["graph"]["edges"]] == [("topic","script"), ("scenes","scenes")]
 assert client.put(f"/api/workflows/{workflow}", json=graph).status_code == 200
 assert client.post("/api/ai-tools", json={"task":"video","provider":"fal","model":"fal-ai/veo3.1/fast"}).status_code == 201
-with Session.begin() as db: usage.post_credit(db, workspace, 10, "test", "fund")
+with Session.begin() as db: usage.post_credit(db, workspace, 20, "test", "fund")
 run = client.post(f"/api/workflows/{workflow}/runs", json={"project_id": project})
 assert run.status_code == 201, run.text
 run = run.json()
 assert [s["status"] for s in run["steps"]] == ["completed", "completed", "queued"], run
 assert [s["text"] for s in run["steps"][1]["output"]["scenes"]] == ["Rừng đêm.", "Con cú bay."]
 with Session() as db:
-    job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == run["id"]))
-    assert job.payload["prompt"] == "Shot 1: Rừng đêm. Shot 2: Con cú bay.", job.payload
+    prompts = sorted((job.payload["scene_index"], job.payload["prompt"])
+                     for job in db.scalars(select(WorkflowJob).where(WorkflowJob.run_id == run["id"])))
+    assert prompts == [(1, "Rừng đêm."), (2, "Con cú bay.")], prompts
     snapshot = json.loads(db.get(WorkflowRun, run["id"]).graph_snapshot)
     assert snapshot["edges"][0]["targetHandle"] == "script"
 '''

@@ -196,7 +196,7 @@ from app.models import CreditReconciliation
 for kind in ("video", "text"):
     run_id, step_id, job_id = new_run(kind)
     with Session.begin() as db:
-        reference = f"reserve:{run_id}" if kind == "video" else f"text-reserve:{step_id}"
+        reference = f"video-reserve:{step_id}:single" if kind == "video" else f"text-reserve:{step_id}"
         reservation = db.scalar(select(CreditLedger).where(CreditLedger.reference == reference))
         db.add(CreditReconciliation(step_id=step_id, job_id=job_id, reservation_id=reservation.id,
             decision="confirmed_charge", credits=10 if kind == "video" else 1,

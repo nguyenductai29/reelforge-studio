@@ -2,13 +2,14 @@
 
     python -m app.smoke_test text  --live [--provider openai] [--model gpt-4.1-mini] [--max-tokens 256]
     python -m app.smoke_test video --live [--provider runware] [--model …] [--aspect 16:9] [--timeout 900]
+    python -m app.smoke_test image --live [--provider runway] [--model gen4_image] [--aspect 1:1] [--timeout 300]
     python -m app.smoke_test run-report <run_id>
 
-``text`` and ``video`` call the provider directly, with the cheapest request
+``text``, ``video`` and ``image`` call the provider directly, with the cheapest request
 the adapter accepts, and never touch the database or workspace media. They run
 only with ``--live`` or ``REELFORGE_LIVE_TESTS=1`` set in the shell; the runtime
-file cannot turn them on. The video file is saved under
-``instance/smoke-tests/`` (git-ignored).
+file cannot turn them on. Video and image files are saved under
+``instance/smoke-tests/`` (git-ignored), never in workspace media.
 
 ``run-report`` makes no provider call: it reads a workflow run from the
 database and checks that each queued job carries the settings frozen in the
@@ -27,7 +28,10 @@ import sys
 import time
 
 from app.logs import scrub
-from app.provider_check import check_text, check_video, describe, safe_console, smoke_video_settings
+from app.image_files import download_image, inspect_image
+from app.provider_check import (check_image, check_text, check_video, describe, safe_console, smoke_image_settings,
+                                smoke_video_settings)
+from app.providers.image import ImageRequest, create_image_provider
 from app.providers.catalog import PROVIDER_ERRORS, VIDEO_PROVIDERS
 from app.providers.errors import ProviderError
 from app.providers.text import create_text_provider
@@ -37,6 +41,7 @@ from app.video_files import download_video, mp4_duration_seconds, valid_mp4
 TEXT_PROMPT = "Write one short sentence explaining why consistent posting helps a social media channel."
 TEXT_SYSTEM_PROMPT = "Answer in one plain sentence."
 VIDEO_PROMPT = "A cinematic sunrise over a quiet mountain lake, slow camera movement."
+IMAGE_PROMPT = "A small red paper boat on a calm blue lake, soft morning light."
 OUTPUT_DIR = ROOT / "instance" / "smoke-tests"
 PREVIEW_CHARS = 160
 # What to try first for each error category.
@@ -195,6 +200,58 @@ def smoke_video(*, provider=None, model=None, prompt=VIDEO_PROMPT, aspect="16:9"
     return 0
 
 
+def smoke_image(*, provider=None, model=None, prompt=IMAGE_PROMPT, aspect=None, timeout_seconds=300,
+                poll_seconds=3, output_dir: Path = OUTPUT_DIR, provider_factory=None, download=download_image,
+                sleep=time.sleep, out=print) -> int:
+    check = check_image(provider, model)
+    for line in describe(check):
+        out(line)
+    if not check.ready:
+        out("Not ready; nothing was sent.")
+        return 2
+    settings = smoke_image_settings(check.provider, check.model)
+    request = ImageRequest(check.model, prompt, aspect or settings["aspect_ratio"], settings["quality"])
+    started = time.monotonic()
+    try:
+        client = (provider_factory or create_image_provider)(check.provider)
+    except ProviderError as exc:
+        _report_error(exc, out)
+        return 2
+    try:
+        try:
+            result = client.generate(request, poll_seconds=poll_seconds, timeout_seconds=timeout_seconds, sleep=sleep)
+        except Exception as exc:  # noqa: BLE001 - every failure is reported, none is retried
+            _report_error(exc, out)
+            return 1
+        out(f"Task ID: {result.remote_request_id}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        saved = []
+        for number, image in enumerate(result.images, 1):
+            partial = output_dir / f"{check.provider}-{stamp}-{number}.part"
+            try:
+                client.validate_media_url(image.url)
+                size = download(image.url, partial)
+                info = inspect_image(partial)
+                target = partial.with_suffix(f".{info.extension}")
+                partial.replace(target)
+            except Exception as exc:  # noqa: BLE001
+                partial.unlink(missing_ok=True)
+                out(f"FAILED: download or validation: {type(exc).__name__}: {exc}")
+                return 1
+            saved.append((target, size, info))
+    finally:
+        client.close()
+    out(f"Provider: {check.provider}")
+    out(f"Model: {check.model}")
+    out(f"Requested: {request.aspect_ratio}, {request.quality} quality")
+    for target, size, info in saved:
+        out(f"Image: {info.width}x{info.height} {info.content_type}, {size} bytes, saved {target}")
+    out(f"Latency: {round((time.monotonic() - started) * 1000)} ms")
+    out("PASSED: image smoke test.")
+    return 0
+
+
 # Run report ------------------------------------------------------------------
 
 def compare_settings(node_type: str, config, payload) -> list[str]:
@@ -229,8 +286,9 @@ def compare_settings(node_type: str, config, payload) -> list[str]:
             problems.append(f"style: {config['style']!r} is not in the prompt")
         if config.get("duration") and f"about {config['duration']} seconds" not in prompt:
             problems.append(f"duration: {config['duration']!r} is not in the prompt")
-    elif payload.get("kind") == "video.generate":
-        for key in ("aspect_ratio", "duration"):
+    elif payload.get("kind") in ("video.generate", "image.generate"):
+        keys = ("aspect_ratio", "duration") if payload["kind"] == "video.generate" else ("aspect_ratio", "quality", "seed")
+        for key in keys:
             if config.get(key) not in (None, "auto"):
                 expect(key, config[key], payload.get(key))
         if isinstance(config.get("prompt"), str) and config["prompt"].strip():
@@ -253,7 +311,11 @@ def run_report(run_id: str, *, out=print) -> int:
         nodes = {node["id"]: node for node in json.loads(run.graph_snapshot)["nodes"]}
         steps = db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id)
                            .order_by(WorkflowRunStep.position)).all()
-        jobs_by_step = {job.step_id: job for job in db.scalars(select(WorkflowJob).where(WorkflowJob.run_id == run.id))}
+        # Image and multi-scene video steps have one job per image or scene.
+        jobs_by_step: dict[str, list] = {}
+        for job in db.scalars(select(WorkflowJob).where(WorkflowJob.run_id == run.id)
+                              .order_by(WorkflowJob.created_at, WorkflowJob.id)):
+            jobs_by_step.setdefault(job.step_id, []).append(job)
         out(f"Run {run.id}: {run.status} (workflow {run.workflow_id}, retry of {run.retry_of_id or '-'})")
         mismatches = 0
         for step in steps:
@@ -265,16 +327,16 @@ def run_report(run_id: str, *, out=print) -> int:
                 out(f"  error: {output['error']}")
             if node.get("config"):
                 out(f"  settings: {json.dumps(node['config'], ensure_ascii=False)[:300]}")
-            job = jobs_by_step.get(step.id)
-            if job is None:
-                continue
-            out(f"  job {job.id}: {job.state}, attempts {job.attempt_count}")
-            out(f"  request: {json.dumps(payload_summary(job.payload), ensure_ascii=False)}")
-            problems = compare_settings(step.node_type, node.get("config"), job.payload)
-            mismatches += len(problems)
-            out("  settings -> request: " + ("consistent" if not problems else "MISMATCH"))
-            for problem in problems:
-                out(f"    {problem}")
+            for job in jobs_by_step.get(step.id, []):
+                scene = job.payload.get("scene_index")
+                label = f" (scene {scene})" if isinstance(scene, int) else ""
+                out(f"  job {job.id}{label}: {job.state}, attempts {job.attempt_count}")
+                out(f"  request: {json.dumps(payload_summary(job.payload), ensure_ascii=False)}")
+                problems = compare_settings(step.node_type, node.get("config"), job.payload)
+                mismatches += len(problems)
+                out("  settings -> request: " + ("consistent" if not problems else "MISMATCH"))
+                for problem in problems:
+                    out(f"    {problem}")
     out("")
     out("Every queued request matches its snapshot settings." if not mismatches else
         f"{mismatches} setting(s) did not reach the request.")
@@ -299,11 +361,20 @@ def main(argv=None) -> int:
     video.add_argument("--poll", type=int, default=10, help="seconds between status checks (default 10)")
     video.add_argument("--output", type=Path, default=OUTPUT_DIR)
     video.add_argument("--live", action="store_true", help="confirm that a paid request may be sent")
+    image = commands.add_parser("image", help="one small real image generation")
+    image.add_argument("--provider")
+    image.add_argument("--model")
+    image.add_argument("--prompt", default=IMAGE_PROMPT)
+    image.add_argument("--aspect", choices=("1:1", "16:9", "9:16"))
+    image.add_argument("--timeout", type=int, default=300, help="seconds to wait for the provider (default 300)")
+    image.add_argument("--poll", type=int, default=3, help="seconds between status checks (default 3)")
+    image.add_argument("--output", type=Path, default=OUTPUT_DIR)
+    image.add_argument("--live", action="store_true", help="confirm that a paid request may be sent")
     report = commands.add_parser("run-report", help="check a workflow run's requests against its snapshot")
     report.add_argument("run_id")
     args = parser.parse_args(argv)
 
-    if args.command in ("text", "video") and not live_intent(args.live):
+    if args.command in ("text", "video", "image") and not live_intent(args.live):
         # Checked before the runtime file loads, so the file cannot turn live tests on.
         print("Refusing to call a paid provider API: pass --live or set REELFORGE_LIVE_TESTS=1 in this shell.")
         return 3
@@ -313,6 +384,9 @@ def main(argv=None) -> int:
         return smoke_text(provider=args.provider, model=args.model, max_tokens=args.max_tokens)
     if args.command == "video":
         return smoke_video(provider=args.provider, model=args.model, prompt=args.prompt, aspect=args.aspect,
+                           timeout_seconds=args.timeout, poll_seconds=args.poll, output_dir=args.output)
+    if args.command == "image":
+        return smoke_image(provider=args.provider, model=args.model, prompt=args.prompt, aspect=args.aspect,
                            timeout_seconds=args.timeout, poll_seconds=args.poll, output_dir=args.output)
     return run_report(args.run_id)
 

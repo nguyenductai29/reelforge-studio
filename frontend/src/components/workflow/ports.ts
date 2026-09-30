@@ -47,3 +47,46 @@ export function outputScenes(output: Record<string, unknown> | null | undefined)
   if (!Array.isArray(scenes)) return null;
   return scenes.filter((scene): scene is Scene => typeof scene?.text === "string");
 }
+
+/** One stored file of an image or video step; `scene_index` is null for prompt-mode images and single clips. */
+export type MediaAsset = {
+  id: string;
+  filename?: string;
+  content_type?: string;
+  provider?: string;
+  model?: string;
+  scene_index?: number | null;
+  duration?: number | null;
+  width?: number;
+  height?: number;
+};
+
+/** The files a step stored, in scene order. A single clip from before scene mode only has `asset_id`. */
+export function outputMedia(
+  output: Record<string, unknown> | null | undefined,
+  key: "image_assets" | "video_assets",
+): MediaAsset[] {
+  const list = output?.[key];
+  const assets = Array.isArray(list)
+    ? list.filter((item): item is MediaAsset => typeof item?.id === "string")
+    : [];
+  if (!assets.length && key === "video_assets" && typeof output?.asset_id === "string") {
+    return [{ id: output.asset_id, filename: typeof output.filename === "string" ? output.filename : undefined }];
+  }
+  return assets;
+}
+
+export type JobState = "queued" | "submitting" | "running" | "succeeded" | "failed" | "needs_attention";
+export type JobRecord = { scene_index?: number | null; operation?: string; status?: JobState; error?: { category?: string } };
+
+/** Per-job progress of a step that makes one file per scene or image; null for single-job steps. */
+export function outputJobs(output: Record<string, unknown> | null | undefined) {
+  const jobs = output?.jobs;
+  const expected = typeof output?.expected === "number" ? output.expected : null;
+  if (!expected || (jobs !== undefined && (typeof jobs !== "object" || jobs === null))) return null;
+  const records = Object.values((jobs as Record<string, JobRecord>) ?? {}).sort(
+    (a, b) => (a.scene_index ?? 0) - (b.scene_index ?? 0) || (a.operation ?? "").localeCompare(b.operation ?? ""),
+  );
+  const done = records.filter((record) => record.status === "succeeded").length;
+  return { expected, records, done };
+}

@@ -22,7 +22,7 @@ from app.workflow import (ExecutionContext, NodeError, NodeExecutionResult, Node
                           default_registry, derive_run_status, parse_graph, resolve_inputs)
 from app.workflow.config import SELECT, ConfigField
 from app.workflow.executor import HANDLER_FAILED_DETAIL
-from app.workflow.nodes import (AssetsNodeHandler, IdeaNodeHandler, PendingAITaskHandler, PendingServiceHandler,
+from app.workflow.nodes import (AssetsNodeHandler, IdeaNodeHandler, ImageNodeHandler, PendingAITaskHandler, PendingServiceHandler,
                                 ReviewNodeHandler, ScenesNodeHandler, TextNodeHandler, UnsupportedNodeHandler,
                                 VideoNodeHandler)
 from app.workflow.nodes.pending import UNSUPPORTED_DETAIL
@@ -89,8 +89,9 @@ class RegistryTest(unittest.TestCase):
                     "review": ReviewNodeHandler}
         for node_type, handler_type in expected.items():
             self.assertIsInstance(default_registry.resolve(node_type), handler_type)
-        for node_type in ("script", "image", "voice", "music"):
+        for node_type in ("script", "voice", "music"):
             self.assertIsInstance(default_registry.resolve(node_type), PendingAITaskHandler)
+        self.assertIsInstance(default_registry.resolve("image"), ImageNodeHandler)
         for node_type in ("subtitle", "render", "publish"):
             self.assertIsInstance(default_registry.resolve(node_type), PendingServiceHandler)
         self.assertIsInstance(default_registry.resolve("scenes"), ScenesNodeHandler)
@@ -323,11 +324,14 @@ class ExecutorTest(DatabaseCase):
                           "aspect_ratio": "9:16", "duration": "8s"})
         with self.Session() as db:
             job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == run.id))
-            self.assertEqual(job.logical_key, f"video:{run.id}:{steps['video'].id}")
+            # One job and one reservation per clip, named after the step (not the run).
+            self.assertEqual(job.logical_key, f"video:{steps['video'].id}:single")
             self.assertEqual((job.payload["prompt"], job.payload["aspect_ratio"], job.payload["credits"]),
                              ("Rừng đêm", "9:16", 10))
             self.assertEqual(db.get(CreditAccount, "space-1").balance, 0)
-            self.assertEqual(db.scalar(select(CreditLedger.reference)), f"reserve:{run.id}")
+            self.assertEqual(db.scalar(select(CreditLedger.reference)), f"video-reserve:{steps['video'].id}:single")
+            self.assertEqual((job.payload["mode"], job.payload["operation"], job.payload["node_id"]),
+                             ("single", "single", "video"))
 
         run = self.finish_video(run.id)
         self.assertEqual((run.status, run.finished_at), ("awaiting_review", None))
@@ -377,13 +381,21 @@ class ExecutorTest(DatabaseCase):
         _, steps = self.start(chain("video", "review"), options=RunOptions(prompt_override="  "))
         self.assertEqual((steps["video"].status, steps["video"].detail),
                          ("blocked", "Dự án cần có chủ đề hoặc prompt để tạo video."))
+        with self.Session() as db:
+            self.assertEqual(db.get(CreditAccount, "space-1").balance, 10)
+
+    @patch.dict(os.environ, VIDEO_ENV)
+    def test_two_video_steps_reserve_separately(self):
+        self.add_video_tool()
+        self.fund(20)
         two_videos = {"nodes": [{"id": "a", "type": "video", "x": 0, "y": 0},
                                 {"id": "b", "type": "video", "x": 0, "y": 0}], "edges": []}
         run, steps = self.start(two_videos)
-        self.assertEqual({s.status for s in steps.values()}, {"blocked"})
-        self.assertEqual(run.status, "blocked")
+        self.assertEqual({s.status for s in steps.values()}, {"queued"})
         with self.Session() as db:
-            self.assertEqual(db.get(CreditAccount, "space-1").balance, 10)
+            self.assertEqual(db.get(CreditAccount, "space-1").balance, 0)
+            self.assertEqual(sorted(db.scalars(select(CreditLedger.reference).where(CreditLedger.delta < 0))),
+                             sorted(f"video-reserve:{steps[key].id}:single" for key in ("a", "b")))
 
     @patch.dict(os.environ, VIDEO_ENV)
     def test_retry_repeats_the_frozen_video_request(self):

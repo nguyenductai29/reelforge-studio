@@ -124,7 +124,7 @@ assert client.get(f"/api/assets/{asset_id}").status_code == 200
 with Session() as db:
     asset = db.get(Asset, asset_id)
     assert (asset.workspace_id, asset.provider, asset.model) == (workspace, "dola", "seedance-2.5")
-    assert db.scalar(select(UsageEvent.tool).where(UsageEvent.reference == f"video:{asset.step_id}")) == "dola/video"
+    assert db.scalar(select(UsageEvent.tool).where(UsageEvent.reference == f"video:{asset.step_id}:single")) == "dola/video"
     assert db.get(CreditAccount, workspace).balance == 10
 second = client.post(f"/api/workflows/{workflow}/runs", json={"project_id":project,"tool_id":tool_id})
 assert second.status_code == 201 and second.json()["status"] == "running", second.text

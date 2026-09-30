@@ -57,7 +57,7 @@ def _job_fields(job) -> dict:
 
 def _live_lease(db, job_id, token):
     job = jobs.live_lease(db, job_id=job_id, lease_token=token)
-    if job is None or db.get(CreditReconciliation, job.step_id) is not None:
+    if job is None or db.get(CreditReconciliation, job.id) is not None:
         return None
     step = db.get(WorkflowRunStep, job.step_id)
     return job if step.status in {QUEUED, RUNNING} else None
@@ -150,7 +150,7 @@ def run_one(*, provider_factory=create_text_provider, session_factory=None, work
         log_event(logger, "job_claimed", **fields, worker_id=worker_id, attempt=attempt,
                   node_type=payload.get("node_type"))
         step = db.get(WorkflowRunStep, job.step_id)
-        if step.status not in (QUEUED, RUNNING) or db.get(CreditReconciliation, step.id) is not None:
+        if step.status not in (QUEUED, RUNNING) or db.get(CreditReconciliation, job.id) is not None:
             jobs.fail_job(db, job_id=job_id, lease_token=token, error="invalid_step_state")
             log_event(logger, "job_failed", level=logging.WARNING, **fields, error_code="invalid_step_state")
             return True

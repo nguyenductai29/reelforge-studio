@@ -100,10 +100,16 @@ export const ACCEPTED_UPLOADS = [
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 /** Approval is recorded on the review step; only approved clips may be published. */
+/** The approved clip to download or publish: a single clip, or the first scene's clip of a multi-scene step. */
 export function approvedAsset(run: Run | undefined): string | null {
-  const video = run?.steps?.find((s) => s.node_type === "video" && typeof s.output?.asset_id === "string");
   const review = run?.steps?.find((s) => s.node_type === "review");
-  return review?.status === "completed" && typeof review.output?.approved_by === "string"
-    ? ((video?.output?.asset_id as string | undefined) ?? null)
-    : null;
+  if (review?.status !== "completed" || typeof review.output?.approved_by !== "string") return null;
+  for (const step of run?.steps ?? []) {
+    if (step.node_type !== "video" || step.status !== "completed") continue;
+    if (typeof step.output?.asset_id === "string") return step.output.asset_id;
+    const clips = step.output?.video_assets;
+    const first = Array.isArray(clips) ? clips.find((clip) => typeof clip?.id === "string") : undefined;
+    if (first) return first.id as string;
+  }
+  return null;
 }

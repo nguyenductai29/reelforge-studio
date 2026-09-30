@@ -73,7 +73,8 @@ export function Reconciliation() {
     setBusy(true);
     try {
       await api<ReconciliationItem>(
-        `admin/reconciliation/${encodeURIComponent(selected.step_id)}/${decision}`,
+        // One decision per paid job: each scene's image or clip is reconciled on its own.
+        `admin/reconciliation/jobs/${encodeURIComponent(selected.job_id)}/${decision}`,
         jsonRequest("POST", { note: note.trim() || undefined }),
       );
       setSelected(null);
@@ -130,11 +131,12 @@ export function Reconciliation() {
       ) : (
         <div className="panel divide-y divide-border">
           {items.map((item) => (
-            <div key={item.step_id} className="flex flex-wrap items-center gap-3 p-4 text-sm">
+            <div key={item.job_id} className="flex flex-wrap items-center gap-3 p-4 text-sm">
               <div className="min-w-0 flex-1 basis-60">
                 <p className="truncate font-medium">{item.workspace_name} · {item.user_email}</p>
                 <p className="mt-1 truncate text-xs text-muted-foreground">
-                  {item.workflow_name} · {item.node_type} · {item.provider} / {item.model}
+                  {item.workflow_name} · {item.node_type}
+                  {item.scene_index != null ? ` · ${r.fields.scene} ${item.scene_index}` : ""} · {item.provider} / {item.model}
                 </p>
                 <p className="mt-1 truncate text-xs text-muted-foreground" title={item.error_message || item.error_category || undefined}>
                   {r.fields.errorMessage}: {item.error_message || item.error_category || "—"}
@@ -184,6 +186,7 @@ export function Reconciliation() {
               <dl className="grid gap-4 sm:grid-cols-2">
                 <Detail label={r.fields.workflow}>{selected.workflow_name}</Detail>
                 <Detail label={r.fields.node}>{selected.node_type} · {selected.node_id}</Detail>
+                {selected.scene_index != null && <Detail label={r.fields.scene}>{selected.scene_index}</Detail>}
                 <Detail label={r.fields.workspaceId}>{selected.workspace_id}</Detail>
                 <Detail label={r.fields.workflowId}>{selected.workflow_id}</Detail>
                 <Detail label={r.fields.runId}>{selected.run_id}</Detail>

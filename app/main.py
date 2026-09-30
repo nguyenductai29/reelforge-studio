@@ -31,6 +31,7 @@ from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default
                           parse_graph)
 from app.workflow.config import ConfigError, check_tools
 from app.workflow.nodes import ReviewNodeHandler
+from app.workflow.results import produced_asset_ids
 from app.workflow.ports import DATA_TYPES, describe_node_types, edge_problems, normalize_edges
 
 
@@ -706,13 +707,13 @@ def list_credit_reconciliation(request: Request, status: Literal["pending", "res
         return reconciliation.list_items(db, status=status, limit=limit, offset=offset)
 
 
-def resolve_credit_reconciliation(step_id, data, request, decision):
+def resolve_credit_reconciliation(data, request, decision, *, step_id=None, job_id=None):
     same_origin(request)
     try:
         with Session.begin() as db:
             admin = admin_for(request, db)
             admin_id = admin.id
-            item, changed = reconciliation.reconcile(db, step_id=step_id, decision=decision,
+            item, changed = reconciliation.reconcile(db, step_id=step_id, job_id=job_id, decision=decision,
                                                       admin_user_id=admin_id, note=data.note)
     except reconciliation.ReconciliationError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
@@ -721,14 +722,25 @@ def resolve_credit_reconciliation(step_id, data, request, decision):
     return item
 
 
+@app.post("/api/admin/reconciliation/jobs/{job_id}/confirm-charge")
+def confirm_job_reconciliation_charge(job_id: str, data: ReconciliationInput, request: Request):
+    return resolve_credit_reconciliation(data, request, "confirmed_charge", job_id=job_id)
+
+
+@app.post("/api/admin/reconciliation/jobs/{job_id}/refund")
+def refund_job_reconciliation(job_id: str, data: ReconciliationInput, request: Request):
+    return resolve_credit_reconciliation(data, request, "refunded", job_id=job_id)
+
+
+# The step routes resolve a step's only paid job; a step with several jobs needs the job routes.
 @app.post("/api/admin/reconciliation/{step_id}/confirm-charge")
 def confirm_reconciliation_charge(step_id: str, data: ReconciliationInput, request: Request):
-    return resolve_credit_reconciliation(step_id, data, request, "confirmed_charge")
+    return resolve_credit_reconciliation(data, request, "confirmed_charge", step_id=step_id)
 
 
 @app.post("/api/admin/reconciliation/{step_id}/refund")
 def refund_reconciliation(step_id: str, data: ReconciliationInput, request: Request):
-    return resolve_credit_reconciliation(step_id, data, request, "refunded")
+    return resolve_credit_reconciliation(data, request, "refunded", step_id=step_id)
 
 
 @app.get("/api/admin")
@@ -1062,7 +1074,7 @@ def workflow_readiness(workflow_id: str, request: Request, tool_id: str | None =
                                    options=RunOptions(tool_id=tool_id))
         checks = default_executor.readiness(context)
         steps = [{"node_id": node["id"], "task": node["type"], "status": check.status, "detail": check.detail,
-                  "code": check.code, "field": check.field}
+                  "code": check.code, "field": check.field, "credits": check.credits}
                  for node, check in checks]
         required = sum(check.credits for _, check in checks)
         return {"workflow_id": workflow.id,
@@ -1078,6 +1090,11 @@ def public_step_output(step):
     if isinstance(output, dict):
         for key in ("submission", "error_count", "video_url", "provider_job"):
             output.pop(key, None)
+        # Multi-job steps (app/media_jobs.py) keep the same private facts per job.
+        if isinstance(output.get("jobs"), dict):
+            output["jobs"] = {job_id: {key: value for key, value in record.items()
+                                       if key not in ("submission", "error_count", "provider_job")}
+                              for job_id, record in output["jobs"].items() if isinstance(record, dict)}
     return output
 
 
@@ -1176,7 +1193,10 @@ def approve_workflow_run(run_id: str, request: Request):
             raise HTTPException(404, "Workflow run not found")
         steps = list(db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id).order_by(WorkflowRunStep.position)))
         reviews = [step for step in steps if step.node_type == "review" and step.status == "awaiting_review"]
-        if run.status != "awaiting_review" or not reviews or not any(step.node_type == "video" and step.status == "completed" for step in steps):
+        # Any finished step that produced media (videos, including one per scene, or images) can be approved.
+        if run.status != "awaiting_review" or not reviews or not any(
+                step.status == "completed" and produced_asset_ids(json.loads(step.output) if step.output else None)
+                for step in steps):
             raise HTTPException(409, "No finished video awaits review")
         now = datetime.now(timezone.utc)
         reviewer = authorize(request, db)
@@ -1222,10 +1242,12 @@ def retry_workflow_run(run_id: str, request: Request):
         project = db.scalar(select(Project).where(Project.id == original.project_id, Project.workspace_id == ws.id))
         if not workflow or not project:
             raise HTTPException(404, "Workflow or project not found")
-        # Only the video request is frozen; text jobs (keyed "text:") are generated again.
-        original_job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == original.id,
-                                                           WorkflowJob.logical_key.like("video:%"))
-                                 .order_by(WorkflowJob.created_at))
+        # Only a single-clip video request is frozen; text jobs (keyed "text:") and clips made
+        # one per scene are generated again from the current settings (docs/MULTI_SCENE_VIDEO.md).
+        video_jobs = db.scalars(select(WorkflowJob).where(WorkflowJob.run_id == original.id,
+                                                          WorkflowJob.logical_key.like("video:%"))
+                                .order_by(WorkflowJob.created_at))
+        original_job = next((job for job in video_jobs if job.payload.get("mode") in (None, "single")), None)
         return persist_run(db, ws, workflow, project, original.graph_snapshot,
                            retry_of_id=original.id, frozen_video=original_job.payload if original_job else None)
 

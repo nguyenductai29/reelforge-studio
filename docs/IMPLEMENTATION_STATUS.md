@@ -4,6 +4,8 @@
 > Updated the same day for Phase 1, the generic workflow execution engine in `app/workflow/` (see [Phase 1 changes](#phase-1-changes)), for Phase 2, the text AI provider layer and seven text nodes (see [Phase 2 changes](#phase-2-changes)), for Phase 3, typed ports that carry structured data along edges (see [Phase 3 changes](#phase-3-changes)), for Phase 3.5, the node configuration inspector (see [Phase 3.5 changes](#phase-35-changes)), and for Phase 3.6, runtime hardening and live smoke-test tooling (see [Phase 3.6 changes](#phase-36-changes) and [Live Provider Verification](#live-provider-verification)).
 > Line numbers drift, so items anchor on file and function names.
 
+> Phases 4 and 5 add AI image generation (Runway `gen4_image`) and multi-scene video (one clip per scene), with one job, one credit reservation and one reconciliation decision per image or clip; see [Phase 4 and 5 changes](#phase-4-and-5-changes), [IMAGE_GENERATION.md](IMAGE_GENERATION.md) and [MULTI_SCENE_VIDEO.md](MULTI_SCENE_VIDEO.md). Both use offline tests only; no paid call was made.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -23,7 +25,10 @@ Each item uses the same fields:
 | Database bootstrap | `app/db.py`, `instance/bootstrap.json` | Builds the SQLAlchemy engine from `database_url` (PostgreSQL/psycopg in production, SQLite in tests). |
 | Durable queue | `app/jobs.py`, `workflow_jobs` table | Idempotent enqueue by `logical_key` and lease-fenced claim, complete and fail. Uses `FOR UPDATE SKIP LOCKED` on PostgreSQL and an atomic `UPDATE … RETURNING` on SQLite. |
 | Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `ports.py`, `config.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler, which declares typed input and output ports and its settings. Before each handler runs, the executor checks the node's settings and resolves its inputs from edges, config and project context; the handler returns a standard result. Long work is queued as a durable job (F10, F12, F13). |
-| Video worker | `app/video_worker.py` (`python -m app.video_worker`) | Claims `video:*` jobs, then submits, polls, downloads and stores a private MP4 asset. It records usage and reports the finished step to the executor, which continues the run. |
+| Video worker | `app/video_worker.py` (`python -m app.video_worker`) | Claims `video:*` jobs, then submits, polls, downloads and stores a private MP4 asset. A single clip is tracked on its step; clips made one per scene run through the shared child-job engine (Phase 5). It records usage and reports the finished step to the executor, which continues the run. |
+| Image worker | `app/image_worker.py` (`python -m app.image_worker`) | Claims `image:*` jobs (one per image) and stores private PNG/JPEG/WEBP assets after checking their bytes (Phase 4). |
+| Child-job engine | `app/media_jobs.py`, `app/workflow/nodes/media.py` | One paid job per image or scene clip, each with its own credit references, and step settlement once every job has finished (Phases 4–5). |
+| Image providers | `app/providers/image/` (`base.py`, `runway.py`), `app/image_files.py` | Provider-neutral `ImageGenerationProvider`; Runway `gen4_image`; download and signature checks for image files. |
 | Video providers | `app/providers/{fal,runware,replicate,runway,dola}.py`, `app/providers/catalog.py` | One text-to-video model per adapter. Each adapter validates the request and checks provider and media URLs (SSRF guard). The catalog is the single provider map (module, client, credential) shared by the API, the video handler and the worker. |
 | Text providers | `app/providers/text/` (`base.py`, `openai.py`, `anthropic.py`, `gemini.py`) | One `TextGenerationProvider` interface; each adapter calls its vendor's HTTP API with `httpx` and returns a normalized `TextResult` (F11). |
 | Text worker | `app/text_worker.py` (`python -m app.text_worker`) | Claims `text:*` jobs, calls the provider outside any DB transaction, settles or refunds credits, and reports the step to the executor, which continues the run. |
@@ -36,7 +41,7 @@ Each item uses the same fields:
 
 ### Data model
 
-Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0011.
+Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0012.
 
 - **Tenancy:** `users`, `login_sessions`, `workspaces`, `memberships(role)`, `workspace_settings`, `system_settings`, `auth_login_attempts`.
 - **Content:** `projects`, `assets` (with lineage `project_id`, `run_id`, `step_id`, `provider`, `model`), `workflows` (graph JSON in `definition`).
@@ -59,8 +64,10 @@ Project (title/topic)
        steps, credit holds and jobs are committed in one DB transaction
   └─ text_worker.run_one()                   (for each text step, as it becomes ready)
        provider.generate() → text + usage → UsageEvent (or refund on failure)
-       WorkflowExecutor.finish_step() → advance_run(): the next text/video steps reserve credits and queue
-  └─ video_worker.run_one()
+       WorkflowExecutor.finish_step() → advance_run(): the next text/image/video steps reserve credits and queue
+  └─ image_worker.run_one()                  (one job per image: per scene, or 1–4 from a prompt)
+       submit → poll → download → check PNG/JPEG/WEBP bytes → Asset + UsageEvent; the step settles when all jobs end
+  └─ video_worker.run_one()                  (one job per clip: single, or one per scene)
        submit → poll every 10 s → download → validate MP4 → Asset + UsageEvent
        WorkflowExecutor.finish_step() → advance_run(): review → awaiting_review
   └─ POST /api/workflow-runs/{id}/approve     review completed → advance_run() · project.status = approved
@@ -68,7 +75,7 @@ Project (title/topic)
   └─ youtube_worker.run_one()                private resumable upload → remote video ID
 ```
 
-The editor saves and displays the remaining node types (script, image, voice, music, subtitle, render, publish). Each has a registered placeholder handler that declares its future ports and blocks the step with a reason; none of them does real work yet.
+The editor saves and displays the remaining node types (script, voice, music, subtitle, render, publish). Each has a registered placeholder handler that declares its future ports and blocks the step with a reason; none of them does real work yet.
 
 ### Phase 1 changes
 
@@ -265,6 +272,63 @@ Phase 3.7 adds explicit system-admin resolution of uncertain paid steps. Existin
 - **Tests:** `tests/test_reconciliation.py` covers API/auth, exact amounts, duplicate/opposite decisions including concurrency, prior usage/refunds, generic text reservations, legacy metadata, retry/asset guards and preservation of all existing tables across 0010→0011. `tests/test_reconciliation_workers.py` covers preflight, provider facts, uncertainty, deterministic refunds, sibling aggregation and stale workers. Existing text tests reflect the deliberate uncertainty-policy changes.
 - **Validation (2026-09-30):** `python -m unittest discover -s tests -v` passed: 274 tests, 5 skipped (two opt-in live tests, one PostgreSQL test without a disposable test URL, two Windows symlink tests). `npm run typecheck` and `npm run build` passed in `frontend/`; `git diff --check` passed. Independent review findings on billed empty text, malformed legacy metadata and run/account lock ordering were fixed and verified. No live paid provider requests or live database migrations were performed. PostgreSQL concurrency still needs validation on a disposable PostgreSQL instance; SQLite tests cover concurrent admin decisions and emitted worker lock order.
 
+### Phase 4 and 5 changes
+
+Phase 4 makes the Image node executable. Phase 5 makes the Video node produce one clip per scene. Both share one child-job engine. No completed phase was redesigned: text jobs, single clips, the reconciliation procedure and the UI keep their behavior. TTS, subtitles, FFmpeg render and publishing executors are not part of this work.
+
+- **Image layer (Phase 4):**
+  - `app/providers/image/` defines `ImageGenerationProvider` and the Runway `gen4_image` adapter (`POST /v1/text_to_image`, task polling), chosen because it reuses the live-verified Runway client and its output host allowlist.
+  - `app/image_files.py` downloads without redirects, caps files at 20 MB and accepts only PNG, JPEG and WEBP by signature; SVG is rejected.
+  - AI tool task `image`; the price is `IMAGE_CREDITS_PER_GENERATION` (default 2).
+- **Image node:** `app/workflow/nodes/image.py`.
+  - Settings: model, aspect ratio (capability-checked), number of images 1–4, quality (720p or 1080p), prompt override, and an advanced seed.
+  - Input priority: override > connected text > scenes (one image per scene, `visual_prompt` else `text`, never joined, `scene_index` kept) > project topic.
+- **Multi-scene video (Phase 5):** `app/workflow/nodes/video.py`.
+  - Mode precedence: override → one clip; scenes with an empty override → one clip per scene; only text → one clip.
+  - The joined `Shot 1: … Shot 2: …` prompt and the one-video-node limit (`unsupported_graph`) are gone.
+  - Retry freezes only a single-clip request of the matching node.
+- **Jobs and credits:**
+  - One durable job per operation: `image:<step>:<op>`, `video:<step>:scene:<n>`, `video:<step>:single`.
+  - Each job has its own references: `<kind>-reserve:<step>:<op>`, `<kind>:<step>:<op>`, `<kind>-refund:<step>:<op>`.
+  - The balance is checked for the whole step, under a lock, before anything is reserved.
+  - New operations never use `reserve:<run_id>`. Legacy video payloads without references keep their per-run references in the worker and in reconciliation.
+- **Child-job engine:** `app/media_jobs.py`.
+  - Handles submit, poll, download, validate and store per job, with each job's facts in `step.output["jobs"]`.
+  - Definite rejections before acceptance are refunded per job. Uncertain outcomes hold credits per job.
+  - Successful files are always kept. The step settles only when all jobs end: `completed` if all succeeded, `needs_attention` if any is uncertain, else `failed`. Nothing is regenerated automatically.
+- **Reconciliation:**
+  - Migration `0012_job_reconciliation` moves the `credit_reconciliations` primary key to `job_id`, keeping an index on `step_id`.
+  - Pending items are per job and carry `scene_index` and `operation`.
+  - New routes `POST /api/admin/reconciliation/jobs/{job_id}/confirm-charge|refund`. The step routes still decide one-job steps and return 409 for steps with several jobs.
+  - A step leaves `needs_attention` once no job is waiting and none was confirmed as charged.
+- **Engine:** `NodeExecutionResult` can carry several `JobRequest`s, each with an optional `logical_key`. The executor enqueues all of them and logs their references.
+- **API:** run responses strip private job facts (`submission`, `provider_job`, `error_count`). Readiness steps include `credits` and use code `per_scene` for per-scene estimates. Approval accepts any completed step that produced media.
+- **Frontend:**
+  - Image and video nodes show a preview grid or clip count and `Generating x/y` progress.
+  - The inspector lists every file with its scene label, a player or preview and a download link, plus a per-job status list.
+  - Readiness text covers per-scene credits. The reconciliation admin decides by job and shows the scene.
+  - The Models page has a Runway · Gen-4 Image preset. Strings are in vi, en and ja.
+- **Tools and operations:**
+  - `python -m app.provider_check --only image` and `python -m app.smoke_test image --live`.
+  - `run-report` lists every job of a step with its scene and compares image settings.
+  - New unit `reelforge-image-worker`, restarted by `deploy.sh`. Multi-scene video needs no new process.
+- **Tests:**
+  - `tests/test_image_provider.py`, `tests/test_image_nodes.py`, `tests/test_image_worker.py`, `tests/test_multi_scene_video.py`. Together they cover:
+    - mode precedence;
+    - per-scene keys and references;
+    - partial failure;
+    - per-job reconciliation;
+    - legacy `reserve:<run>` compatibility;
+    - retry limits;
+    - the mocked Idea → AI Writer → Scene Splitter (3) → Image (3) and Video (3) → Review workflow.
+  - Existing tests were updated for per-step references and for scene mode replacing the joined prompt.
+- **Validation (2026-10-01):**
+  - `python -m unittest discover -s tests -v` passed: 313 tests, 5 skipped (two opt-in live tests, one PostgreSQL test without a disposable test URL, two Windows symlink tests).
+  - `npm run typecheck`, `npm run build` and `git diff --check` passed.
+  - `tests/test_job_reconciliation_migration.py` upgrades 0011 → 0012 → 0011 → 0012 on SQLite with existing decisions.
+  - No live paid request and no live database migration was performed.
+  - The PostgreSQL branch of migration 0012 (dropping the step primary key by its reflected name) is untested without a disposable PostgreSQL database.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -274,14 +338,14 @@ Phase 3.7 adds explicit system-admin resolution of uncertain paid steps. Existin
   - Video provider keys: `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, `RUNWAYML_API_SECRET`, `DOLA_API_KEY`.
   - Text provider keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`.
   - Provider settings: `DOLA_EXPERIMENTAL_ENABLED`, `DOLA_BASE_URL`, `DOLA_MEDIA_BASE_URL`, `DOLA_MAX_JOB_AGE_SECONDS`, `RUNWAY_OUTPUT_HOSTS`.
-  - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
+  - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `IMAGE_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `IMAGE_JOB_MAX_AGE_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
   - YouTube OAuth: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `REELFORGE_TOKEN_ENCRYPTION_KEY`.
   - Runtime file and logs: `REELFORGE_ENV_FILE` (default `.env.runtime`), `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL`.
-  - Live smoke tests: `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`; `REELFORGE_LIVE_TESTS=1` and `REELFORGE_LIVE_VIDEO=1` only from the shell.
+  - Live smoke tests: `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`, `REELFORGE_SMOKE_IMAGE_PROVIDER`, `REELFORGE_SMOKE_IMAGE_MODEL`; `REELFORGE_LIVE_TESTS=1` and `REELFORGE_LIVE_VIDEO=1` only from the shell.
   - Tests only: `REELFORGE_TEST_DATABASE_URL`.
 - **`.env.runtime`** (git-ignored; template `.env.runtime.example`): the environment variables above, loaded by every process (Phase 3.6).
 - **`frontend/instance/config.json`:** `api_base_url`.
-- **Deployment:** systemd units for the API, frontend, video worker, text worker and YouTube worker (`docs/home-server-deployment.md`, `deploy.sh`).
+- **Deployment:** systemd units for the API, frontend, video worker, text worker, image worker and YouTube worker (`docs/home-server-deployment.md`, `deploy.sh`).
 
 ### Where each audited area is covered
 
@@ -290,7 +354,7 @@ Phase 3.7 adds explicit system-admin resolution of uncertain paid steps. Existin
 | 1 | Workflow graph persistence | Fully implemented, including per-node `config` (edited in the inspector since Phase 3.5) and edge ports | F1, F13 |
 | 2 | Workflow execution engine | Fully implemented (modular executor and registry); some run semantics still partial | F10, P1 |
 | 2b | Typed data passing between nodes | Fully implemented (ports, legacy fallback, required inputs) | F12 |
-| 3 | Node types | Partial (19 registered; 12 do real work) | P2, U2, U3 |
+| 3 | Node types | Partial (19 registered; 13 do real work) | P2, U2, U3 |
 | 4 | Job architecture | Fully implemented (core) | F3 |
 | 5 | Video generation providers | Partial | P3 |
 | 5b | Text generation providers | Fully implemented; Gemini live-verified by the operator, other providers mock-tested | F11 |
@@ -321,6 +385,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 | Runware | video | `bytedance:seedance@2.5` | yes | no | — | Mock tested only |
 | Replicate | video | `google/veo-3.1-fast` | yes | no | — | Mock tested only |
 | Runway Dev | video | `gen4.5` | yes | yes, operator-confirmed | Not supplied | Video generation and full workflow passed |
+| Runway Dev | image | `gen4_image` | yes | no | — | Mock tested only (`python -m app.smoke_test image --live` not run) |
 | Dola (experimental) | video | `seedance-2.0`, `seedance-2.5` | yes | no | — | Mock tested only; out of scope |
 | YouTube Data API | publishing | — | yes | no | — | Mock tested only |
 
@@ -725,9 +790,9 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
     - The video request is frozen only when the video step starts together with the run. A video step that waits on a text step is built again from the snapshot's settings, with the new text and the current price.
     - Phase 3.5 fixed the frozen payload when a text branch starts beside the video (it used to freeze the text job).
 - **Missing:**
-  - One worker process per job kind (`video`, `text`). There is no shared worker loop or registry of job kinds.
-  - At most one video node per workflow: the credit reservation reference is `reserve:<run_id>`, and readiness returns `unsupported_graph`.
-  - Several scenes still produce one clip: the video node joins them into one prompt (F12).
+  - One worker process per job kind (`video`, `text`, `image`). Images and scene clips share the child-job engine (`app/media_jobs.py`); text and single clips keep their own loops.
+  - Clips made one per scene are not joined into one video; that waits for the render phase.
+  - A retry regenerates every scene and image; successful files of the failed run are not reused, and there is no per-scene retry.
   - Credits for later steps are held only when those steps become ready. A run can therefore start and then block part-way on `insufficient_credits`; readiness shows the total up front.
   - Run cancellation and re-running a single step.
   - `approval_required = false` has no effect (U6).
@@ -738,7 +803,7 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 ### P2. Node types
 
 - **Files:** `app/workflow/registry.py` (`build_default_registry`), `app/workflow/nodes/*.py`, `app/main.py` (`NODE_TYPES`), `frontend/src/lib/workflow.ts` (`kindOf`, `nodeLibrary`, `EXECUTABLE`, `workflowTemplates`), `frontend/src/components/workflow/studio-node.tsx`.
-- **Current:** all 19 node types the API accepts are registered, each with typed ports (F12). Twelve of them do real work:
+- **Current:** all 19 node types the API accepts are registered, each with typed ports (F12). Thirteen of them do real work:
 
   | Type | Handler | Backend behavior | Notes |
   | --- | --- | --- | --- |
@@ -746,17 +811,18 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
   | `assets` | `AssetsNodeHandler` | Completes locally | Output lists every workspace asset; ports split it by media kind |
   | `scenes` | `ScenesNodeHandler` | Completes locally, free | Splits a script into `scenes` (Phase 3) |
   | `ai_writer`, `summarize`, `rewrite`, `translate`, `hook`, `title`, `cta` | Text handlers (F11) | Durable text job | Outputs `script` / `summary` / `text` / `hook` / `title` / `cta`, plus `provider`, `model`, `usage`, `language` |
-  | `video` | `VideoNodeHandler` | Durable provider job | At most one per workflow; model, aspect ratio, clip length and prompt override are node settings |
+  | `video` | `VideoNodeHandler` | Durable provider job per clip | One clip, or one per scene (Phase 5); model, aspect ratio, clip length and prompt override are node settings |
+  | `image` | `ImageNodeHandler` | Durable provider job per image | One image per scene, or 1–4 from a prompt (Phase 4); Runway `gen4_image` |
   | `review` | `ReviewNodeHandler` | `awaiting_review` when a parent created media, then the approve endpoint; otherwise `blocked` | Always manual |
   | `publish` | `PendingServiceHandler` | Always `blocked` | Publishing is a separate manual flow (P7) |
   | `subtitle`, `render` | `PendingServiceHandler` | Always `blocked` | "No executor" |
-  | `script`, `image`, `voice`, `music` | `PendingAITaskHandler` | Always `blocked` | "Provider not connected" or "no AI tool selected" |
+  | `script`, `voice`, `music` | `PendingAITaskHandler` | Always `blocked` | "Provider not connected" or "no AI tool selected" |
   | any other type | `UnsupportedNodeHandler` | `blocked`, `error.code = unsupported_node_type` | Only reachable from old snapshots |
 
   - **Library:** 60 entries. 19 map to backend types; the other 41 are "Sắp có" (U2).
   - **Templates:** 4 of 10 have runnable graphs. `social-video`, `youtube-short` and `tiktok-video` are all `idea → video → review`; the fourth is `blank`.
 - **Missing:**
-  - Real handlers for 7 types. Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
+  - Real handlers for 6 types. Adding one means writing a `NodeHandler` subclass with its ports and registering it in place of its placeholder; `app/main.py` needs no change.
   - No template uses the text or scenes nodes yet.
 - **Depends on:** F10, P1, F13, P5.
 
@@ -1098,12 +1164,10 @@ These screens or controls are disabled and labelled "Sắp có" (coming soon), o
 ### M2. Executors for script, image, voice, music, subtitle, render and publish
 
 - **Files to change:** new handlers in `app/workflow/nodes/` registered in `app/workflow/registry.py`, a generalized worker (today `app/video_worker.py` and `app/text_worker.py`) that reports through `WorkflowExecutor.finish_step`, and new provider modules.
-- **Current:** all seven node types have placeholder handlers that always return `blocked`, but they already declare their ports (F12). Text generation (F11) and rule-based scene splitting (F12) exist.
+- **Current:** image generation (Phase 4) and one clip per scene (Phase 5) are done; see [Phase 4 and 5 changes](#phase-4-and-5-changes). The six other node types have placeholder handlers that always return `blocked`, but they already declare their ports (F12). Text generation (F11) and rule-based scene splitting (F12) exist.
 - **Missing:**
   - Script generation: `script` can subclass `TextNodeHandler`. That is a product decision, since it would start charging existing workflows.
   - An AI scene splitter with better visual prompts, using JSON output from the text layer, in place of the rule-based one.
-  - One clip per scene: several video jobs per run, which needs per-step credit references instead of `reserve:<run_id>`.
-  - Image generation.
   - Text-to-speech and music.
   - Subtitles, generated from the script or with speech recognition.
   - FFmpeg render and compose: timeline, captions and audio mix.

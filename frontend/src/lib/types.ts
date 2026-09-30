@@ -111,6 +111,9 @@ export type ReconciliationItem = {
   step_id: string;
   run_id: string;
   job_id: string;
+  /** Set for one scene's image or clip; each such job is decided on its own. */
+  scene_index: number | null;
+  operation: string | null;
   workspace_id: string;
   workspace_name: string;
   user_email: string;
@@ -160,6 +163,8 @@ export type ReadinessStep = {
   /** For invalid settings or inputs: a stable error code and the setting or port it concerns. */
   code?: string | null;
   field?: string | null;
+  /** Credits this step holds when it starts; per scene when `code` is "per_scene". */
+  credits?: number;
 };
 export type Readiness = {
   workflow_id: string;

@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { kindIcon } from "./kind-icon";
-import { outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
+import { outputJobs, outputMedia, outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
 import type { NodeStatus, StudioNode } from "./types";
 
 const kindWidth: Record<NodeKind, string> = {
@@ -103,10 +103,40 @@ function Preview({ data }: { data: StudioNode["data"] }) {
   const running = data.status === "running" || data.status === "queued";
 
   switch (kind) {
-    case "image":
+    case "image": {
+      const images = outputMedia(output, "image_assets");
+      const progress = outputJobs(output);
+      if (images.length) {
+        return (
+          <div className="space-y-1">
+            <div className={cn("grid gap-1 overflow-hidden rounded-lg", images.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+              {images.slice(0, 4).map((image) => (
+                <img key={image.id} src={assetUrl(image.id)} alt="" loading="lazy" className="aspect-video w-full rounded bg-black object-cover" />
+              ))}
+            </div>
+            {(images.length > 1 || (progress && progress.done < progress.expected)) && (
+              <p className="text-[10px] text-muted-foreground">
+                {progress && progress.done < progress.expected
+                  ? t.editor.node.progress(progress.done, progress.expected)
+                  : t.editor.node.images(images.length)}
+              </p>
+            )}
+          </div>
+        );
+      }
+      return (
+        <div className="flex aspect-video w-full items-center justify-center rounded-lg bg-surface-2">
+          <span className="px-2 text-center text-[10px] text-muted-foreground">
+            {running ? (progress ? t.editor.node.progress(progress.done, progress.expected) : t.editor.node.generating) : t.editor.node.previewHere}
+          </span>
+        </div>
+      );
+    }
     case "video":
     case "render": {
-      const assetId = typeof output?.asset_id === "string" ? output.asset_id : null;
+      const clips = outputMedia(output, "video_assets");
+      const progress = outputJobs(output);
+      const assetId = clips[0]?.id ?? (typeof output?.asset_id === "string" ? output.asset_id : null);
       return (
         <div
           className={cn(
@@ -121,10 +151,17 @@ function Preview({ data }: { data: StudioNode["data"] }) {
               <span className="absolute flex size-8 items-center justify-center rounded-full bg-background/70 backdrop-blur">
                 <Play className="size-3.5" />
               </span>
+              {(clips.length > 1 || (progress && progress.done < progress.expected)) && (
+                <span className="absolute bottom-1 right-1 rounded bg-background/80 px-1.5 py-0.5 text-[10px] backdrop-blur">
+                  {progress && progress.done < progress.expected
+                    ? t.editor.node.progress(progress.done, progress.expected)
+                    : t.editor.node.clips(clips.length)}
+                </span>
+              )}
             </>
           ) : (
             <span className="px-2 text-center text-[10px] text-muted-foreground">
-              {running ? t.editor.node.generating : t.editor.node.previewHere}
+              {running ? (progress ? t.editor.node.progress(progress.done, progress.expected) : t.editor.node.generating) : t.editor.node.previewHere}
             </span>
           )}
         </div>

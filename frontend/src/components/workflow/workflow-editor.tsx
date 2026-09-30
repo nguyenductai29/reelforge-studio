@@ -84,7 +84,7 @@ import { EXECUTABLE, MAX_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } fro
 import { kindIcon } from "./kind-icon";
 import { ConfigFields, type ConfigChange, type WorkspaceDefaults } from "./config-fields";
 import { blocksSaving, configErrors, toolChoices, withValue } from "./node-config";
-import { canConnect, edgeId, outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
+import { canConnect, edgeId, outputJobs, outputMedia, outputScenes, outputText, portLabel, portsOf, type PortCatalog } from "./ports";
 import { NodeActionsContext, NodeContext, StudioNodeComponent, type NodeActions } from "./studio-node";
 import { detailText, readinessText, runStatusToNode, type NodeStatus, type StudioNode } from "./types";
 
@@ -279,11 +279,17 @@ function Inspector({
               ? i.textHint
               : d.type === "scenes"
                 ? i.scenesHint
-                : null;
-  const assetId = typeof step?.output?.asset_id === "string" ? step.output.asset_id : null;
+                : d.type === "image"
+                  ? i.imageHint
+                  : null;
   const generatedText = TEXT_NODES.has(d.type) ? outputText(step?.output, ports) : null;
   const scenes = d.type === "scenes" ? outputScenes(step?.output) : null;
-  const hasResult = Boolean(assetId || generatedText || (scenes && scenes.length));
+  const media =
+    d.type === "image" ? outputMedia(step?.output, "image_assets") : d.type === "video" ? outputMedia(step?.output, "video_assets") : [];
+  // A clip from before scene mode, or one prompt-mode clip, keeps the single player.
+  const singleClip = d.type === "video" && media.length === 1 && media[0]!.scene_index == null ? media[0]! : null;
+  const jobs = d.type === "image" || d.type === "video" ? outputJobs(step?.output) : null;
+  const hasResult = Boolean(generatedText || (scenes && scenes.length) || media.length || jobs);
   // The model this node will use: its own setting, else the first enabled model for the task.
   const toolField = ports.config.find((field) => field.type === "tool");
   const toolId = toolField ? d.config?.[toolField.key] : undefined;
@@ -416,9 +422,60 @@ function Inspector({
 
         {hasResult && (
           <Section title={i.result}>
-            {assetId && (
+            {singleClip ? (
               <div className="overflow-hidden rounded-lg border border-border bg-black">
-                <video src={assetUrl(assetId)} controls playsInline preload="metadata" className="max-h-72 w-full" />
+                <video src={assetUrl(singleClip.id)} controls playsInline preload="metadata" className="max-h-72 w-full" />
+              </div>
+            ) : (
+              media.length > 0 && (
+                <div className={cn("grid gap-3", d.type === "image" && "grid-cols-2")}>
+                  {media.map((asset, position) => (
+                    <figure key={asset.id} className="space-y-1">
+                      <div className="overflow-hidden rounded-lg border border-border bg-black">
+                        {d.type === "image" ? (
+                          // Private assets are streamed by the API, so the plain element is used.
+                          <img src={assetUrl(asset.id)} alt="" loading="lazy" className="aspect-video w-full object-cover" />
+                        ) : (
+                          <video src={assetUrl(asset.id)} controls playsInline preload="metadata" className="max-h-56 w-full" />
+                        )}
+                      </div>
+                      <figcaption className="flex items-start justify-between gap-2 text-[11px] text-muted-foreground">
+                        <span className="min-w-0 break-words">
+                          <span className="font-medium text-foreground">
+                            {asset.scene_index != null ? i.sceneLabel(asset.scene_index) : i.fileLabel(position + 1)}
+                          </span>
+                          {asset.provider ? ` · ${asset.provider}${asset.model ? ` / ${asset.model}` : ""}` : ""}
+                          {asset.duration ? ` · ${i.seconds(Math.round(asset.duration))}` : ""}
+                          {asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}
+                        </span>
+                        <a href={assetUrl(asset.id)} download className="shrink-0 text-primary hover:underline">
+                          {i.download}
+                        </a>
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
+              )
+            )}
+            {jobs && jobs.records.some((record) => record.status !== "succeeded") && (
+              <div>
+                <FieldLabel>{i.jobsTitle(jobs.done, jobs.expected)}</FieldLabel>
+                <ul className="space-y-1 rounded-lg border border-border bg-surface p-3 text-xs">
+                  {jobs.records.map((record, position) => (
+                    <li key={record.operation ?? position} className="flex justify-between gap-3">
+                      <span>{record.scene_index != null ? i.sceneLabel(record.scene_index) : i.fileLabel(position + 1)}</span>
+                      <span
+                        className={cn(
+                          record.status === "failed" && "text-destructive",
+                          record.status === "needs_attention" && "text-warning",
+                          record.status === "succeeded" && "text-success",
+                        )}
+                      >
+                        {i.jobStatus[record.status ?? "queued"]}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
             {generatedText && (

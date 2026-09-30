@@ -58,10 +58,16 @@ class NodeError:
 
 @dataclass(frozen=True)
 class JobRequest:
-    """Durable work to enqueue once the step exists; ``kind`` prefixes the job key (``video:<run>:<step>``)."""
+    """Durable work to enqueue once the step exists.
+
+    The job's logical key, which makes enqueueing idempotent, is ``logical_key``
+    when given (one per scene, e.g. ``image:<step>:scene:3``), else
+    ``<kind>:<run>:<step>``.
+    """
 
     kind: str
     payload: Mapping[str, Any]
+    logical_key: str | None = None
 
 
 @dataclass
@@ -69,8 +75,9 @@ class NodeExecutionResult:
     """What a handler decided for one node.
 
     ``detail`` is the user-facing sentence stored on the step. ``metadata`` is
-    for the caller and is not persisted. ``job_id`` is filled in by the executor
-    after it enqueues ``job``.
+    for the caller and is not persisted. A queued result carries one ``job`` or
+    several ``jobs`` (one per scene or image); ``job_id`` and ``job_ids`` are
+    filled in by the executor after it enqueues them.
     """
 
     status: str
@@ -81,11 +88,16 @@ class NodeExecutionResult:
     job: JobRequest | None = None
     job_id: str | None = None
     asset_ids: tuple[str, ...] = ()
+    jobs: tuple[JobRequest, ...] = ()
+    job_ids: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.status not in STEP_STATUSES:
             raise ValueError(f"Unknown step status: {self.status}")
-        if (self.status == QUEUED) != (self.job is not None):
+        self.jobs = tuple(self.jobs)
+        if self.job is not None and self.jobs:
+            raise ValueError("A result carries either one job or several jobs")
+        if (self.status == QUEUED) != bool(self.all_jobs):
             raise ValueError("Queued results, and only queued results, carry a job")
         if self.status == FAILED and self.error is None:
             raise ValueError("Failed results need an error")
@@ -99,9 +111,16 @@ class NodeExecutionResult:
     def blocked(cls, detail: str, error: NodeError | None = None, **extra) -> "NodeExecutionResult":
         return cls(BLOCKED, detail, error=error, **extra)
 
+    @property
+    def all_jobs(self) -> tuple[JobRequest, ...]:
+        return (self.job,) if self.job is not None else self.jobs
+
     @classmethod
-    def queued(cls, detail: str, job: JobRequest, output: Mapping[str, Any] | None = None, **extra) -> "NodeExecutionResult":
-        return cls(QUEUED, detail, output, job=job, **extra)
+    def queued(cls, detail: str, job: JobRequest | list[JobRequest] | tuple[JobRequest, ...],
+               output: Mapping[str, Any] | None = None, **extra) -> "NodeExecutionResult":
+        if isinstance(job, JobRequest):
+            return cls(QUEUED, detail, output, job=job, **extra)
+        return cls(QUEUED, detail, output, jobs=tuple(job), **extra)
 
     @classmethod
     def awaiting_review(cls, detail: str, **extra) -> "NodeExecutionResult":

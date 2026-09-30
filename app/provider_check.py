@@ -1,11 +1,14 @@
 """Pre-flight check before the live smoke tests: is each selected provider ready? No request is made.
 
     python -m app.provider_check [--text openai] [--text-model gpt-4.1-mini]
-                                 [--video runware] [--video-model bytedance:seedance@2.5] [--only text|video]
+                                 [--video runware] [--video-model bytedance:seedance@2.5]
+                                 [--image runway] [--image-model gen4_image] [--only text|video|image]
 
 Providers and models come from the options, else ``REELFORGE_SMOKE_TEXT_PROVIDER`` /
 ``REELFORGE_SMOKE_TEXT_MODEL`` and ``REELFORGE_SMOKE_VIDEO_PROVIDER`` / ``REELFORGE_SMOKE_VIDEO_MODEL``,
-else the first provider whose key is set. The runtime file (``.env.runtime``) is
+else the first provider whose key is set. Images use ``REELFORGE_SMOKE_IMAGE_PROVIDER`` /
+``REELFORGE_SMOKE_IMAGE_MODEL`` and are checked with ``--only image``, ``--image`` or
+that variable. The runtime file (``.env.runtime``) is
 loaded first, as in the API and workers. Keys are never printed: a configured key
 shows an 8-character fingerprint, which lets you compare processes.
 
@@ -18,6 +21,7 @@ import re
 import sys
 
 from app.providers.catalog import VIDEO_PROVIDERS, ORIENTATION_ASPECT, video_provider_config_issue
+from app.providers.image import IMAGE_PROVIDERS, image_provider_config_issue
 from app.providers.text import TEXT_PROVIDERS
 from app.runtime_env import key_fingerprint, load_runtime_env
 
@@ -117,6 +121,38 @@ def check_video(provider: str | None = None, model: str | None = None) -> Provid
     return check
 
 
+def check_image(provider: str | None = None, model: str | None = None) -> ProviderCheck:
+    name = _pick(provider, "REELFORGE_SMOKE_IMAGE_PROVIDER", IMAGE_PROVIDERS)
+    check = ProviderCheck("image", name)
+    if name is None:
+        check.issues.append(f"no image provider selected and no key set ({', '.join(spec.key_env for spec in IMAGE_PROVIDERS.values())})")
+        return check
+    spec = IMAGE_PROVIDERS.get(name)
+    if spec is None:
+        check.issues.append(f"unsupported image provider {name!r} (supported: {', '.join(IMAGE_PROVIDERS)})")
+        return check
+    check.key_env = spec.key_env
+    check.key_state, check.fingerprint = _key_state(spec.key_env)
+    models = spec.models
+    check.model = model or os.environ.get("REELFORGE_SMOKE_IMAGE_MODEL", "").strip() or next(iter(models))
+    check.model_state = "recognized" if check.model in models else "unsupported"
+    if check.model_state == "unsupported":
+        check.issues.append(f"model {check.model!r} is not supported by the {name} image adapter (supported: {', '.join(models)})")
+    if check.key_state == "invalid":
+        check.issues.append(f"{spec.key_env} is invalid")
+    elif issue := image_provider_config_issue(name):
+        check.issues.append(f"{spec.key_env} is missing" if issue[0] == "missing_key" else
+                            _PROBLEMS.get((name, issue[0]), f"{name}: {issue[0]}"))
+    return check
+
+
+def smoke_image_settings(provider: str, model: str) -> dict:
+    """The cheapest image request: square if the model allows it, lowest quality, one image."""
+    capabilities = IMAGE_PROVIDERS[provider].models[model]
+    aspect = "1:1" if "1:1" in capabilities.aspect_ratios else capabilities.aspect_ratios[0]
+    return {"aspect_ratio": aspect, "quality": capabilities.qualities[0]}
+
+
 def _numbers(text: str) -> int:
     match = re.search(r"\d+", text)
     value = int(match.group()) if match else 0
@@ -156,16 +192,23 @@ def describe(check: ProviderCheck) -> list[str]:
         audio = "no audio" if settings["generate_audio"] is False else "provider default audio"
         lines.append(f"Smoke request: {settings['duration']}, {settings['resolution']}, "
                      f"{settings['aspect_ratio']}, {audio}")
+    if check.modality == "image" and check.model_state == "recognized":
+        settings = smoke_image_settings(check.provider, check.model)
+        lines.append(f"Smoke request: one image, {settings['aspect_ratio']}, {settings['quality']} quality")
     lines += [f"Problem: {issue}" for issue in check.issues]
     return lines
 
 
-def run_checks(*, text=None, text_model=None, video=None, video_model=None, only=None) -> list[ProviderCheck]:
+def run_checks(*, text=None, text_model=None, video=None, video_model=None, image=None, image_model=None,
+               only=None) -> list[ProviderCheck]:
     checks = []
     if only in (None, "text"):
         checks.append(check_text(text, text_model))
     if only in (None, "video"):
         checks.append(check_video(video, video_model))
+    # Images are checked when asked for, so text/video-only setups stay "ready".
+    if only == "image" or (only is None and (image or os.environ.get("REELFORGE_SMOKE_IMAGE_PROVIDER", "").strip())):
+        checks.append(check_image(image, image_model))
     return checks
 
 
@@ -195,11 +238,13 @@ def main(argv=None) -> int:
     parser.add_argument("--text-model")
     parser.add_argument("--video", help="video provider: fal, runware, replicate, runway or dola")
     parser.add_argument("--video-model")
-    parser.add_argument("--only", choices=("text", "video"))
+    parser.add_argument("--image", help="image provider: runway")
+    parser.add_argument("--image-model")
+    parser.add_argument("--only", choices=("text", "video", "image"))
     args = parser.parse_args(argv)
     env_file, _ = load_runtime_env()
     checks = run_checks(text=args.text, text_model=args.text_model, video=args.video, video_model=args.video_model,
-                        only=args.only)
+                        image=args.image, image_model=args.image_model, only=args.only)
     return 0 if report(checks, env_file) else 1
 
 

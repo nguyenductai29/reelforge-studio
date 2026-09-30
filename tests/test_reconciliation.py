@@ -83,7 +83,7 @@ class AuditHandler(logging.Handler):
         fields = record.fields
         assert {'admin_user_id','workspace_id','run_id','step_id','job_id','credits','provider'} <= fields.keys()
         with Session() as db:
-            assert db.get(CreditReconciliation, fields['step_id']) is not None  # log after commit
+            assert db.scalar(select(CreditReconciliation).where(CreditReconciliation.step_id == fields['step_id'])) is not None  # log after commit
         recorded_events.append((record.event, fields['step_id']))
 audit_logger = logging.getLogger('app.reconciliation')
 audit_logger.setLevel(logging.INFO)
@@ -151,9 +151,9 @@ assert resolve(step, 'confirm-charge').status_code == 409
 assert admin.get('/api/admin/reconciliation').json()['total'] == 0
 assert admin.get('/api/admin/reconciliation?status=resolved').json()['items'][0]['step_id'] == step
 with Session() as db:
-    decision = db.get(CreditReconciliation, step)
+    decision = db.scalar(select(CreditReconciliation).where(CreditReconciliation.step_id == step))
     assert decision.decision == 'refunded' and decision.credits == 10
-    assert db.scalar(select(func.count()).select_from(CreditLedger).where(CreditLedger.reference == f'refund:{run}')) == 1
+    assert db.scalar(select(func.count()).select_from(CreditLedger).where(CreditLedger.reference == f'video-refund:{step}:single')) == 1
 assert admin.get(f'/api/workflow-runs/{run}').json()['status'] == 'failed'
 retried = admin.post(f'/api/workflow-runs/{run}/retry')
 assert retried.status_code == 201, retried.text
@@ -162,7 +162,7 @@ assert new_run != run and balance() == before
 with Session() as db:
     new_job = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == new_run))
     assert new_job.id != job and new_job.step_id != step
-    assert db.scalar(select(CreditLedger.delta).where(CreditLedger.reference == f'reserve:{new_run}')) == -10
+    assert db.scalar(select(CreditLedger.delta).where(CreditLedger.reference == f'video-reserve:{new_job.step_id}:single')) == -10
 video_worker.run_one(client=Rejected(), poll_seconds=0)
 assert admin.get('/api/admin/reconciliation').json()['total'] == 0  # deterministic failure excluded
 
@@ -175,7 +175,7 @@ assert resolve(charged_step, 'confirm-charge').status_code == 200
 assert balance() == before
 assert resolve(charged_step, 'refund').status_code == 409
 with Session() as db:
-    events = list(db.scalars(select(UsageEvent).where(UsageEvent.reference == f'video:{charged_step}')))
+    events = list(db.scalars(select(UsageEvent).where(UsageEvent.reference == f'video:{charged_step}:single')))
     assert len(events) == 1 and events[0].credits == 10
 assert admin.get(f'/api/workflow-runs/{charged_run}').json()['status'] == 'needs_attention'
 assert admin.post(f'/api/workflow-runs/{charged_run}/retry').status_code == 409
@@ -187,7 +187,7 @@ with ThreadPoolExecutor(max_workers=2) as pool:
     results = list(pool.map(lambda action: resolve(race_step, action), ['refund','confirm-charge']))
 assert sorted(r.status_code for r in results) == [200,409], [(r.status_code,r.text) for r in results]
 with Session() as db:
-    decision = db.get(CreditReconciliation, race_step)
+    decision = db.scalar(select(CreditReconciliation).where(CreditReconciliation.step_id == race_step))
     assert balance() == before + (10 if decision.decision == 'refunded' else 0)
 
 # Same-action concurrency still creates only one refund.
@@ -212,25 +212,26 @@ assert resolve(legacy_step, 'refund').status_code == 200
 # A prior matching refund/usage can be acknowledged but never duplicated/reversed.
 prior_run, prior_step, _ = create_attention()
 with Session.begin() as db:
-    usage.post_credit(db, workspace, 10, 'video_refund', f'refund:{prior_run}')
+    usage.post_credit(db, workspace, 10, 'video_refund', f'video-refund:{prior_step}:single')
 before = balance()
 assert resolve(prior_step, 'confirm-charge').status_code == 409
 assert resolve(prior_step, 'refund').status_code == 200 and balance() == before
 prior_run, prior_step, _ = create_attention()
 with Session.begin() as db:
     db.add(UsageEvent(id='prior-usage',workspace_id=workspace,tool='fal/video',units=1,credits=10,
-                      reference=f'video:{prior_step}',created_at=datetime.now(timezone.utc)))
+                      reference=f'video:{prior_step}:single',created_at=datetime.now(timezone.utc)))
 before = balance()
 assert resolve(prior_step, 'refund').status_code == 409
 assert resolve(prior_step, 'confirm-charge').status_code == 200 and balance() == before
 with Session() as db:
-    assert db.scalar(select(func.count()).select_from(UsageEvent).where(UsageEvent.reference == f'video:{prior_step}')) == 1
+    assert db.scalar(select(func.count()).select_from(UsageEvent).where(UsageEvent.reference == f'video:{prior_step}:single')) == 1
 
 # A generic text reservation can also be resolved; no video handler involved.
 text_run, text_step, text_job = create_attention()
 with Session.begin() as db:
     j = db.get(WorkflowJob,text_job); p = j.payload
     p.update(kind='text.generate',node_type='ai_writer',provider='gemini',model='test-text',credits=1)
+    for key in ('reserve_reference','usage_reference','refund_reference','mode','operation'): p.pop(key)
     j.payload_json = json.dumps(p); j.logical_key = f'text:{text_run}:{text_step}'
     db.get(WorkflowRunStep,text_step).node_type = 'ai_writer'
     usage.post_credit(db,workspace,10,'video_refund',f'refund:{text_run}')
@@ -287,7 +288,7 @@ with Session.begin() as db: usage.post_credit(db,workspace,2_000_000_000,'test',
 assert resolve(cap_step,'refund').status_code == 409
 assert balance() == 2_000_000_000
 with Session() as db:
-    assert db.get(CreditReconciliation,cap_step) is None
+    assert db.scalar(select(CreditReconciliation).where(CreditReconciliation.step_id == cap_step)) is None
     assert db.get(WorkflowRunStep,cap_step).status == 'needs_attention'
     for ledger_id, original in original_ledger.items():
         row = db.get(CreditLedger,ledger_id)

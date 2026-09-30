@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 KEYS = {"OPENAI_API_KEY": "sk-test", "FAL_KEY": "fal-test", "RUNWARE_API_KEY": "rw-test",
         "TEXT_CREDITS_PER_GENERATION": "1", "VIDEO_CREDITS_PER_CLIP": "10"}
 SCRIPT = "Cảnh 1: Rừng đêm tĩnh lặng.\n\nCảnh 2: Một con cú bay qua.\n\nCảnh 3: Bình minh lên."
-EXECUTABLE = ("ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta", "scenes", "video")
+EXECUTABLE = ("ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta", "scenes", "image", "video")
 
 
 def node(node_id, node_type, config=None):
@@ -80,7 +80,7 @@ class SchemaTest(unittest.TestCase):
                     self.assertTrue({"key", "type", "label", "default", "required", "advanced", "code"} <= set(field))
                     # Every default passes its own validation.
                     default_registry.resolve(node_type).validate_config({field["key"]: field["default"]})
-        for node_type in ("idea", "assets", "review", "script", "image", "publish"):
+        for node_type in ("idea", "assets", "review", "script", "publish"):
             self.assertEqual(catalog[node_type]["config"], [])
 
     def test_fields_match_the_editor_contract(self):
@@ -250,6 +250,11 @@ class ConfiguredRunTest(unittest.TestCase):
         with self.Session() as db:
             return db.scalar(select(WorkflowJob).where(WorkflowJob.step_id == step.id)).payload
 
+    def payloads(self, step):
+        with self.Session() as db:
+            jobs = db.scalars(select(WorkflowJob).where(WorkflowJob.step_id == step.id))
+            return sorted((job.payload for job in jobs), key=lambda payload: payload["index"])
+
     def readiness(self, graph, registry=None):
         with self.Session() as db:
             context = ExecutionContext(db, workspace=db.get(Workspace, "space-1"), graph=graph)
@@ -295,7 +300,8 @@ class ConfiguredRunTest(unittest.TestCase):
         payload = self.payload(steps["video"])
         self.assertEqual((payload["provider"], payload["model_id"], payload["aspect_ratio"], payload["duration"]),
                          ("runware", "bytedance:seedance@2.5", "16:9", "6s"))
-        self.assertTrue(payload["prompt"].startswith("Shot 1: Rừng đêm tĩnh lặng. Một con cú bay qua. Cinematic"))
+        self.assertEqual([item["prompt"] for item in self.payloads(steps["video"])],
+                         [scene["visual_prompt"] for scene in scenes])
         self.assertEqual(json.loads(steps["video"].output)["aspect_ratio"], "16:9")
 
     def test_video_prompt_override_beats_connected_scenes(self):
