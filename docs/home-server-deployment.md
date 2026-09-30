@@ -555,6 +555,23 @@ Logs:
 journalctl -u reelforge-frontend -f
 ```
 
+### Create the first administrator
+
+Do this on a fresh database before adding the public Cloudflare route in section 14. Until an account exists, whoever opens the sign-in page first can create the administrator.
+
+```bash
+cd ~/apps/reelforge-studio/frontend
+npm run create-admin
+```
+
+The command needs the API running. It asks for the email and a password of at least 12 characters, hiding the password as you type, and creates the administrator with a Trial studio. It calls the same API as the sign-in page, at the address in `frontend/instance/config.json`. For a non-interactive release script, pass the credentials as environment variables instead:
+
+```bash
+ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='a-long-password' npm run create-admin
+```
+
+Once an account exists, the command prints that there is nothing to do and exits successfully, so it is safe to keep in a deploy script.
+
 ---
 
 ## 11. Persistent media on the HDD
@@ -972,6 +989,7 @@ systemctl is-active reelforge-youtube-worker
 Before treating the service as production-ready:
 
 - Keep `instance/bootstrap.json` outside Git.
+- Create the administrator with `npm run create-admin` before the public route exists.
 - Use a strong unique PostgreSQL password for `studio_admin`.
 - Keep FastAPI bound to `127.0.0.1:8000`.
 - Keep Next.js bound to localhost; expose only through Cloudflare Tunnel.

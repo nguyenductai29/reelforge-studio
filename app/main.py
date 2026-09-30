@@ -241,6 +241,8 @@ class GraphNode(BaseModel):
     type: str
     x: float
     y: float
+    # Display name chosen in the editor; execution only depends on type.
+    label: str | None = Field(default=None, max_length=80)
 
 
 class GraphEdge(BaseModel):
@@ -405,7 +407,8 @@ def same_origin(request: Request):
 
 
 def public_project(p):
-    return {"id": p.id, "title": p.title, "topic": p.topic, "status": p.status}
+    return {"id": p.id, "title": p.title, "topic": p.topic, "status": p.status,
+            "created_at": p.created_at.isoformat() if p.created_at else None}
 
 
 @app.get("/")
@@ -511,7 +514,7 @@ def dashboard(request: Request):
         user = authorize(request, db)
         subscription = db.get(Subscription, ws.id)
         plan = db.get(Plan, subscription.plan_code) if subscription else None
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": parse_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
 
 
 @app.get("/api/settings")
@@ -1201,6 +1204,16 @@ def list_workflow_runs(workflow_id: str, request: Request):
             raise HTTPException(404, "Workflow not found")
         runs = db.scalars(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow.id,
             WorkflowRun.workspace_id == ws.id).order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc()).limit(30))
+        return [public_run(run) for run in runs]
+
+
+@app.get("/api/workflow-runs")
+def list_recent_runs(request: Request):
+    """Latest runs across every workflow, for activity and project status views."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        runs = db.scalars(select(WorkflowRun).where(WorkflowRun.workspace_id == ws.id)
+                          .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc()).limit(100))
         return [public_run(run) for run in runs]
 
 

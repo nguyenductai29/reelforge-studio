@@ -1,0 +1,154 @@
+export type NodeType =
+  | "idea"
+  | "assets"
+  | "script"
+  | "scenes"
+  | "image"
+  | "video"
+  | "voice"
+  | "music"
+  | "subtitle"
+  | "render"
+  | "review"
+  | "publish";
+
+export type GraphNode = { id: string; type: NodeType; x: number; y: number; label?: string | null };
+export type Graph = { nodes: GraphNode[]; edges: { source: string; target: string }[] };
+export type Workflow = { id: string; name: string; graph: Graph };
+
+export type Project = { id: string; title: string; topic: string; status: string; created_at: string | null };
+export type Asset = {
+  id: string;
+  filename: string;
+  bytes: number;
+  content_type: string;
+  project_id: string | null;
+  run_id: string | null;
+  created_at: string | null;
+};
+
+export type Dashboard = {
+  workspace: { id: string; name: string; plan: string; subscription_status: string };
+  user: { email: string };
+  is_admin: boolean;
+  projects: Project[];
+  assets: Asset[];
+  workflows: Workflow[];
+  limits: { projects: number | null; workflows: number | null };
+};
+
+export type RunStatus =
+  | "running"
+  | "queued"
+  | "submitting"
+  | "completed"
+  | "blocked"
+  | "skipped"
+  | "failed"
+  | "needs_attention"
+  | "awaiting_review";
+
+export type RunStep = {
+  node_id: string;
+  node_type: NodeType;
+  status: RunStatus;
+  detail: string;
+  output: Record<string, unknown> | null;
+};
+
+export type Run = {
+  id: string;
+  workflow_id: string;
+  project_id: string;
+  retry_of_id: string | null;
+  status: RunStatus;
+  created_at: string;
+  finished_at: string | null;
+  steps?: RunStep[];
+};
+
+export type ReadinessStep = { node_id: string; task: NodeType; status: string; detail: string };
+export type Readiness = {
+  workflow_id: string;
+  runnable: boolean;
+  credits_required: number;
+  credits_available: number;
+  steps: ReadinessStep[];
+};
+
+export type AiTask = "script" | "image" | "video" | "voice" | "music";
+export type AiTool = { id: string; task: AiTask; provider: string; model: string; is_enabled: boolean };
+
+export type Plan = {
+  code: string;
+  name: string;
+  project_limit: number | null;
+  workflow_limit: number | null;
+  monthly_credits: number;
+  is_active: boolean;
+  price_vnd: number | null;
+};
+export type Order = {
+  id: string;
+  plan_code: string;
+  provider: string;
+  amount_vnd: number;
+  status: string;
+  created_at: string;
+  paid_at: string | null;
+};
+export type Billing = {
+  plans: Plan[];
+  subscription: { plan_code: string; status: string; ends_at: string | null };
+  orders: Order[];
+  payos_ready: boolean;
+};
+export type Usage = {
+  balance: number;
+  ledger: { id: string; delta: number; reason: string; created_at: string }[];
+  events: { id: string; tool: string; units: number; credits: number; created_at: string }[];
+};
+
+export type Publication = {
+  id: string;
+  run_id: string;
+  asset_id: string;
+  channel: string;
+  title: string;
+  description: string;
+  state: "queued" | "uploading" | "succeeded" | "failed" | "needs_attention";
+  remote_id: string | null;
+  last_error: string | null;
+  can_retry: boolean;
+  created_at: string;
+  finished_at: string | null;
+};
+export type YouTubeConnection = { connected: boolean; expires_at: string | null; scope: string | null };
+
+export type WorkspaceSettings = {
+  default_language: "vi" | "en" | "ja";
+  video_orientation: "vertical" | "horizontal" | "square";
+  approval_required: boolean;
+};
+export type SystemSettings = {
+  frontend_origin: string;
+  secure_cookies: boolean;
+  storage_dir: string;
+  trial_project_limit: number;
+  registration_enabled: boolean;
+};
+export type Settings = { workspace: WorkspaceSettings; system: SystemSettings | null };
+
+export type AdminOverview = {
+  users: { id: string; email: string; is_admin: boolean; is_active: boolean }[];
+  workspaces: {
+    id: string;
+    name: string;
+    owner_id: string;
+    plan_code: string | null;
+    status: string;
+    ends_at: string | null;
+    credits: number;
+  }[];
+  plans: Plan[];
+};

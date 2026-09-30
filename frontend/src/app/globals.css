@@ -1,0 +1,256 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * ReelForge Studio design system — dark-first, cinematic, AI-native.
+ * One strong cyan-blue accent, cool near-black surfaces, quiet borders.
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-yt: var(--yt);
+  --color-tt: var(--tt);
+  --color-fb: var(--fb);
+  --color-ig: var(--ig);
+  --font-display: "Space Grotesk Variable", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--app-font-sans);
+}
+
+:root {
+  --radius: 0.75rem;
+
+  /*
+   * DM Sans has no Vietnamese glyphs: the Vietnamese UI uses Be Vietnam Pro, and
+   * other locales fall back to it for Vietnamese titles users type.
+   */
+  --app-font-sans: "DM Sans Variable", "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
+
+  --background: oklch(0.165 0.006 260);
+  --foreground: oklch(0.965 0.003 250);
+  --surface: oklch(0.205 0.006 260);
+  --surface-2: oklch(0.245 0.006 260);
+
+  --card: oklch(0.205 0.006 260);
+  --card-foreground: oklch(0.965 0.003 250);
+  --popover: oklch(0.225 0.006 260);
+  --popover-foreground: oklch(0.965 0.003 250);
+
+  --primary: oklch(0.76 0.13 220);
+  --primary-foreground: oklch(0.17 0.03 230);
+
+  --secondary: oklch(0.26 0.006 260);
+  --secondary-foreground: oklch(0.93 0.003 250);
+
+  --muted: oklch(0.245 0.006 260);
+  --muted-foreground: oklch(0.68 0.012 255);
+
+  --accent: oklch(0.28 0.01 250);
+  --accent-foreground: oklch(0.96 0.003 250);
+
+  --destructive: oklch(0.63 0.215 25);
+  --destructive-foreground: oklch(0.98 0.003 250);
+  --success: oklch(0.72 0.15 158);
+  --success-foreground: oklch(0.18 0.02 158);
+  --warning: oklch(0.8 0.15 85);
+  --warning-foreground: oklch(0.2 0.02 85);
+  --info: oklch(0.7 0.12 240);
+  --info-foreground: oklch(0.18 0.02 240);
+
+  --border: oklch(1 0 0 / 9%);
+  --border-strong: oklch(1 0 0 / 16%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.76 0.13 220 / 55%);
+
+  --chart-1: oklch(0.76 0.13 220);
+  --chart-2: oklch(0.72 0.15 158);
+  --chart-3: oklch(0.7 0.12 240);
+  --chart-4: oklch(0.8 0.15 85);
+  --chart-5: oklch(0.65 0.16 330);
+
+  --sidebar: oklch(0.185 0.006 260);
+  --sidebar-foreground: oklch(0.9 0.003 250);
+  --sidebar-primary: oklch(0.76 0.13 220);
+  --sidebar-primary-foreground: oklch(0.17 0.03 230);
+  --sidebar-accent: oklch(0.25 0.006 260);
+  --sidebar-accent-foreground: oklch(0.96 0.003 250);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.76 0.13 220 / 55%);
+
+  --yt: oklch(0.62 0.23 27);
+  --tt: oklch(0.78 0.16 190);
+  --fb: oklch(0.6 0.19 258);
+  --ig: oklch(0.66 0.21 12);
+
+  --gradient-brand: linear-gradient(135deg, oklch(0.8 0.12 205), oklch(0.66 0.15 245));
+  --gradient-stage: radial-gradient(120% 100% at 50% 0%, oklch(0.28 0.04 230 / 50%), transparent 70%);
+  --shadow-panel: 0 1px 0 0 oklch(1 0 0 / 5%) inset, 0 18px 40px -24px oklch(0 0 0 / 80%);
+  --shadow-glow: 0 0 0 1px oklch(0.76 0.13 220 / 25%), 0 18px 50px -20px oklch(0.76 0.13 220 / 35%);
+}
+
+:root:lang(vi) {
+  --app-font-sans: "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root:lang(ja) {
+  --app-font-sans: "DM Sans Variable", "Be Vietnam Pro", "Hiragino Sans", "Yu Gothic UI", "Meiryo", "Noto Sans JP", ui-sans-serif, system-ui, sans-serif;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@utility panel {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-panel);
+}
+
+@utility stage-glow {
+  background-image: var(--gradient-stage);
+}
+
+@utility brand-text {
+  background-image: var(--gradient-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@utility brand-fill {
+  background-image: var(--gradient-brand);
+  color: var(--primary-foreground);
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* Workflow canvas */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: var(--border-strong);
+  --xy-edge-stroke-selected: var(--primary);
+  --xy-connectionline-stroke: var(--primary);
+  --xy-minimap-background-color: var(--surface);
+  --xy-minimap-mask-background-color: oklch(0 0 0 / 55%);
+  --xy-selection-background-color: color-mix(in oklab, var(--primary) 10%, transparent);
+  --xy-selection-border: 1px dashed var(--primary);
+  --xy-attribution-background-color: transparent;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.studio-handle {
+  width: 11px !important;
+  height: 11px !important;
+  background: var(--surface-2) !important;
+  border: 2px solid var(--border-strong) !important;
+}
+
+.studio-handle:hover {
+  border-color: var(--primary) !important;
+}
+
+@keyframes node-run {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 12px transparent;
+  }
+}
+
+.node-running {
+  border-color: var(--primary) !important;
+  animation: node-run 1.4s ease-out infinite;
+}

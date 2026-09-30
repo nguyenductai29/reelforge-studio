@@ -43,6 +43,15 @@ assert run["status"] == "blocked"
 assert [(s["node_id"],s["status"]) for s in run["steps"]] == [("idea","completed"),("assets","completed"),("script","blocked"),("review","skipped")]
 assert run["steps"][0]["output"]["topic"] == "Chủ đề"
 assert client.get(f"/api/workflows/{workflow}/runs").json()[0]["id"] == run["id"]
+recent = client.get("/api/workflow-runs").json()
+assert [(r["id"], r["workflow_id"], r["project_id"]) for r in recent] == [(run["id"], workflow, project)]
+dashboard = client.get("/api/dashboard").json()
+assert dashboard["user"]["email"] == "a@example.com"
+assert dashboard["projects"][0]["created_at"]
+labeled = {"nodes":[{**graph["nodes"][0], "label":"Chủ đề chính"}], "edges":[]}
+assert client.put(f"/api/workflows/{workflow}", json=labeled).json()["graph"]["nodes"][0]["label"] == "Chủ đề chính"
+assert client.put(f"/api/workflows/{workflow}", json={"nodes":[{**graph["nodes"][0], "label":"x" * 81}], "edges":[]}).status_code == 422
+assert client.put(f"/api/workflows/{workflow}", json=graph).status_code == 200
 assert client.post("/api/ai-tools", json={"task":"script","provider":"openai","model":"example"}).status_code == 201
 assert client.put(f"/api/workflows/{workflow}", json={"nodes":[graph["nodes"][0]],"edges":[]}).status_code == 200
 retry = client.post(f"/api/workflow-runs/{run['id']}/retry")
@@ -56,6 +65,7 @@ assert client.post("/api/register", json={"email":"b@example.com","password":"lo
 assert client.get(f"/api/workflow-runs/{run['id']}").status_code == 404
 assert client.post(f"/api/workflow-runs/{run['id']}/retry").status_code == 404
 assert client.get(f"/api/workflows/{workflow}/runs").status_code == 404
+assert client.get("/api/workflow-runs").json() == []
 '''
             completed = subprocess.run([sys.executable, "-c", program], cwd=target, env={**os.environ, "PYTHONPATH": str(target)}, capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr[-4000:])
