@@ -31,12 +31,20 @@ WAITING_DETAIL = "Chờ bước phía trước hoàn thành."
 
 
 class RunRequestError(Exception):
-    """The run request itself is unacceptable; the API rolls back and returns this status."""
+    """A node cannot start for a reason the requester must fix, e.g. not enough credits.
 
-    def __init__(self, status_code: int, detail: str):
+    While a run is being started, the API rolls back and returns ``status_code``
+    with ``detail``. When the node only becomes ready later (after a worker or a
+    reviewer finished its parent), the executor blocks that step instead, with
+    ``step_detail`` and ``code``.
+    """
+
+    def __init__(self, status_code: int, detail: str, *, code: str = "run_rejected", step_detail: str | None = None):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.code = code
+        self.step_detail = step_detail or detail
 
 
 @dataclass(frozen=True)

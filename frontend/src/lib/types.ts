@@ -10,9 +10,25 @@ export type NodeType =
   | "subtitle"
   | "render"
   | "review"
-  | "publish";
+  | "publish"
+  | "ai_writer"
+  | "summarize"
+  | "rewrite"
+  | "translate"
+  | "hook"
+  | "title"
+  | "cta";
 
-export type GraphNode = { id: string; type: NodeType; x: number; y: number; label?: string | null };
+/** Per-node settings; the backend validates them for each node type. */
+export type NodeConfig = Record<string, unknown>;
+export type GraphNode = {
+  id: string;
+  type: NodeType;
+  x: number;
+  y: number;
+  label?: string | null;
+  config?: NodeConfig | null;
+};
 export type Graph = { nodes: GraphNode[]; edges: { source: string; target: string }[] };
 export type Workflow = { id: string; name: string; graph: Graph };
 

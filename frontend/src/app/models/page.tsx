@@ -37,13 +37,22 @@ import type { AiTask, AiTool } from "@/lib/types";
 
 const TASKS: AiTask[] = ["script", "image", "video", "voice", "music"];
 const VIDEO_PROVIDERS = new Set(["fal", "runware", "replicate", "runway", "dola"]);
+/** Text providers the backend can call (task "script", shown as Text). */
+const TEXT_PROVIDERS = new Set(["openai", "anthropic", "gemini"]);
 const presets = [
-  { provider: "fal", model: "fal-ai/veo3.1/fast", label: "fal · Veo 3.1 Fast" },
-  { provider: "runware", model: "bytedance:seedance@2.5", label: "Runware · Seedance 2.5" },
-  { provider: "replicate", model: "google/veo-3.1-fast", label: "Replicate · Veo 3.1 Fast" },
-  { provider: "runway", model: "gen4.5", label: "Runway Dev · Gen-4.5", note: "noAudio" },
-  { provider: "dola", model: "seedance-2.5", label: "Dola Gateway · Seedance 2.5", note: "experimental" },
+  { task: "video", provider: "fal", model: "fal-ai/veo3.1/fast", label: "fal · Veo 3.1 Fast" },
+  { task: "video", provider: "runware", model: "bytedance:seedance@2.5", label: "Runware · Seedance 2.5" },
+  { task: "video", provider: "replicate", model: "google/veo-3.1-fast", label: "Replicate · Veo 3.1 Fast" },
+  { task: "video", provider: "runway", model: "gen4.5", label: "Runway Dev · Gen-4.5", note: "noAudio" },
+  { task: "video", provider: "dola", model: "seedance-2.5", label: "Dola Gateway · Seedance 2.5", note: "experimental" },
+  { task: "script", provider: "openai", model: "gpt-4.1-mini", label: "OpenAI · GPT-4.1 mini" },
+  { task: "script", provider: "anthropic", model: "claude-opus-5-5", label: "Anthropic · Claude Opus 5.5" },
+  { task: "script", provider: "gemini", model: "gemini-2.5-flash", label: "Google · Gemini 2.5 Flash" },
 ] as const;
+
+const isRunnable = (tool: AiTool) =>
+  (tool.task === "video" && VIDEO_PROVIDERS.has(tool.provider)) ||
+  (tool.task === "script" && TEXT_PROVIDERS.has(tool.provider));
 
 type Draft = { id?: string; task: AiTask; provider: string; model: string; is_enabled: boolean };
 
@@ -93,7 +102,7 @@ function ToolDialog({ draft, onClose }: { draft: Draft | null; onClose: () => vo
                   <button
                     key={preset.model}
                     type="button"
-                    onClick={() => setForm({ ...form, task: "video", provider: preset.provider, model: preset.model })}
+                    onClick={() => setForm({ ...form, task: preset.task, provider: preset.provider, model: preset.model })}
                     className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground"
                   >
                     {preset.label}
@@ -241,7 +250,7 @@ export default function ModelsPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {visible.map((tool) => {
-            const runnable = tool.task === "video" && VIDEO_PROVIDERS.has(tool.provider);
+            const runnable = isRunnable(tool);
             return (
               <div key={tool.id} className="panel space-y-3 p-5">
                 <div className="flex items-start justify-between gap-3">
@@ -283,7 +292,7 @@ export default function ModelsPage() {
                   </div>
                   <div>
                     <p className="text-muted-foreground">{t.models.stats.credits}</p>
-                    <p>{runnable ? t.models.perClip : t.common.none}</p>
+                    <p>{runnable ? (tool.task === "video" ? t.models.perClip : t.models.perGeneration) : t.common.none}</p>
                   </div>
                 </div>
               </div>

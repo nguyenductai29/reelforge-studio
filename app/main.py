@@ -8,6 +8,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
@@ -199,6 +200,8 @@ class GraphNode(BaseModel):
     y: float
     # Display name chosen in the editor; execution only depends on type.
     label: str | None = Field(default=None, max_length=80)
+    # Per-node settings, validated by the node type's handler (e.g. a text node's prompt or language).
+    config: dict[str, Any] | None = None
 
 
 class GraphEdge(BaseModel):
@@ -213,6 +216,7 @@ class WorkflowGraph(BaseModel):
 
 # A saved graph may contain any type with a registered handler (app/workflow/registry.py).
 NODE_TYPES = default_registry.node_types
+MAX_NODE_CONFIG_CHARS = 8000
 
 
 def default_graph():
@@ -229,6 +233,15 @@ def validate_graph(graph: WorkflowGraph):
         raise HTTPException(422, "Duplicate node ID")
     if any(node.type not in NODE_TYPES or not math.isfinite(node.x) or not math.isfinite(node.y) or abs(node.x) > 100000 or abs(node.y) > 100000 for node in graph.nodes):
         raise HTTPException(422, "Invalid node type or position")
+    for node in graph.nodes:
+        if not node.config:
+            continue
+        try:
+            if len(json.dumps(node.config)) > MAX_NODE_CONFIG_CHARS:
+                raise ValueError("settings are too large")
+            default_registry.resolve(node.type).validate_config(node.config)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, f"Invalid settings for step {node.id}: {exc}") from exc
     links = [(edge.source, edge.target) for edge in graph.edges]
     if len(links) != len(set(links)) or any(a not in ids or b not in ids or a == b for a, b in links):
         raise HTTPException(422, "Invalid or duplicate connection")
@@ -979,9 +992,11 @@ def workflow_readiness(workflow_id: str, request: Request, tool_id: str | None =
         checks = default_executor.readiness(context)
         steps = [{"node_id": node["id"], "task": node["type"], "status": check.status, "detail": check.detail}
                  for node, check in checks]
-        return {"workflow_id": workflow.id, "runnable": all(step["status"] in {"ready", "configured"} for step in steps),
-                "credits_required": sum(check.credits for _, check in checks),
-                "credits_available": context.credit_balance, "steps": steps}
+        required = sum(check.credits for _, check in checks)
+        return {"workflow_id": workflow.id,
+                "runnable": all(step["status"] in {"ready", "configured"} for step in steps)
+                and context.credit_balance >= required,
+                "credits_required": required, "credits_available": context.credit_balance, "steps": steps}
 
 
 def public_step_output(step):
@@ -1081,7 +1096,9 @@ def approve_workflow_run(run_id: str, request: Request):
         membership = db.get(Membership, (authorize(request, db).id, ws.id))
         if not membership or membership.role != "owner":
             raise HTTPException(403, "Workspace owner required")
-        run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id))
+        # Locked like every executor pass over a run, so a worker cannot advance it concurrently.
+        run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id)
+                        .with_for_update())
         if not run:
             raise HTTPException(404, "Workflow run not found")
         steps = list(db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run.id).order_by(WorkflowRunStep.position)))

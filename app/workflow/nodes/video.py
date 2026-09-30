@@ -2,7 +2,7 @@
 from app import usage
 from app.providers.catalog import (ORIENTATION_ASPECT, PROVIDER_ERRORS, VIDEO_PROVIDERS, video_credit_cost,
                                    video_provider_config_issue, video_request_defaults)
-from app.workflow.nodes.base import NodeHandler
+from app.workflow.nodes.base import INSUFFICIENT_CREDITS_DETAIL, NodeHandler
 from app.workflow.nodes.pending import pending_ai_task
 from app.workflow.results import JobRequest, NodeExecutionResult, NodeReadiness, RunRequestError
 
@@ -14,9 +14,7 @@ class VideoNodeHandler(NodeHandler):
         return ORIENTATION_ASPECT.get(context.workspace_settings.get("video_orientation", "vertical"))
 
     def _tool(self, context, tool_id):
-        return next((tool for tool in context.enabled_tools
-                     if tool.task == "video" and tool.provider in VIDEO_PROVIDERS
-                     and (tool_id is None or tool.id == tool_id)), None)
+        return context.find_tool("video", VIDEO_PROVIDERS, tool_id)
 
     def execute(self, context, node, inputs):
         # One credit reservation and one job per run: see reserve:<run_id> below.
@@ -39,7 +37,8 @@ class VideoNodeHandler(NodeHandler):
         else:
             tool = self._tool(context, options.tool_id or None)
             if options.tool_id and not tool:
-                raise RunRequestError(400, "Selected video tool is unavailable")
+                raise RunRequestError(400, "Selected video tool is unavailable", code="tool_unavailable",
+                                      step_detail="Chưa chọn model video được hỗ trợ cho bước video.")
             provider_name = tool.provider if tool else None
             model_id = tool.model if tool else None
             tool_reference = tool.id if tool else None
@@ -66,11 +65,12 @@ class VideoNodeHandler(NodeHandler):
         except PROVIDER_ERRORS as exc:
             return NodeExecutionResult.blocked(str(exc))
         if not isinstance(cost, int) or not 1 <= cost <= 100000:
-            raise RunRequestError(400, "Invalid video credit quote")
+            raise RunRequestError(400, "Invalid video credit quote", code="invalid_quote")
         try:
             usage.post_credit(context.db, context.workspace.id, -cost, "video_reserve", f"reserve:{context.run.id}")
         except ValueError as exc:
-            raise RunRequestError(402, "Not enough credits for this video") from exc
+            raise RunRequestError(402, "Not enough credits for this video", code="insufficient_credits",
+                                  step_detail=INSUFFICIENT_CREDITS_DETAIL) from exc
         payload = {"kind": "video.generate", "provider": provider_name, "tool_id": tool_reference,
                    "prompt": prompt, "model_id": model_id, "aspect_ratio": aspect_ratio,
                    "duration": request.duration, "resolution": request.resolution,

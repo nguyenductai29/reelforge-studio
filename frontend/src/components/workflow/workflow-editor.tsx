@@ -69,7 +69,7 @@ import {
 } from "@/lib/queries";
 import { approvedAsset, isActiveRun } from "@/lib/studio";
 import type { Graph, NodeType, Project, Readiness, ReadinessStep, Run, RunStep, Workflow } from "@/lib/types";
-import { EXECUTABLE, MAX_NODES, kindOf, newNodeId, nodeLibrary } from "@/lib/workflow";
+import { EXECUTABLE, MAX_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } from "@/lib/workflow";
 import { kindIcon } from "./kind-icon";
 import { NodeActionsContext, NodeContext, StudioNodeComponent, type NodeActions } from "./studio-node";
 import { detailText, readinessText, runStatusToNode, type NodeStatus, type StudioNode } from "./types";
@@ -85,7 +85,8 @@ const toNodes = (graph: Graph): StudioNode[] =>
     id: node.id,
     type: "studio",
     position: { x: node.x, y: node.y },
-    data: { type: node.type, label: node.label ?? undefined, status: "idle" },
+    // Settings are kept as-is so saving the canvas never drops them.
+    data: { type: node.type, label: node.label ?? undefined, config: node.config ?? null, status: "idle" },
   }));
 
 const toEdges = (graph: Graph): Edge[] =>
@@ -94,7 +95,7 @@ const toEdges = (graph: Graph): Edge[] =>
 function NodeLibrary({ onAdd, className }: { onAdd: (type: NodeType) => void; className?: string }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
-  const [open, setOpen] = useState<string[]>(["input", "script", "visual", "output"]);
+  const [open, setOpen] = useState<string[]>(["input", "ai", "script", "visual", "output"]);
   const q = query.trim().toLocaleLowerCase();
   const lib = t.editor.library;
 
@@ -283,8 +284,11 @@ function Inspector({
           ? i.reviewHint
           : d.type === "publish"
             ? i.publishHint
-            : null;
+            : TEXT_NODES.has(d.type)
+              ? i.textHint
+              : null;
   const assetId = typeof step?.output?.asset_id === "string" ? step.output.asset_id : null;
+  const generatedText = typeof step?.output?.text === "string" ? step.output.text : null;
   const tool = video.tools.find((x) => x.id === video.toolId) ?? video.tools[0];
 
   return (
@@ -364,6 +368,15 @@ function Inspector({
               </div>
             )}
           </>
+        )}
+
+        {TEXT_NODES.has(d.type) && generatedText && (
+          <div>
+            <FieldLabel>{i.generatedText}</FieldLabel>
+            <div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-surface p-3 text-xs leading-relaxed">
+              {generatedText}
+            </div>
+          </div>
         )}
 
         {d.type === "review" && run?.status === "awaiting_review" && (
@@ -512,10 +525,12 @@ function RunDialog({
             )}
           </div>
           {hasVideo && <VideoFields video={video} idPrefix="run" />}
-          {hasVideo && readiness && (
+          {readiness && (hasVideo || readiness.credits_required > 0) && (
             <div className="rounded-lg border border-border bg-surface p-3 text-xs text-muted-foreground">
-              {videoStep && <p>{readinessText(videoStep, readiness, t)}</p>}
-              <p className="mt-1">{r.credits(readiness.credits_required, readiness.credits_available)}</p>
+              {hasVideo && videoStep && <p>{readinessText(videoStep, readiness, t)}</p>}
+              <p className={cn(hasVideo && videoStep && "mt-1")}>
+                {r.credits(readiness.credits_required, readiness.credits_available)}
+              </p>
             </div>
           )}
         </div>
@@ -707,7 +722,7 @@ function Editor({
               id: newNodeId(),
               position: { x: src.position.x + 40, y: src.position.y + 60 },
               selected: true,
-              data: { type: src.data.type, label, status: "idle" },
+              data: { type: src.data.type, label, config: src.data.config ?? null, status: "idle" },
             },
           ];
         });
@@ -760,6 +775,7 @@ function Editor({
           x: Math.round(n.position.x),
           y: Math.round(n.position.y),
           label: n.data.label?.trim() || null,
+          config: n.data.config ?? null,
         })),
         edges: latest.current.edges.map((e) => ({ source: e.source, target: e.target })),
       };

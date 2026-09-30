@@ -5,6 +5,7 @@ from app.workflow.context import ExecutionContext, NodeInputs
 from app.workflow.results import NodeExecutionResult, NodeReadiness
 
 CONFIGURED = NodeReadiness("configured", "Bước này đã có trong sơ đồ.")
+INSUFFICIENT_CREDITS_DETAIL = "Không đủ credits cho bước này."
 
 
 class NodeHandler:
@@ -16,8 +17,8 @@ class NodeHandler:
     turns the step into ``failed`` without undoing them. Work that takes longer
     than a request goes in ``result.job``; the executor enqueues it after the
     step row exists, and the worker that finishes it reports back through
-    ``WorkflowExecutor.finish_step``. Raise ``RunRequestError`` only to reject
-    the whole run request.
+    ``WorkflowExecutor.finish_step``. Raise ``RunRequestError`` for problems the
+    requester must fix, such as not enough credits.
     """
 
     node_type: str = ""
@@ -28,3 +29,8 @@ class NodeHandler:
     def readiness(self, context: ExecutionContext, node: Mapping[str, Any]) -> NodeReadiness:
         """What to show before a run starts; ``context.run`` is ``None`` here."""
         return CONFIGURED
+
+    def validate_config(self, config: Mapping[str, Any]) -> None:
+        """Reject settings this node type does not understand; raise ``ValueError`` with the reason."""
+        if config:
+            raise ValueError("this step type has no settings")

@@ -124,6 +124,17 @@ def claim_due_jobs(
     return jobs
 
 
+def live_lease(db: Session, *, job_id: str, lease_token: str, now: datetime | None = None) -> WorkflowJob | None:
+    """The job, if ``lease_token`` still holds an unexpired lease on it."""
+    job = db.get(WorkflowJob, job_id)
+    if job is None or job.state != "leased" or job.lease_token != lease_token or job.lease_expires_at is None:
+        return None
+    expires = job.lease_expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return job if expires > (now or datetime.now(timezone.utc)) else None
+
+
 def complete_job(
     db: Session, *, job_id: str, lease_token: str, now: datetime | None = None,
 ) -> bool:

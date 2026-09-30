@@ -1,12 +1,13 @@
 import type { Node } from "@xyflow/react";
 import type { Dictionary } from "@/lib/i18n/vi";
-import type { NodeType, Readiness, ReadinessStep, RunStatus } from "@/lib/types";
+import type { NodeConfig, NodeType, Readiness, ReadinessStep, RunStatus } from "@/lib/types";
 
 export type NodeStatus = keyof Dictionary["status"]["node"];
 
 export type StudioNodeData = {
   type: NodeType;
   label?: string;
+  config?: NodeConfig | null;
   status: NodeStatus;
   output?: Record<string, unknown> | null;
   [key: string]: unknown;
@@ -33,7 +34,7 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
   const r = t.readiness;
   switch (step.status) {
     case "ready":
-      return r.ready(readiness.credits_required);
+      return step.task === "video" ? r.ready(readiness.credits_required) : r.readyText;
     case "configured":
       return r.configured;
     case "missing_tool":

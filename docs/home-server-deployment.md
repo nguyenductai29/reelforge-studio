@@ -659,6 +659,26 @@ Provider credentials such as `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`
 
 Do not put private API keys into Git.
 
+### Text worker
+
+The text worker runs the AI Writer, Summarize, Rewrite, Translate, Hook, Title and CTA steps. Create `/etc/systemd/system/reelforge-text-worker.service` with the same contents as the video worker, changing only these two lines:
+
+```ini
+Description=ReelForge Studio Text Worker
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.text_worker
+```
+
+Enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable reelforge-text-worker
+sudo systemctl start reelforge-text-worker
+journalctl -u reelforge-text-worker -f
+```
+
+Supply `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` for each text provider you use to both the API (readiness checks) and the text worker (generation). `TEXT_CREDITS_PER_GENERATION` (default 1) sets the credits charged per text step; set the same value for both.
+
 ---
 
 ## 13. YouTube worker systemd service
@@ -886,6 +906,10 @@ if systemctl is-enabled --quiet reelforge-video-worker 2>/dev/null; then
   sudo systemctl restart reelforge-video-worker
 fi
 
+if systemctl is-enabled --quiet reelforge-text-worker 2>/dev/null; then
+  sudo systemctl restart reelforge-text-worker
+fi
+
 if systemctl is-enabled --quiet reelforge-youtube-worker 2>/dev/null; then
   sudo systemctl restart reelforge-youtube-worker
 fi
@@ -934,6 +958,13 @@ Video worker:
 ```bash
 sudo systemctl restart reelforge-video-worker
 journalctl -u reelforge-video-worker -f
+```
+
+Text worker:
+
+```bash
+sudo systemctl restart reelforge-text-worker
+journalctl -u reelforge-text-worker -f
 ```
 
 YouTube worker:

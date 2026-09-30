@@ -1,5 +1,5 @@
 """Maps each node type to the one handler that executes it."""
-from app.workflow.nodes import (AssetsNodeHandler, IdeaNodeHandler, NodeHandler, PendingAITaskHandler,
+from app.workflow.nodes import (TEXT_HANDLERS, AssetsNodeHandler, IdeaNodeHandler, NodeHandler, PendingAITaskHandler,
                                 PendingServiceHandler, ReviewNodeHandler, UnsupportedNodeHandler, VideoNodeHandler)
 
 
@@ -30,7 +30,8 @@ class NodeRegistry:
 
 def build_default_registry() -> NodeRegistry:
     registry = NodeRegistry()
-    for handler in (IdeaNodeHandler(), AssetsNodeHandler(), VideoNodeHandler(), ReviewNodeHandler()):
+    for handler in (IdeaNodeHandler(), AssetsNodeHandler(), VideoNodeHandler(), ReviewNodeHandler(),
+                    *(handler_type() for handler_type in TEXT_HANDLERS)):
         registry.register(handler)
     for node_type in ("script", "image", "voice", "music"):
         registry.register(PendingAITaskHandler(node_type))

@@ -124,6 +124,18 @@ function Preview({ data }: { data: StudioNode["data"] }) {
           <p className="text-muted-foreground">{t.editor.node.scriptHere}</p>
         </div>
       );
+    case "ai": {
+      const text = typeof output?.text === "string" ? output.text : null;
+      return (
+        <div className="rounded-lg bg-surface-2 p-2.5 text-[11px] leading-relaxed">
+          {text ? (
+            <p className="line-clamp-4 whitespace-pre-line">{text}</p>
+          ) : (
+            <p className="text-muted-foreground">{running ? t.editor.node.generating : t.editor.node.textHere}</p>
+          )}
+        </div>
+      );
+    }
     case "input": {
       if (data.type === "assets") {
         const listed = Array.isArray(output?.assets) ? output.assets.length : null;

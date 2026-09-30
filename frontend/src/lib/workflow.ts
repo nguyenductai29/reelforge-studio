@@ -28,7 +28,17 @@ export const kindOf: Record<NodeType, NodeKind> = {
   render: "render",
   review: "review",
   publish: "publish",
+  ai_writer: "ai",
+  summarize: "ai",
+  rewrite: "ai",
+  translate: "ai",
+  hook: "ai",
+  title: "ai",
+  cta: "ai",
 };
+
+/** Nodes that generate text with the workspace's text model. */
+export const TEXT_NODES: ReadonlySet<NodeType> = new Set(["ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta"]);
 
 export const NODE_TYPES = Object.keys(kindOf) as NodeType[];
 export const MAX_NODES = 30;
@@ -59,23 +69,21 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
   },
   {
     category: "ai",
-    items: (
-      [
-        "research",
-        "summarize",
-        "aiWriter",
-        "rewrite",
-        "translate",
-        "generateHook",
-        "generateTitle",
-        "movieAnalysis",
-        "movieRecap",
-        "movieReview",
-        "endingExplained",
-        "keyMoments",
-        "generateCta",
-      ] as const
-    ).map((id) => ({ id, kind: "ai" as const })),
+    items: [
+      { id: "research", kind: "ai" },
+      { id: "summarize", kind: "ai", type: "summarize" },
+      { id: "aiWriter", kind: "ai", type: "ai_writer" },
+      { id: "rewrite", kind: "ai", type: "rewrite" },
+      { id: "translate", kind: "ai", type: "translate" },
+      { id: "generateHook", kind: "ai", type: "hook" },
+      { id: "generateTitle", kind: "ai", type: "title" },
+      { id: "movieAnalysis", kind: "ai" },
+      { id: "movieRecap", kind: "ai" },
+      { id: "movieReview", kind: "ai" },
+      { id: "endingExplained", kind: "ai" },
+      { id: "keyMoments", kind: "ai" },
+      { id: "generateCta", kind: "ai", type: "cta" },
+    ],
   },
   {
     category: "script",
@@ -140,7 +148,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
 ];
 
 /** Node types the backend can execute today; every other step stops a run with a reason. */
-export const EXECUTABLE: ReadonlySet<NodeType> = new Set(["idea", "assets", "video", "review"]);
+export const EXECUTABLE: ReadonlySet<NodeType> = new Set(["idea", "assets", "video", "review", ...TEXT_NODES]);
 
 export type TemplateId = keyof Dictionary["templates"];
 

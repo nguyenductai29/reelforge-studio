@@ -22,13 +22,14 @@ from app.workflow import (ExecutionContext, NodeError, NodeExecutionResult, Node
                           default_registry, derive_run_status, parse_graph, resolve_inputs)
 from app.workflow.executor import HANDLER_FAILED_DETAIL
 from app.workflow.nodes import (AssetsNodeHandler, IdeaNodeHandler, PendingAITaskHandler, PendingServiceHandler,
-                                ReviewNodeHandler, UnsupportedNodeHandler, VideoNodeHandler)
+                                ReviewNodeHandler, TextNodeHandler, UnsupportedNodeHandler, VideoNodeHandler)
 from app.workflow.nodes.pending import UNSUPPORTED_DETAIL
 from app.workflow.results import JobRequest
 
 ROOT = Path(__file__).resolve().parents[1]
+TEXT_TYPES = {"ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta"}
 KNOWN_TYPES = {"idea", "script", "scenes", "image", "video", "assets", "voice", "music", "subtitle", "render",
-               "review", "publish"}
+               "review", "publish"} | TEXT_TYPES
 VIDEO_ENV = {"FAL_KEY": "test-key", "VIDEO_CREDITS_PER_CLIP": "10"}
 
 
@@ -88,6 +89,8 @@ class RegistryTest(unittest.TestCase):
             self.assertIsInstance(default_registry.resolve(node_type), PendingAITaskHandler)
         for node_type in ("scenes", "subtitle", "render", "publish"):
             self.assertIsInstance(default_registry.resolve(node_type), PendingServiceHandler)
+        for node_type in TEXT_TYPES:
+            self.assertIsInstance(default_registry.resolve(node_type), TextNodeHandler)
         for node_type in KNOWN_TYPES:
             self.assertEqual(default_registry.resolve(node_type).node_type, node_type)
 

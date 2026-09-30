@@ -33,6 +33,10 @@ if systemctl is-enabled --quiet reelforge-video-worker 2>/dev/null; then
   sudo systemctl restart reelforge-video-worker
 fi
 
+if systemctl is-enabled --quiet reelforge-text-worker 2>/dev/null; then
+  sudo systemctl restart reelforge-text-worker
+fi
+
 if systemctl is-enabled --quiet reelforge-youtube-worker 2>/dev/null; then
   sudo systemctl restart reelforge-youtube-worker
 fi

@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AITool, Asset, CreditAccount, Project, WorkflowRun, Workspace, WorkspaceSetting
+from app.models import AITool, Asset, CreditAccount, Project, WorkflowRun, WorkflowRunStep, Workspace, WorkspaceSetting
 from app.workflow.graph import count_nodes, parse_graph
 from app.workflow.results import COMPLETED, SKIPPED, produced_asset_ids
 
@@ -41,6 +41,8 @@ class ExecutionContext:
         self.project = project
         self.options = options or RunOptions()
         self.now = now or datetime.now(timezone.utc)
+        # The run's steps by node ID, set by the executor before it calls handlers.
+        self.steps: dict[str, WorkflowRunStep] = {}
 
     @classmethod
     def for_run(cls, db: Session, run: WorkflowRun, **kwargs) -> "ExecutionContext":
@@ -75,6 +77,15 @@ class ExecutionContext:
 
     def count_nodes(self, node_type: str) -> int:
         return count_nodes(self.graph, node_type)
+
+    def step_for(self, node: Mapping[str, Any]) -> WorkflowRunStep:
+        return self.steps[node["id"]]
+
+    def find_tool(self, task: str, providers, tool_id: str | None = None) -> AITool | None:
+        """The first enabled tool for ``task`` with a supported provider, or the one with ``tool_id``."""
+        return next((tool for tool in self.enabled_tools
+                     if tool.task == task and tool.provider in providers
+                     and (tool_id is None or tool.id == tool_id)), None)
 
 
 @dataclass(frozen=True)
