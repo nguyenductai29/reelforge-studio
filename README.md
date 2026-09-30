@@ -26,6 +26,8 @@ npm ci
 npm run dev
 ```
 
+The dev server writes generated files to `frontend/.next-dev`; `npm run build` and `npm start` use `frontend/.next`. Keeping these directories separate prevents a production build from replacing chunks used by a running dev server. Both directories are generated and ignored by Git.
+
 Open http://localhost:3000 to create the first admin account, or run `npm run create-admin` in `frontend` while the API is running (it prompts for the email and password, or reads `ADMIN_EMAIL` and `ADMIN_PASSWORD`). On a public server, create the admin this way before the site is reachable; until an account exists, the first visitor can claim it. API documentation is at http://127.0.0.1:8000/docs. The Next.js proxy defaults to `http://127.0.0.1:8000`; if the API is at a different server address, copy `frontend/config.example.json` to `frontend/instance/config.json` and set `api_base_url` to the address **reachable by the Next.js server**. That address is the frontend's connection bootstrap, not an application preference.
 
 ### Provider keys, processes and logs
