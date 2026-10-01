@@ -475,7 +475,7 @@ def run_program(body):
         shutil.copy(ROOT / "alembic.ini", target / "alembic.ini")
         (target / "instance").mkdir()
         (target / "instance" / "bootstrap.json").write_text(
-            json.dumps({"database_url": f"sqlite:///{target}/instance/test.db"}))
+            json.dumps({"database_url": f"sqlite:///{target}/instance/test.db", "frontend_origin": "http://localhost:3000", "secure_cookies": False}))
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("RUNWAY", "IMAGE_", "VIDEO_", "FAL_", "OPENAI", "TEXT_"))}
         return subprocess.run([sys.executable, "-c", "from pathlib import Path\n" + PRELUDE + body], cwd=target,

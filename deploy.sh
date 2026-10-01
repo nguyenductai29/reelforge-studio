@@ -2,6 +2,8 @@
 # Deploy the current branch on the home server.
 #
 # Production needs only instance/bootstrap.json (database URL) and /etc/reelforge/master.key.
+# The public origin is https://studio.imokome-cloud.com (System Settings; Cloudflare Tunnel -> 127.0.0.1:3001);
+# the frontend (127.0.0.1:3001) and the API (127.0.0.1:8000) stay private.
 # Everything else is configured in Admin -> System settings / Payments and read from PostgreSQL;
 # /etc/reelforge/runtime.env is an optional legacy fallback. See docs/PRODUCTION_BOOTSTRAP.md.
 set -euo pipefail
@@ -20,6 +22,15 @@ python -m pip install -r requirements.txt
 echo "== 4. Check the bootstrap: database URL and master key =="
 if [ ! -f instance/bootstrap.json ] && [ -z "${REELFORGE_DATABASE_URL:-}" ]; then
   echo "instance/bootstrap.json is missing (database URL). See docs/PRODUCTION_BOOTSTRAP.md." >&2
+  exit 1
+fi
+# frontend_origin / secure_cookies in instance/bootstrap.json override System Settings on one machine, for
+# development (http://localhost:3000). On the server they would replace the public HTTPS origin.
+if [ -f instance/bootstrap.json ] && python -c 'import json, sys
+sys.exit(0 if {"frontend_origin", "secure_cookies"} & set(json.load(open("instance/bootstrap.json"))) else 1)'; then
+  echo "STOP: instance/bootstrap.json sets frontend_origin or secure_cookies (a development override)." >&2
+  echo "Production takes them from Admin -> System Settings -> General (https://studio.imokome-cloud.com," >&2
+  echo "secure cookies on). Remove those keys from instance/bootstrap.json, then run ./deploy.sh again." >&2
   exit 1
 fi
 # A usable key: continue. No key: stop if PostgreSQL already holds encrypted data (restore the old key),
@@ -56,11 +67,32 @@ systemctl is-active reelforge-frontend
 echo "== 10. Health checks =="
 curl -fsS http://127.0.0.1:8000/openapi.json >/dev/null
 curl -fsSI http://127.0.0.1:3001 >/dev/null
-
-if ! cmp -s deploy/systemd/reelforge-worker@.service /etc/systemd/system/reelforge-worker@.service 2>/dev/null \
-   && systemctl list-unit-files 'reelforge-worker@*' --no-legend 2>/dev/null | grep -q .; then
-  echo "note: deploy/systemd/ changed; review it, copy it to /etc/systemd/system/ and run sudo systemctl daemon-reload."
+# The public origin as stored in System Settings. Not fatal: the Cloudflare Tunnel runs on its own.
+public_origin="$(python - <<'EOF' 2>/dev/null || true
+import json
+from app.db import Session
+from app.models import SystemSetting
+with Session() as db:
+    row = db.get(SystemSetting, "frontend_origin")
+    print(json.loads(row.value) if row else "")
+EOF
+)"
+if [ -n "$public_origin" ]; then
+  if curl -fsSI --max-time 15 "$public_origin" >/dev/null; then
+    echo "public origin OK: $public_origin"
+  else
+    echo "warning: $public_origin did not answer. The local services are up; check the Cloudflare Tunnel route" >&2
+    echo "         (service http://127.0.0.1:3001) and Admin -> System Settings -> General." >&2
+  fi
 fi
+
+# Units installed from deploy/systemd/ that differ from the repository's copy.
+for unit in deploy/systemd/*.service deploy/systemd/*.timer; do
+  installed="/etc/systemd/system/$(basename "$unit")"
+  if [ -f "$installed" ] && ! cmp -s "$unit" "$installed"; then
+    echo "note: $unit changed; review it, copy it to /etc/systemd/system/ and run sudo systemctl daemon-reload."
+  fi
+done
 
 echo
 echo "====================================="

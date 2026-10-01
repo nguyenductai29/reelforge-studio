@@ -38,6 +38,9 @@ Background services (deploy/systemd/reelforge-worker@.service, one instance each
   - daily media maintenance (timer, 03:00)
 
 SSD: OS, application + virtualenv, PostgreSQL, /etc/reelforge (master.key)
+
+Only https://studio.imokome-cloud.com is public (and HTTPS). The frontend service
+(http://127.0.0.1:3001) and the API (http://127.0.0.1:8000) listen on loopback only.
 Persistent media (HDD at /srv/data):
   /srv/data/videos/reelforge   (media root: Admin → Cài đặt hệ thống → Lưu trữ)
   /srv/data/backups/reelforge  (database dumps; copy them off this disk too)
@@ -260,6 +263,12 @@ cat .gitignore
 ```
 
 Never commit `instance/bootstrap.json`.
+
+Do not add `frontend_origin` or `secure_cookies` to this file on the server.
+
+- Those keys are a development machine's override (for `http://localhost:3000`).
+- Production uses System Settings, which default to `https://studio.imokome-cloud.com` with Secure cookies.
+- `deploy.sh` stops if it finds them.
 
 ### 4.1 Master key file (the only other bootstrap)
 
@@ -573,7 +582,7 @@ WorkingDirectory=/home/tai/apps/reelforge-studio/frontend
 Environment=NODE_ENV=production
 Environment=PORT=3001
 
-ExecStart=/usr/bin/npm start
+ExecStart=/usr/bin/npm start -- --hostname 127.0.0.1
 
 Restart=always
 RestartSec=5
@@ -592,6 +601,8 @@ which npm
 ```
 
 and replace `ExecStart` with the returned absolute path.
+
+`--hostname 127.0.0.1` keeps the frontend private: `next start` listens on every interface otherwise. Only the Cloudflare Tunnel reaches it.
 
 Enable and start:
 
@@ -613,6 +624,7 @@ Test locally:
 
 ```bash
 curl -I http://127.0.0.1:3001
+ss -ltn | grep 3001     # 127.0.0.1:3001, not 0.0.0.0 or *
 ```
 
 Logs:
@@ -1033,7 +1045,7 @@ Use:
 ```text
 Subdomain: studio
 Domain:    imokome-cloud.com
-Service:   http://localhost:3001
+Service:   http://127.0.0.1:3001
 ```
 
 Result:
@@ -1052,14 +1064,14 @@ workers
 
 Cloudflare terminates public HTTPS. Next.js communicates privately with FastAPI on localhost.
 
-After the public hostname is working, configure ReelForge System Settings:
+ReelForge System Settings already hold these values. They are the defaults of a new installation, and migration `0021_default_production_origin` sets them on an installation still on the old localhost defaults:
 
 ```text
 frontend_origin = https://studio.imokome-cloud.com
 secure_cookies  = true
 ```
 
-Changing the frontend origin may require signing in again.
+Check them in Quản trị → Cài đặt hệ thống → Chung, and change them there only for another hostname. Changing the frontend origin may require signing in again.
 
 Test:
 
@@ -1069,7 +1081,7 @@ curl -I https://studio.imokome-cloud.com
 
 ### Realtime notifications (Server-Sent Events)
 
-The notification bell keeps one long-lived request open per browser tab: `GET /api/notifications/stream`. It needs no new route, port or process. It travels Cloudflare → `localhost:3001` (Next.js) → `127.0.0.1:8000` (FastAPI), like every other `/api/*` request, and authenticates with the session cookie.
+The notification bell keeps one long-lived request open per browser tab: `GET /api/notifications/stream`. It needs no new route, port or process. It travels Cloudflare → `127.0.0.1:3001` (Next.js) → `127.0.0.1:8000` (FastAPI), like every other `/api/*` request, and authenticates with the session cookie.
 
 **What keeps it working through each hop:**
 
@@ -1302,6 +1314,7 @@ cd ~/apps/reelforge-studio
 2. `pip install -r requirements.txt`.
 3. **Checks the bootstrap.**
    - `instance/bootstrap.json` (or `REELFORGE_DATABASE_URL`) must exist.
+   - It must not set `frontend_origin` or `secure_cookies`: those are a development override, and the deploy stops.
    - `deploy/ensure-master-key.sh` makes sure there is a master key, before migrations and before any service is touched:
    - **A usable key** (the key file, or the legacy key the services still load from `/etc/reelforge/runtime.env`): continue.
      - **No key file, but the legacy key exists:** copy that same key into `/etc/reelforge/master.key`.
@@ -1312,11 +1325,12 @@ cd ~/apps/reelforge-studio
      - **Then:** verify with `python -m app.master_key status`, remind you to back the key up, and continue.
 
      `/etc/reelforge` belongs to root, so a new key is created as the service account in a private staging directory and installed with `sudo install` (owner `tai`, 600). Run `deploy.sh` as the account the services run as.
-4. `alembic upgrade head`.
+4. `alembic upgrade head`. On the first deploy after this change, `0021_default_production_origin` moves the old localhost defaults to `https://studio.imokome-cloud.com` with Secure cookies. It keeps any other value.
 5. `npm ci && npm run build`.
 6. Restarts the API, the frontend and every enabled worker, in both forms (`reelforge-<name>-worker` and `reelforge-worker@<name>`).
-7. Health checks on `:8000` and `:3001`.
-8. Notes when `deploy/systemd/` differs from the installed units. Review the change, copy it and run `daemon-reload` yourself.
+7. Health checks on `http://127.0.0.1:8000` and `http://127.0.0.1:3001`.
+   - Then the public origin from System Settings. If it does not answer, that is only a warning: check the tunnel.
+8. Notes every unit in `deploy/systemd/` that differs from the installed copy (for example `reelforge-frontend.service`, now bound to 127.0.0.1). Review the change, copy it and run `daemon-reload` yourself.
 
 It needs passwordless `sudo systemctl restart reelforge-*` for the user that runs it.
 
@@ -1445,10 +1459,11 @@ Before treating the service as production-ready:
 - Create the administrator with `npm run create-admin` before the public route exists.
 - Use a strong unique PostgreSQL password for `studio_admin`.
 - Keep FastAPI bound to `127.0.0.1:8000`.
-- Keep Next.js bound to localhost; expose only through Cloudflare Tunnel.
+- Keep Next.js bound to `127.0.0.1:3001` (`npm start -- --hostname 127.0.0.1`); expose it only through Cloudflare Tunnel.
 - Do not expose the worker processes.
-- Set `frontend_origin` to the HTTPS production hostname.
-- Enable secure cookies after HTTPS is active.
+- Keep `frontend_origin` on the HTTPS production hostname (default `https://studio.imokome-cloud.com`).
+- Keep secure cookies on (the default).
+- Keep `frontend_origin` / `secure_cookies` out of the server's `instance/bootstrap.json`.
 - Keep provider, payOS, OnePAY, Google OAuth and Fernet secrets out of the repository.
 - Back up PostgreSQL and the media root (`/srv/data/videos/reelforge`) together, and keep a copy off the HDD.
 - Back up `/etc/reelforge/master.key` (or the legacy `REELFORGE_TOKEN_ENCRYPTION_KEY`) separately and securely: it protects OAuth tokens, payment credentials, AI keys and OAuth app secrets. Keep it `chmod 600`, owned by the service account.
@@ -1459,7 +1474,7 @@ Before treating the service as production-ready:
 
 ## 21. Production endpoints
 
-Expected production endpoints:
+Expected production endpoints. Only the public frontend is HTTPS; everything else is private:
 
 ```text
 Frontend:

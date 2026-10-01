@@ -14,6 +14,10 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# TestClient talks plain HTTP to http://testserver, where a Secure session cookie is never sent back. The
+# disposable app therefore runs as a development machine does: its instance/bootstrap.json overrides the
+# production origin (https://studio.imokome-cloud.com, Secure cookies) with http://localhost:3000.
+LOCAL_DEVELOPMENT = {"frontend_origin": "http://localhost:3000", "secure_cookies": False}
 
 PRELUDE = r'''
 import io, json, os, subprocess, logging
@@ -249,8 +253,8 @@ def run_program(body: str, env: dict | None = None):
             shutil.copytree(ROOT / folder, target / folder, ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy(ROOT / "alembic.ini", target / "alembic.ini")
         (target / "instance").mkdir()
-        (target / "instance" / "bootstrap.json").write_text(
-            json.dumps({"database_url": f"sqlite:///{target}/instance/test.db"}))
+        (target / "instance" / "bootstrap.json").write_text(json.dumps({
+            "database_url": f"sqlite:///{target}/instance/test.db", **LOCAL_DEVELOPMENT}))
         clean = {key: value for key, value in os.environ.items()
                  if not key.startswith(("FAL_", "VIDEO_", "GEMINI", "VOICE_", "RENDER_", "OPENAI", "TEXT_", "GOOGLE_",
                                         "REELFORGE_TOKEN", "TIKTOK_", "FACEBOOK_", "TRANSCRIPTION_", "RUNWAY",

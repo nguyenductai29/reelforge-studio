@@ -19,7 +19,7 @@ class WorkflowRunTest(unittest.TestCase):
                 shutil.copytree(ROOT / folder, target / folder, ignore=shutil.ignore_patterns("__pycache__"))
             shutil.copy(ROOT / "alembic.ini", target / "alembic.ini")
             (target / "instance").mkdir()
-            (target / "instance" / "bootstrap.json").write_text(json.dumps({"database_url": f"sqlite:///{target}/instance/test.db"}))
+            (target / "instance" / "bootstrap.json").write_text(json.dumps({"database_url": f"sqlite:///{target}/instance/test.db", "frontend_origin": "http://localhost:3000", "secure_cookies": False}))
             program = r'''
 from alembic import command
 from alembic.config import Config

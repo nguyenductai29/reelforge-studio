@@ -405,6 +405,11 @@ function GeneralPanel() {
           <label htmlFor="frontend_origin" className="text-xs font-medium">{s.general.frontendOrigin}</label>
           <Input id="frontend_origin" name="frontend_origin" defaultValue={String(system.frontend_origin ?? "")} className="h-8 bg-surface-2 font-mono text-xs" />
           <p className="text-[11px] text-muted-foreground">{s.general.frontendOriginHint}</p>
+          {system.local_override && (
+            <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px]">
+              {s.general.localOverride(system.local_override.frontend_origin, system.local_override.secure_cookies)}
+            </p>
+          )}
         </div>
         <div className="space-y-1">
           <label htmlFor="trial_project_limit" className="text-xs font-medium">{s.general.trialProjects}</label>

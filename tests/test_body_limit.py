@@ -196,6 +196,7 @@ class BodyLimitTests(unittest.TestCase):
             (target / "instance").mkdir()
             (target / "instance" / "bootstrap.json").write_text(json.dumps({
                 "database_url": f"sqlite:///{target}/instance/test.db",
+                "frontend_origin": "http://localhost:3000", "secure_cookies": False,
             }))
             program = r'''
 from alembic import command

@@ -1,4 +1,6 @@
 # ReelForge web (Next.js). It proxies /api/* to the API and holds no secrets.
+# Private on 127.0.0.1:3001 (next start listens on 0.0.0.0 unless told otherwise): only the Cloudflare
+# Tunnel reaches it, as https://studio.imokome-cloud.com.
 [Unit]
 Description=ReelForge Studio Next.js Frontend
 After=network-online.target reelforge-api.service
@@ -11,7 +13,7 @@ Group=tai
 WorkingDirectory=/home/tai/apps/reelforge-studio/frontend
 Environment=NODE_ENV=production
 Environment=PORT=3001
-ExecStart=/usr/bin/npm start
+ExecStart=/usr/bin/npm start -- --hostname 127.0.0.1
 Restart=always
 RestartSec=5
 StandardOutput=journal

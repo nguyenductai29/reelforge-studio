@@ -10,6 +10,7 @@ that has one.
 import json
 import os
 from pathlib import Path
+import re
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import sessionmaker
@@ -42,6 +43,34 @@ def database_url() -> URL:
     if url.drivername == "sqlite" and url.database and url.database.startswith("instance/"):
         url = url.set(database=str(ROOT / url.database))
     return url
+
+
+# A development machine (or a test) can serve the frontend somewhere other than the installation's public
+# origin, e.g. http://localhost:3000, possibly against a shared database. instance/bootstrap.json may then say so:
+#   {"database_url": "…", "frontend_origin": "http://localhost:3000", "secure_cookies": false}
+# These keys apply to the processes on this machine only. They never reach the database, where System
+# Settings keep the public origin (https://studio.imokome-cloud.com by default) for every other machine.
+LOCAL_SETTINGS = ("frontend_origin", "secure_cookies")
+
+
+def local_settings() -> dict:
+    """This machine's frontend origin override, validated like the admin form; ``{}`` when there is none.
+
+    Only ``instance/bootstrap.json`` can hold one. The legacy ``instance/config.json`` keeps its old meaning:
+    its values are copied into System Settings once."""
+    if source_file != CONFIG_FILE or not any(key in config for key in LOCAL_SETTINGS):
+        return {}
+    origin = config.get("frontend_origin")
+    if not isinstance(origin, str) or not re.fullmatch(r"https?://[^/\s]+", origin.rstrip("/")):
+        raise RuntimeError("instance/bootstrap.json: frontend_origin must be an origin such as "
+                           "http://localhost:3000 (scheme and host only)")
+    origin = origin.rstrip("/")
+    secure = config.get("secure_cookies", origin.startswith("https://"))
+    if not isinstance(secure, bool):
+        raise RuntimeError("instance/bootstrap.json: secure_cookies must be true or false")
+    if secure and not origin.startswith("https://"):
+        raise RuntimeError("instance/bootstrap.json: secure_cookies require an https frontend_origin")
+    return {"frontend_origin": origin, "secure_cookies": secure}
 
 
 url = database_url()

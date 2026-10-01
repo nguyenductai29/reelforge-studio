@@ -393,7 +393,7 @@ class NodeConfigApiTest(unittest.TestCase):
             shutil.copy(ROOT / "alembic.ini", target / "alembic.ini")
             (target / "instance").mkdir()
             (target / "instance" / "bootstrap.json").write_text(
-                json.dumps({"database_url": f"sqlite:///{target}/instance/test.db"}))
+                json.dumps({"database_url": f"sqlite:///{target}/instance/test.db", "frontend_origin": "http://localhost:3000", "secure_cookies": False}))
             program = r'''
 import json, os
 os.environ["OPENAI_API_KEY"] = "sk-test"

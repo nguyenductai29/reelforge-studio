@@ -347,13 +347,16 @@ def environment_report() -> list[dict]:
 
 
 def frontend_origin() -> str:
-    """System Settings → frontend_origin (read from the database when active)."""
+    """System Settings → frontend_origin (read from the database when active), or this machine's override."""
     if not _active:
         return ""
     try:
-        from app.db import Session
+        from app.db import Session, local_settings
         from app.models import SystemSetting
 
+        local = local_settings().get("frontend_origin")
+        if local:
+            return local
         with Session() as db:
             row = db.get(SystemSetting, "frontend_origin")
             return str(json.loads(row.value)).rstrip("/") if row else ""

@@ -22,7 +22,7 @@ from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from sqlalchemy import case, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.db import ROOT, config, engine, Session
+from app.db import ROOT, config, engine, local_settings, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import Notification, PaymentOrderEvent, SupportMessage, SupportTicket, UserProfile, VerificationCheck
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
@@ -49,9 +49,13 @@ from app.subtitles import CONTENT_TYPES as SUBTITLE_TYPES
 from app.workflow.ports import DATA_TYPES, describe_node_types, edge_problems, normalize_edges
 
 
+# A new installation serves its public origin over HTTPS with Secure cookies. A development machine
+# overrides both in its own instance/bootstrap.json (app/db.py, local_settings); migration 0021 moved
+# installations still on the old localhost defaults to these.
+PRODUCTION_ORIGIN = "https://studio.imokome-cloud.com"
 SYSTEM_DEFAULTS = {
-    "frontend_origin": "http://localhost:3000",
-    "secure_cookies": False,
+    "frontend_origin": PRODUCTION_ORIGIN,
+    "secure_cookies": True,
     "storage_dir": "instance/media",
     "trial_project_limit": 2,
     "registration_enabled": True,
@@ -73,6 +77,11 @@ def setting(db, key):
     return json.loads(db.get(SystemSetting, key).value)
 
 
+def effective(db, key):
+    """frontend_origin or secure_cookies as this machine uses them: the local override, else System Settings."""
+    return LOCAL[key] if key in LOCAL else setting(db, key)
+
+
 def workspace_settings(db, workspace_id):
     values = {}
     for key, default in WORKSPACE_DEFAULTS.items():
@@ -88,11 +97,15 @@ media_root = storage.media_root
 if not inspect(engine).has_table("system_settings"):
     raise RuntimeError("Database is not migrated. Run: python -m alembic upgrade head")
 
+# This machine's frontend origin override (instance/bootstrap.json); an invalid one stops the API here.
+LOCAL = local_settings()
+
 with Session.begin() as db:
     for key, default in SYSTEM_DEFAULTS.items():
         if db.get(SystemSetting, key) is None:
-            # Carry any pre-existing JSON configuration into the database once.
-            db.add(SystemSetting(key=key, value=json.dumps(config.get(key, default))))
+            # Carry any pre-existing JSON configuration into the database once. A local override is not
+            # carried: the database keeps the public value for the other machines.
+            db.add(SystemSetting(key=key, value=json.dumps(default if key in LOCAL else config.get(key, default))))
     for (workspace_id,) in db.execute(select(Workspace.id)):
         for key, default in WORKSPACE_DEFAULTS.items():
             if db.get(WorkspaceSetting, (workspace_id, key)) is None:
@@ -472,7 +485,7 @@ def enforce_limit(db, ws, table, limit_name):
 def same_origin(request: Request):
     origin = request.headers.get("origin")
     with Session() as db:
-        frontend_origin = setting(db, "frontend_origin")
+        frontend_origin = effective(db, "frontend_origin")
     allowed = {str(request.base_url).rstrip("/"), frontend_origin.rstrip("/")}
     if origin and origin.rstrip("/") not in allowed:
         raise HTTPException(403, "Invalid origin")
@@ -559,7 +572,7 @@ def login(data: Credentials, request: Request, response: Response):
     if invalid:
         raise HTTPException(401, "Invalid credentials")
     with Session() as db:
-        secure_cookies = setting(db, "secure_cookies")
+        secure_cookies = effective(db, "secure_cookies")
     response.set_cookie("rf_session", token, httponly=True, samesite="strict", secure=secure_cookies, max_age=604800)
     return {"email": user.email}
 
@@ -572,7 +585,9 @@ def logout(request: Request, response: Response):
         session = db.get(LoginSession, hashlib.sha256(raw.encode()).hexdigest()) if raw else None
         if session:
             db.delete(session)
-    response.delete_cookie("rf_session")
+        secure_cookies = effective(db, "secure_cookies")
+    # The same attributes as at login, so browsers that compare them replace the cookie.
+    response.delete_cookie("rf_session", httponly=True, samesite="strict", secure=secure_cookies)
     return {"ok": True}
 
 
@@ -604,6 +619,8 @@ def get_settings(request: Request):
             system["storage_dir"] = str(storage.media_root(db))
             root_source = system_config.source("storage.root")
             system["storage_dir_source"] = root_source if root_source in ("admin", "environment") else "setting"
+            # The stored values stay editable; this machine may use its own origin (instance/bootstrap.json).
+            system["local_override"] = LOCAL or None
         profile = db.get(UserProfile, user.id)
         return {"workspace": workspace_settings(db, ws.id), "system": system,
                 "profile": {"display_name": profile.display_name if profile else None}}
@@ -730,7 +747,7 @@ def update_system_settings(data: SystemSettingsInput, request: Request):
         for key, value in {**data.model_dump(), "frontend_origin": origin}.items():
             db.get(SystemSetting, key).value = json.dumps(value)
         db.get(Plan, "trial").project_limit = data.trial_project_limit
-        return {"system": {key: setting(db, key) for key in SYSTEM_DEFAULTS}}
+        return {"system": {**{key: setting(db, key) for key in SYSTEM_DEFAULTS}, "local_override": LOCAL or None}}
 
 
 def plan_data(plan):
@@ -805,7 +822,7 @@ def billing_checkout(data: CheckoutInput, request: Request):
         plan = db.get(Plan, data.plan_code)
         if not plan or not plan.is_active or not plan.price_vnd:
             raise HTTPException(400, "Plan price is not configured")
-        origin = setting(db, "frontend_origin")
+        origin = effective(db, "frontend_origin")
         order_code = secrets.randbelow(8_000_000_000_000) + 1_000_000_000_000
         manual = bank_qr.settings() if provider.name == "bank_qr" else None
         order = PaymentOrder(id=ident(), workspace_id=ws.id, plan_code=plan.code,
@@ -1589,7 +1606,7 @@ def _config_failure(exc) -> HTTPException:
 
 
 def _payment_view(db, provider: str) -> dict:
-    origin = setting(db, "frontend_origin").rstrip("/")
+    origin = effective(db, "frontend_origin").rstrip("/")
     return payment_setup.provider_view(db, provider, origin, payment_setup.activity(db))
 
 
@@ -1598,7 +1615,7 @@ def admin_payment_config(request: Request):
     """Each gateway as resolved (admin, bootstrap, environment or missing); identifiers masked, secrets never."""
     with Session() as db:
         admin_for(request, db)
-        providers = payment_setup.overview(db, setting(db, "frontend_origin"))
+        providers = payment_setup.overview(db, effective(db, "frontend_origin"))
         return {"providers": providers, "any_available": any(item["available"] for item in providers),
                 "vietqr_mode": payment_providers.vietqr_mode(),
                 "banks": [{"bin": code, "name": name} for code, name in bank_qr.BANKS],
@@ -1778,7 +1795,7 @@ def _ai_status(db, used: dict) -> dict:
 
 
 def _system_overview(db) -> dict:
-    origin = setting(db, "frontend_origin").rstrip("/")
+    origin = effective(db, "frontend_origin").rstrip("/")
     used = dict(db.execute(select(AITool.provider, func.count(AITool.id)).where(AITool.is_enabled.is_(True))
                            .group_by(AITool.provider)).all())
     return {

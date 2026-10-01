@@ -1622,12 +1622,12 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 
 ### R3. Defaults are unsafe for Internet exposure
 
-- `secure_cookies` defaults to `false`, so the session cookie is sent without the `Secure` flag.
-- `frontend_origin` defaults to `http://localhost:3000`.
+- ~~`secure_cookies` defaults to `false`; `frontend_origin` defaults to `http://localhost:3000`.~~ **Resolved (migration `0021_default_production_origin`):**
+  - The defaults are now `https://studio.imokome-cloud.com` with the `Secure` flag.
+  - Installations still on the old defaults were moved.
+  - Development machines override the origin in their own `instance/bootstrap.json` (`docs/SYSTEM_CONFIGURATION.md`, "The public origin").
 - A mutating request without an `Origin` header is accepted.
 - No security headers are set.
-
-A deployment must switch to an HTTPS origin and secure cookies before going public (see the checklist in `docs/home-server-deployment.md`).
 
 ### R4. Login throttling keys on a client IP that may be the proxy
 

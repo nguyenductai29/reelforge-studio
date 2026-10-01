@@ -1854,7 +1854,7 @@ export const ja: Dictionary = {
       keyHowTo: "マスターキーは PostgreSQL の外にあり、ここには表示されません。サーバー上で一度だけ作成/移行します:",
       keyBackup: "キーファイルはデータベースのバックアップとは別に保管してください。失うとすべての秘密情報の再入力が必要です。",
       bootstrapOnly: "サーバーに必要なのはデータベース URL (instance/bootstrap.json) とマスターキーファイルだけです。その他の設定はすべてここにあります。",
-      general: { frontendOrigin: "公開フロントエンドのアドレス", frontendOriginHint: "Cookie、決済コールバック、OAuth リダイレクトに使用します。", trialProjects: "Trial プランのプロジェクト数", secureCookies: "セキュア Cookie (HTTPS)", registration: "自己登録を許可" },
+      general: { frontendOrigin: "公開フロントエンドのアドレス", frontendOriginHint: "Cookie、決済コールバック、OAuth リダイレクトに使用します。既定値: https://studio.imokome-cloud.com。", localOverride: (origin: string, secure: boolean) => `このサーバーは instance/bootstrap.json により ${origin}（セキュア Cookie ${secure ? "オン" : "オフ"}）を使用しています（開発環境専用）。下の値は引き続き保存され、本番環境で使用されます。`, trialProjects: "Trial プランのプロジェクト数", secureCookies: "セキュア Cookie (HTTPS)", registration: "自己登録を許可" },
       aiHint: "キーは暗号化され、書き込み専用です。変更は API に即時、ワーカーには数秒で反映されます。",
       modelsInUse: (count: number) => `このプロバイダーを使う有効なモデル: ${count}`,
       providerState: { ready: "使用中", missing: "キーなし", off: "無効" },

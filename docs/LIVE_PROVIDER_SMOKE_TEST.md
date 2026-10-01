@@ -204,7 +204,7 @@ Each process logs one `process_started` line with the file it loaded and a finge
 Steps (the UI labels are the English ones; Vietnamese is the default language):
 
 1. Start the API.
-2. Start the frontend and open `http://localhost:3000`. Use that exact origin: it is the default `frontend_origin`, and the API rejects changes from any other origin (403 "Invalid origin").
+2. Start the frontend and open `http://localhost:3000`. Use that exact origin. The machine's `instance/bootstrap.json` must declare it, with `"frontend_origin": "http://localhost:3000", "secure_cookies": false` (README, "Start locally"). The API rejects changes from any other origin (403 "Invalid origin").
 3. Start the text worker.
 4. Start the video worker.
 5. Sign in.

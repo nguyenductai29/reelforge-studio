@@ -441,6 +441,8 @@ export type SystemSettings = {
   storage_dir_source?: "admin" | "environment" | "setting";
   trial_project_limit: number;
   registration_enabled: boolean;
+  /** This server's own origin from instance/bootstrap.json (development); the stored values above stay in use elsewhere. */
+  local_override?: { frontend_origin: string; secure_cookies: boolean } | null;
 };
 export type Settings = {
   workspace: WorkspaceSettings;

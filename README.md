@@ -7,6 +7,17 @@ Self-hosted foundation for a short-video production platform. Next.js/React/Type
 Requires Python 3.11+, Node.js 20.9+ and an existing PostgreSQL database. Create a dedicated database and user on your PostgreSQL server. Give the user permission to create tables in its own database/schema.
 
 1. Create the local `instance` directory and copy `config.example.json` to `instance/bootstrap.json`. The template contains the requested host, user, database and query string. Replace the literal `PASSWORD` with the **actual password on your server**; it is only a placeholder in the repository. URL-encode the password if it contains reserved URL characters. This is the **only backend bootstrap value outside PostgreSQL**: the app cannot discover a database connection by reading that database. Keep the file out of Git and restrict access to the service account. Do not put the database URL in an environment file; provider keys go in `.env.runtime` (below).
+
+   **The template also sets the development origin.** Keep it on a development machine:
+
+   ```json
+   {"database_url": "…", "frontend_origin": "http://localhost:3000", "secure_cookies": false}
+   ```
+
+   The default frontend origin is the production one, `https://studio.imokome-cloud.com`, with Secure cookies.
+   - Without these two keys, sign-in from `http://localhost:3000` is refused (the origin does not match), and a Secure cookie is not kept over plain HTTP.
+   - They apply to this machine only and are never written to the database. A development machine that shares the production database therefore leaves the public settings alone.
+   - Never put them on the production server: `deploy.sh` stops if it finds them.
 2. Install dependencies and run the initial migration **before** starting the API. From the repository root:
 
 ```bash
@@ -101,7 +112,7 @@ Secrets are write-only and encrypted at rest with `REELFORGE_TOKEN_ENCRYPTION_KE
 "payos": {"client_id": "YOUR_CLIENT_ID", "api_key": "YOUR_API_KEY", "checksum_key": "YOUR_CHECKSUM_KEY"}
 ```
 
-Put that `payos` property alongside `database_url` inside the same JSON object. Keep the real keys only on the backend server. Never commit `instance/bootstrap.json`. Configure a public HTTPS endpoint for the backend at `/api/webhooks/payos` in your payOS channel; localhost cannot receive live webhooks. Set `frontend_origin` in System Settings to your public HTTPS frontend URL and enable secure cookies. Verify the callback configuration with payOS before accepting customers.
+Put that `payos` property alongside `database_url` inside the same JSON object. Keep the real keys only on the backend server. Never commit `instance/bootstrap.json`. Configure a public HTTPS endpoint for the backend at `/api/webhooks/payos` in your payOS channel; localhost cannot receive live webhooks. `frontend_origin` (System Settings) is `https://studio.imokome-cloud.com` with secure cookies by default; change it there if your public URL differs. Verify the callback configuration with payOS before accepting customers.
 
 The workspace owner can select a higher priced plan under **Gói & credits**. The server freezes the VND price in a payment order, requests a payOS hosted link, and updates the subscription for 30 days only after validating the signed webhook and matching its amount. Repeated callbacks do not extend the subscription again. A return to the website is informational, not proof of payment. Admin changes to a subscription remain manual and bypass checkout; account for them separately. Crypto payments are not enabled.
 
@@ -121,9 +132,19 @@ The application accepts the supplied `postgresql://` URL and explicitly selects 
 
 The database URL and Next.js-to-API address are deployment bootstrap details and cannot be stored exclusively in PostgreSQL without a separate service-discovery mechanism. payOS keys remain in the private backend bootstrap file. Provider API keys and Google OAuth credentials are read from environment variables; YouTube tokens and resumable upload sessions are encrypted before storage in PostgreSQL with a Fernet key kept outside the database. Back up that key securely alongside the database and media: losing it makes saved connections and upload sessions unreadable.
 
-For remote access, put HTTPS in front of the frontend, set `frontend_origin` and `secure_cookies` in System Settings, keep the API and PostgreSQL private, and apply matching request-body and rate limits at the reverse proxy. Changing the frontend origin may require signing in again on the new address.
+**Production origin.**
 
-For an existing instance using `instance/config.json`, the backend reads it if `instance/bootstrap.json` is absent. If tables were created by an older version without Alembic, back up and verify its schema against the initial migration before stamping `python -m alembic stamp head` (stamping does not create or change tables). On a fresh empty database use `upgrade head`, never `stamp head`. Old `storage_dir`, `secure_cookies` and `frontend_origin` values are imported into the database once if settings rows do not exist. The old file can then be replaced with `instance/bootstrap.json` containing only `database_url`. Existing SQLite data must be migrated to PostgreSQL separately; changing the URL does not migrate data.
+- Only the public origin is HTTPS: `https://studio.imokome-cloud.com`, through the Cloudflare Tunnel.
+- The frontend service stays private at `http://127.0.0.1:3001`, and the API at `http://127.0.0.1:8000`. Keep PostgreSQL private too.
+- A new installation stores `frontend_origin = https://studio.imokome-cloud.com` and `secure_cookies = true` (Quản trị → Cài đặt hệ thống → Chung; both stay editable).
+  - Migration `0021_default_production_origin` moves an installation still on the exact old defaults (`http://localhost:3000`, cookies not Secure).
+  - It keeps any other value an admin saved.
+- Apply matching request-body and rate limits at the reverse proxy.
+- Changing the frontend origin may require signing in again on the new address.
+
+Details: [docs/SYSTEM_CONFIGURATION.md](docs/SYSTEM_CONFIGURATION.md#the-public-origin).
+
+For an existing instance using `instance/config.json`, the backend reads it if `instance/bootstrap.json` is absent. If tables were created by an older version without Alembic, back up and verify its schema against the initial migration before stamping `python -m alembic stamp head` (stamping does not create or change tables). On a fresh empty database use `upgrade head`, never `stamp head`. Old `storage_dir`, `secure_cookies` and `frontend_origin` values in `instance/config.json` are imported into the database once if settings rows do not exist. In `instance/bootstrap.json`, `frontend_origin` and `secure_cookies` mean something else: a development machine's own origin, never imported. The old file can then be replaced with `instance/bootstrap.json` containing only `database_url`. Existing SQLite data must be migrated to PostgreSQL separately; changing the URL does not migrate data.
 
 ## Current architecture and next steps
 

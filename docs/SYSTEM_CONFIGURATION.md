@@ -20,6 +20,56 @@ Everything else is configured by a system admin in the web UI and stored in Post
   - notification timing.
 - **Admin → Thanh toán → Cổng thanh toán:** VietQR (manual or payOS) and cards (OnePAY).
 
+## The public origin
+
+**Topology.** Only the public origin is HTTPS:
+
+```text
+browser ── https://studio.imokome-cloud.com ── Cloudflare Tunnel
+        ── http://127.0.0.1:3001  Next.js (private; proxies /api/*)
+        ── http://127.0.0.1:8000  FastAPI (private)
+```
+
+**System Settings → Chung** (table `system_settings`, not an environment variable). A new installation stores:
+
+| Setting | Default |
+| --- | --- |
+| `frontend_origin` | `https://studio.imokome-cloud.com` |
+| `secure_cookies` | `true` |
+
+Both stay editable. Secure cookies need an `https://` origin.
+
+**What the origin decides:**
+
+- **The same-origin check.** Every state-changing request, sign-in included, must carry this `Origin` (or the API's own). Anything else gets `403 Invalid origin`.
+- **The session cookie** `rf_session`. It is always `HttpOnly` and `SameSite=Strict`, and `Secure` while `secure_cookies` is on. Logging out clears it with the same attributes.
+- **Derived addresses:**
+  - the OAuth redirect URLs, unless overridden;
+  - the payment callback and return URLs shown to the admin.
+
+**Upgrading.** Migration `0021_default_production_origin` replaces the **exact** old defaults only.
+
+- If `frontend_origin` is exactly `"http://localhost:3000"`:
+  - it becomes `https://studio.imokome-cloud.com`;
+  - `secure_cookies` becomes `true` if it was `false`.
+- Any other origin keeps both values, including:
+  - another domain or port;
+  - `http://localhost:3000/`;
+  - the production origin with cookies deliberately off.
+- Downgrading changes nothing.
+
+**Local development.** `next dev` runs on `http://localhost:3000`, where neither default works, so the development machine says so in its own `instance/bootstrap.json`:
+
+```json
+{"database_url": "…", "frontend_origin": "http://localhost:3000", "secure_cookies": false}
+```
+
+- **Scope.** These keys apply to the API on that machine only. They are never written to the database, so a development machine that shares the production database does not change the public setting.
+- **Validation.** They are checked like the admin form: scheme and host only, and Secure cookies need `https://`. `secure_cookies` defaults to whether the origin is `https://`. An invalid value stops the API at start.
+- **The admin page.** Cài đặt hệ thống → Chung shows a notice while an override is active. Saving the form there still stores the production values.
+- **The server.** `deploy.sh` stops if the server's `instance/bootstrap.json` has either key.
+- **The legacy file.** `instance/config.json` keeps its old meaning: its values are copied into System Settings once.
+
 ## The master key
 
 `app/master_key.py` looks for the key in this order; the first match wins:
@@ -230,6 +280,8 @@ A fresh installation shows none of the first two.
 | `POST /api/admin/system-config/storage/check` | `{root}` → whether it is usable and whether it would move away from the current root |
 
 ## Upgrading an existing installation
+
+Since `0021_default_production_origin`, an installation still on the old localhost defaults moves to the public origin ([above](#the-public-origin)). A development machine adds its override to `instance/bootstrap.json` first.
 
 1. Apply the migration: `python -m alembic upgrade head` (`0019_system_configuration`). It only adds tables and one nullable column.
 2. Move the key into a file, as the service account:

@@ -12,6 +12,16 @@ Everything else is configured in the web UI and stored in PostgreSQL, with secre
 - **Quản trị → Cài đặt hệ thống:** AI keys, OAuth apps, storage, runtime, credits, notifications.
 - **Quản trị → Thanh toán → Cổng thanh toán:** VietQR, cards.
 
+**The public origin is `https://studio.imokome-cloud.com`, and only it is HTTPS.**
+
+| Service | Address | Reachable from |
+| --- | --- | --- |
+| Public origin | `https://studio.imokome-cloud.com` | The internet, through the Cloudflare Tunnel |
+| Frontend service (Next.js) | `http://127.0.0.1:3001` | This server only |
+| API (FastAPI) | `http://127.0.0.1:8000` | This server only; Next.js proxies `/api/*` |
+
+A new installation stores this origin with Secure cookies on (Cài đặt hệ thống → Chung), so sign-in works through the tunnel without changing anything.
+
 **No `.env.runtime` is needed.** The details are in [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md); the full home-server walkthrough is in [home-server-deployment.md](home-server-deployment.md).
 
 ## Disk layout (home server)
@@ -56,6 +66,8 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    ```
 
    `REELFORGE_DATABASE_URL` can replace the file in container-style setups. The file wins when both exist.
+
+   On the server the file holds `database_url` (and nothing about the origin). `frontend_origin` / `secure_cookies` in it are a development machine's override: `deploy.sh` stops if it finds them.
 4. **The master key, as the service account:**
 
    ```bash
@@ -92,11 +104,12 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    No unit sets a provider key.
    - `EnvironmentFile=-/etc/reelforge/runtime.env` is optional; leave the file out.
    - `/etc/reelforge/master.key` is the default path, so the units need no variable for it.
-8. **Public access:** a Cloudflare Tunnel route to `http://localhost:3001` (home-server-deployment.md § 14).
+   - The API listens on `127.0.0.1:8000` and the frontend on `127.0.0.1:3001` (`npm start -- --hostname 127.0.0.1`). Neither is reachable from the network.
+8. **Public access:** a Cloudflare Tunnel route `studio.imokome-cloud.com` → `http://127.0.0.1:3001` (home-server-deployment.md § 14). Cloudflare terminates HTTPS.
 9. **In the browser:**
    1. Create the first admin.
    2. In **Cài đặt hệ thống**:
-      - **Chung:** the public frontend origin, secure cookies on HTTPS.
+      - **Chung:** check the public frontend origin, `https://studio.imokome-cloud.com`, with secure cookies on (the defaults). Change it only for another hostname.
       - **Lưu trữ:** `/srv/data/videos/reelforge`.
       - **Nhà cung cấp AI:** the keys you use. Press **Kiểm tra kết nối** for each.
       - **OAuth mạng xã hội:** the apps, with the redirect URLs registered as shown.
@@ -111,7 +124,8 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
 `./deploy.sh` does the following:
 
 1. pulls the source and installs the dependencies;
-2. makes sure there is a master key (`deploy/ensure-master-key.sh`):
+2. stops if `instance/bootstrap.json` sets `frontend_origin` or `secure_cookies` (a development override);
+3. makes sure there is a master key (`deploy/ensure-master-key.sh`):
    - **A usable key** (the key file, or the legacy key the services still load from `/etc/reelforge/runtime.env`): continue.
    - **No key file, but the legacy key exists:** copy that same key into `/etc/reelforge/master.key`.
    - **No key at all:** check PostgreSQL (`python -m app.master_key encrypted`).
@@ -121,10 +135,15 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    - **Then:** verify with `python -m app.master_key status`, remind you to back the key up, and continue.
 
    `/etc/reelforge` belongs to root, so a new key is created as the service account in a private staging directory and installed with `sudo install` (owner `tai`, 600). Run `deploy.sh` as the account the services run as.
-3. migrates and builds;
-4. restarts the API, the frontend and every enabled worker (`reelforge-<name>-worker` or `reelforge-worker@<name>`).
+4. migrates and builds;
+5. restarts the API, the frontend and every enabled worker (`reelforge-<name>-worker` or `reelforge-worker@<name>`);
+6. checks `http://127.0.0.1:8000` and `http://127.0.0.1:3001`;
+7. checks the public origin stored in System Settings. A failure there is a warning only, since the tunnel runs on its own;
+8. notes every unit in `deploy/systemd/` that differs from the installed copy.
 
-Configuration changes never need it: save them in the admin UI.
+Configuration changes never need a deploy: save them in the admin UI.
+
+Migration `0021_default_production_origin` moves an installation still on the old defaults (`http://localhost:3000`, cookies not Secure) to `https://studio.imokome-cloud.com` with Secure cookies. It keeps any other value an admin saved.
 
 ## Backups
 
