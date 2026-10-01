@@ -1061,11 +1061,63 @@ Each open stream checks the database every `REELFORGE_SSE_POLL_SECONDS` (default
 
 ---
 
-## 15. Optional payOS configuration
+## 15. Payment gateways (payOS VietQR and OnePAY cards)
 
-Keep payOS credentials only in the private backend bootstrap file.
+Since Phase 19, a system admin configures both gateways in the web UI: **Quản trị → Thanh toán → Cổng thanh toán**.
 
-Example structure:
+- **No SSH, no restart.** A saved change applies to the next checkout and callback.
+- **Secrets are write-only.** They are encrypted at rest and never shown again.
+
+See [PAYMENTS.md](PAYMENTS.md#configuration-phase-19-admin-managed).
+
+### One-time server prerequisite: the encryption key
+
+Admin-managed credentials are encrypted with `REELFORGE_TOKEN_ENCRYPTION_KEY`, the same key that protects OAuth tokens. If YouTube, TikTok or Facebook publishing is set up, it is already in `/etc/reelforge/runtime.env`. Otherwise:
+
+1. Generate a key:
+
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+2. Add `REELFORGE_TOKEN_ENCRYPTION_KEY=<output>` to `/etc/reelforge/runtime.env`.
+3. Run `sudo systemctl restart reelforge-api`.
+
+**Back the key up off the server**, next to (but not inside) the database dumps.
+
+- With the database but without the key, saved payment credentials cannot be read. Restore the key, or re-enter every gateway secret in the admin UI.
+- Never change the key on a running installation.
+- The server never generates a key by itself; without one, the admin UI says so and refuses to save.
+
+### Register the callback URLs
+
+The admin dialog shows these with copy buttons. They come from System Settings → `frontend_origin`.
+
+```text
+payOS webhook:  https://studio.imokome-cloud.com/api/webhooks/payos
+OnePAY IPN:     https://studio.imokome-cloud.com/api/webhooks/onepay
+OnePAY return:  https://studio.imokome-cloud.com/api/billing/onepay/return
+```
+
+They pass through Cloudflare Tunnel and Next.js like every other `/api/*` request; no extra route is needed.
+
+### Configure
+
+1. **Prices.** In **Quản trị → Cấu hình gói**, set the Standard and Pro prices. A plan without a price shows "Not purchasable: no price".
+2. **VietQR.** Open **Cổng thanh toán → VietQR**. Enter the Client ID, API Key and Checksum Key, then press **Lưu** and **Kiểm tra cấu hình**.
+3. **Card, sandbox first.** Open **Cổng thanh toán → Thẻ**, choose **Sandbox** and enter OnePAY's test merchant values. Press **Lưu**, **Kiểm tra cấu hình** and **Kiểm tra với OnePAY (QueryDR)**. Pay with the test card. Follow [Sandbox → production](PAYMENTS.md#sandbox--production-onepay).
+4. **Card, production.** Enter the production values, choose **Production** and confirm.
+5. **Record it.** Tick each step in **Kiểm định** ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+
+**Disabling.** **Tắt** stops new checkouts for a gateway immediately. Pending orders still settle by webhook, IPN or **Check**.
+
+### Legacy configuration (still supported)
+
+Deployments configured before Phase 19 keep working without any change. The admin dialog shows them as *Configured from: Bootstrap* or *Environment*, and they can be disabled there.
+
+As soon as an admin saves credentials for a gateway, those take precedence and the legacy values are ignored for it; they are not imported. Changing legacy values still needs the file edit and `sudo systemctl restart reelforge-api`.
+
+**payOS** in `instance/bootstrap.json`:
 
 ```json
 {
@@ -1078,19 +1130,7 @@ Example structure:
 }
 ```
 
-The production webhook endpoint must be public HTTPS:
-
-```text
-https://studio.imokome-cloud.com/api/webhooks/payos
-```
-
-Verify the actual proxy path and callback configuration before accepting payments.
-
-Never commit real payOS credentials.
-
-### Optional OnePAY card payments
-
-Card payment appears in Billing only when OnePAY is configured. Add the merchant values to `/etc/reelforge/runtime.env` (section 4.1; see [PAYMENTS.md](PAYMENTS.md)):
+**OnePAY** in `/etc/reelforge/runtime.env` (section 4.1):
 
 ```text
 ONEPAY_MERCHANT_ID=...
@@ -1101,20 +1141,22 @@ ONEPAY_QUERY_PASSWORD=...
 # ONEPAY_PAYMENT_URL / ONEPAY_QUERY_URL default to OnePAY production; set the sandbox URLs while testing.
 ```
 
-Register these addresses with OnePAY:
+Never commit real credentials.
 
-```text
-IPN:    https://studio.imokome-cloud.com/api/webhooks/onepay
-Return: https://studio.imokome-cloud.com/api/billing/onepay/return
-```
+### Safety
 
-Restart `reelforge-api` after changing them. **Admin → Payments** shows payOS and OnePAY as Configured or Missing, never their values. **Admin → Payments → Cấu hình cổng** lists every field by name with its status (identifiers masked), OnePAY's mode (Sandbox for `mtf.onepay.vn`), the webhook/IPN/return URLs to copy, and when the last webhook, IPN or query arrived. **Kiểm tra cấu hình** validates without charging; for OnePAY it can also send one read-only QueryDR about a reference that does not exist. A browser return alone never marks an order paid: the IPN or a QueryDR check must confirm it. Test with OnePAY's sandbox, then one small real payment, before accepting customers.
+- **Payment proof.** A browser return alone never marks an order paid: the IPN or a QueryDR check must confirm it.
+- **Card data.** ReelForge never sees card numbers: buyers pay on OnePAY's and payOS's hosted pages.
+- **Testing.** Test with OnePAY's sandbox, then one small real payment, before accepting customers.
 
-Migration `0015_admin_payments_profiles` (display names and indexes for the paginated admin tables) is applied by `python -m alembic upgrade head`, as usual; card orders need no other schema change.
+### Migrations
 
-Migration `0016_storage_lifecycle` (plan storage limits, asset kinds and expiry) is applied the same way. Set up the storage root and the daily cleanup timer in section 11 when you upgrade.
+Each is applied by `python -m alembic upgrade head`, as usual:
 
-Migration `0017_notify_support_verify` (notifications, support tickets and messages, and the live-verification checklist) is applied the same way. It only adds tables; no existing row changes.
+- `0015_admin_payments_profiles`: display names and indexes for the paginated admin tables. Card orders need no other schema change.
+- `0016_storage_lifecycle`: plan storage limits, asset kinds and expiry. Set up the storage root and the daily cleanup timer in section 11 when you upgrade.
+- `0017_notify_support_verify`: notifications, support tickets and messages, and the live-verification checklist. It only adds tables; no existing row changes.
+- `0018_admin_payment_config`: the encrypted payment gateway configuration and its audit trail. It only adds tables; orders, subscriptions, credits and the payment activity record are untouched, and legacy payment configuration keeps working.
 
 **After upgrading to Phase 18:**
 
@@ -1124,6 +1166,12 @@ Migration `0017_notify_support_verify` (notifications, support tickets and messa
   - `REELFORGE_SSE_MAX_SECONDS` (300);
   - `CREDITS_LOW_THRESHOLD` (20).
 - Then open **Admin → Kiểm định**: readiness should show Migration ok. Work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+
+**After upgrading to Phase 19:**
+
+- Run `./deploy.sh`: it applies the migration and restarts the API and frontend.
+- Check that **Kiểm định → Thanh toán** shows the encryption key as OK.
+- Then move gateways to admin-managed configuration when convenient; nothing forces it.
 
 ---
 
@@ -1361,7 +1409,7 @@ Before treating the service as production-ready:
 - Enable secure cookies after HTTPS is active.
 - Keep provider, payOS, OnePAY, Google OAuth and Fernet secrets out of the repository.
 - Back up PostgreSQL and the media root (`/srv/data/videos/reelforge`) together, and keep a copy off the HDD.
-- Back up `REELFORGE_TOKEN_ENCRYPTION_KEY` separately and securely.
+- Back up `REELFORGE_TOKEN_ENCRYPTION_KEY` separately and securely: it protects OAuth tokens and the admin-managed payment gateway credentials.
 - Apply Alembic migrations before restarting application services after an update.
 - Review application and Cloudflare request-body/rate limits before public use.
 

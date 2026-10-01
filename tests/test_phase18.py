@@ -197,7 +197,7 @@ print("support ok")
 
 ADMIN = COMMON + r'''
 import app.db as app_db
-from app import payment_providers
+from app import payment_providers, readiness
 os.environ.update({"ONEPAY_MERCHANT_ID": "MERCHANT123", "ONEPAY_ACCESS_CODE": "ACCESS-SENTINEL",
                    "ONEPAY_HASH_KEY": "A1B2C3D4E5F60718293A4B5C6D7E8F90", "ONEPAY_QUERY_USER": "query-user-SENTINEL",
                    "ONEPAY_QUERY_PASSWORD": "query-pass-SENTINEL",
@@ -225,14 +225,16 @@ assert {m["id"] for m in billing.json()["methods"]} == {"vietqr", "card"} and "f
 setup = client.get("/api/admin/payment-config")
 clean(setup.text)
 payos, onepay_setup = setup.json()["providers"]
-assert payos["configured"] and {f["name"]: f["status"] for f in payos["fields"]} == {
-    "payos.client_id": "configured", "payos.api_key": "configured", "payos.checksum_key": "configured"}
-assert payos["fields"][0]["value"] == "clie…5678" and "value" not in payos["fields"][1]
+assert payos["configured"] and {name: f["status"] for name, f in payos["fields"].items()} == {
+    "client_id": "configured", "api_key": "configured", "checksum_key": "configured"}
+assert payos["source"] == "bootstrap" and payos["fields"]["client_id"]["legacy"] == "payos.client_id"
+assert payos["fields"]["client_id"]["masked"] == "clie…5678" and "masked" not in payos["fields"]["api_key"]
 assert payos["endpoints"] == [{"key": "webhook", "url": "http://localhost:3000/api/webhooks/payos"}]
-fields = {f["name"]: f for f in onepay_setup["fields"]}
+fields = onepay_setup["fields"]
 assert onepay_setup["mode"] == "sandbox" and onepay_setup["configured"] and onepay_setup["query_configured"]
-assert fields["ONEPAY_MERCHANT_ID"]["value"] == "MERC…T123" and "value" not in fields["ONEPAY_HASH_KEY"]
-assert fields["ONEPAY_PAYMENT_URL"]["value"] == "https://mtf.onepay.vn/paygate/vpcpay.op"
+assert onepay_setup["source"] == "environment" and fields["hash_key"]["legacy"] == "ONEPAY_HASH_KEY"
+assert fields["merchant_id"]["masked"] == "MERC…T123" and "masked" not in fields["hash_key"]
+assert onepay_setup["urls"]["payment_url"] == "https://mtf.onepay.vn/paygate/vpcpay.op"
 assert {e["key"] for e in onepay_setup["endpoints"]} == {"ipn", "return"}
 
 # Checks: local only by default; the remote one is one read-only QueryDR, mocked here.
@@ -255,8 +257,7 @@ assert client.post("/api/admin/payment-config/check", json={"provider": "payos",
 assert "check" in client.get("/api/admin/payment-config").json()["providers"][1]["activity"]
 os.environ["ONEPAY_HASH_KEY"] = "not-hex"
 assert client.post("/api/admin/payment-config/check", json={"provider": "onepay"}).json()["local"]["status"] == "error"
-assert {f["name"]: f["status"] for f in client.get("/api/admin/payment-config").json()["providers"][1]["fields"]}[
-    "ONEPAY_HASH_KEY"] == "invalid"
+assert client.get("/api/admin/payment-config").json()["providers"][1]["fields"]["hash_key"]["status"] == "invalid"
 
 # Readiness: every section, safe values only.
 report = client.get("/api/admin/readiness")
@@ -271,7 +272,7 @@ assert sections["publishing"]["youtube"]["status"] == "ok" and sections["publish
 
 # The checklist persists who verified what; nothing is ticked by itself.
 listed = client.get("/api/admin/verification").json()["items"]
-assert len(listed) == 18 and not any(item["verified"] for item in listed)
+assert len(listed) == len(readiness.CHECKLIST) and not any(item["verified"] for item in listed)
 saved = client.put("/api/admin/verification/onepay_sandbox_payment", json={"verified": True, "note": "Thẻ test OK"}).json()
 assert saved["verified"] and saved["verified_by"] == "owner@example.com" and saved["note"] == "Thẻ test OK"
 again = {item["key"]: item for item in client.get("/api/admin/verification").json()["items"]}

@@ -18,6 +18,8 @@
 
 > Phase 18 adds a system-admin-only payment setup view (field names and configured/missing, never a secret; a read-only check), a realtime notification center (Server-Sent Events with a polling fallback), in-app customer support with an admin console, and a live-verification center (safe readiness checks and a manual checklist), with migration 0017; see [Phase 18 changes](#phase-18-changes), [NOTIFICATIONS.md](NOTIFICATIONS.md), [SUPPORT.md](SUPPORT.md) and [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md). Offline tests only.
 
+> Phase 19 lets a system admin configure payOS (VietQR) and OnePAY (cards) from the web UI. It adds a central configuration resolver (admin first, bootstrap/env as fallback), credentials encrypted at rest and never returned, an enabled switch that never strands pending orders, OnePAY Sandbox/Production/Advanced with a production confirmation, an audit trail and a per-gateway live checklist, with migration 0018; see [Phase 19 changes](#phase-19-changes) and [PAYMENTS.md](PAYMENTS.md). Offline tests only.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -577,9 +579,36 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
   - `test_product_audit.py` (Phase 18 frontend checks).
 - **Not verified live:** the stream through Cloudflare on the real domain, and payOS/OnePAY activity from real callbacks.
 
+### Phase 19 changes
+
+- **Resolver** (`app/payment_config.py`): `get(provider)` returns the source (`admin`, `bootstrap`, `environment`, `missing`), the switch, the mode, the values and any error.
+  - `payos_credentials`, `onepay_config` and `onepay_urls` build what the providers use; `usable` and `offered` decide availability.
+  - `issues` explains unavailability; `save`, `set_enabled` and `audit` apply and record changes.
+  - `app/billing.py`, `payment_providers` (`OnePayProvider.config()`), `setup.py` and `readiness.py` all go through it. `onepay.configured()` and `OnePayConfig.from_environment()` remain the legacy readers.
+- **Encryption** (`app/secret_box.py`): Fernet with an HKDF-SHA256 key per purpose derived from `REELFORGE_TOKEN_ENCRYPTION_KEY`. It reports `key_missing` or `cannot_decrypt`; it never generates a key.
+- **API:**
+  - `GET /api/admin/payment-config` returns a new shape: `fields` keyed by name, `source`, `enabled`, `available`, `issues`, `history`, `urls`.
+  - New routes: `PUT /api/admin/payment-config/{provider}` (keep/replace/clear per secret; `confirm_production`) and `POST …/{provider}/check|enable|disable`.
+  - `GET /api/billing` offers only enabled, valid methods; checkout answers 503 for the others. `payment_providers.readiness()` adds `enabled`, `available` and `source`.
+  - Request bodies are parsed manually, so a 422 never echoes a submitted value.
+- **Frontend:**
+  - `PaymentGatewaysDialog` (`admin/payment-gateways.tsx`) replaces the read-only setup dialog, with VietQR/Card tabs, write-only secret fields, mode badges, the production confirmation, issues, URLs, activity and history.
+  - The Admin header warns when no gateway is enabled; Plans show purchasability.
+  - Billing names the methods "VietQR / Bank Transfer" and "Credit / Debit Card" without provider internals.
+  - The checklist is grouped.
+- **Checklist:** `payos_payment` and `onepay_sandbox_payment` are kept; eleven payment items are added (29 in all, grouped).
+- **Schema:** migration `0018_admin_payment_config` adds `payment_provider_configs` and `payment_config_audit`, tested from 0017 and back.
+- **Tests:**
+  - `test_phase19.py`: security, payOS and OnePAY programs;
+  - `test_phase19_migration.py`;
+  - `Phase19FrontendTest` in `test_product_audit.py`;
+  - `test_phase18.py` updated for the new response shape.
+- **Not verified live:** saving real credentials, the OnePAY sandbox endpoints, and real payments.
+
 ### Configuration sources
 
-- **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
+- **`instance/bootstrap.json`:** `database_url` and optional legacy `payos` credentials.
+- **`payment_provider_configs` table:** admin-managed payment gateway configuration, encrypted (Phase 19).
 - **`system_settings` table:** `frontend_origin`, `secure_cookies`, `storage_dir`, `trial_project_limit`, `registration_enabled`.
 - **`plans` table:** `storage_limit_bytes` per plan (Phase 17).
 - **`workspace_settings` table:** `default_language`, `video_orientation`, `approval_required`, `default_platform`, `default_tone`, `default_duration`, `default_publish_time` (Phase 16).
@@ -592,7 +621,7 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
   - Rendering: `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`, `RENDER_SUBTITLE_FONT`, `RENDER_STILL_SECONDS`.
   - Storage (Phase 17): `REELFORGE_STORAGE_ROOT`, `WORKSPACE_MEDIA_QUOTA_BYTES` (a cap), `REELFORGE_RETENTION_INTERMEDIATE_DAYS`, `REELFORGE_RETENTION_TEMP_DAYS`, `REELFORGE_RETENTION_PARTIAL_DAYS`, `REELFORGE_RETENTION_ORPHAN_DAYS`.
   - Notifications (Phase 18): `REELFORGE_SSE_POLL_SECONDS`, `REELFORGE_SSE_MAX_SECONDS`, `CREDITS_LOW_THRESHOLD`.
-  - Card payments (Phase 14): `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`.
+  - Card payments (Phase 14; legacy fallback since Phase 19): `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`.
   - YouTube OAuth: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `REELFORGE_TOKEN_ENCRYPTION_KEY`.
   - Runtime file and logs: `REELFORGE_ENV_FILE` (default `.env.runtime`), `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL`.
   - Live smoke tests: `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`, `REELFORGE_SMOKE_IMAGE_PROVIDER`, `REELFORGE_SMOKE_IMAGE_MODEL`, `REELFORGE_SMOKE_VOICE_PROVIDER`, `REELFORGE_SMOKE_VOICE_MODEL`; `REELFORGE_LIVE_TESTS=1` and `REELFORGE_LIVE_VIDEO=1` only from the shell.

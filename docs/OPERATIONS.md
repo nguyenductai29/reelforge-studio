@@ -99,7 +99,7 @@ Phase 18 adds two tabs. All eight tabs (Người dùng, Studio & credits, Cấu 
 | Endpoint (system admins) | Filters | Notes |
 | --- | --- | --- |
 | `GET /api/admin/support`, `/support/{id}` | `q` (ticket ID prefix, subject, email, studio), `status`, `category`, `priority` | **Hỗ trợ** tab. `POST …/{id}/messages` replies; `PATCH …/{id}` sets status or priority. See [SUPPORT.md](SUPPORT.md) |
-| `GET /api/admin/payment-config` | — | Thanh toán → **Cấu hình cổng**. Field names, masked identifiers and configured/missing, never a secret. `POST …/check` validates; see [PAYMENTS.md](PAYMENTS.md#admin-setup-view) |
+| `GET /api/admin/payment-config`, `PUT …/{provider}`, `POST …/{provider}/check\|enable\|disable` | — | Thanh toán → **Cổng thanh toán** (Phase 19). Configure VietQR and cards without SSH or restarts. Secrets are write-only and encrypted at rest; every change is audited. See [PAYMENTS.md](PAYMENTS.md#configuration-phase-19-admin-managed) |
 | `GET /api/admin/readiness` | — | **Kiểm định** tab: safe local checks of the database, storage, FFmpeg, workers, AI keys, publishing, payments, realtime and support |
 | `GET /api/admin/verification`, `PUT …/{key}` | — | The manual live-verification checklist, ticked only by an admin. See [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) |
 
@@ -118,4 +118,4 @@ List responses are `{items, total, limit, offset}` (`limit` 20 by default, at mo
 
 ## Never logged or returned
 
-Provider keys, payment-provider credentials and hash keys, OAuth access and refresh tokens, signed media URLs, cookies and upload session URLs. Logs carry IDs, codes and sizes; job payloads are summarized to safe fields (`app/logs.py`).
+Provider keys, payment-provider credentials and hash keys (including admin-managed ones), OAuth access and refresh tokens, signed media URLs, cookies and upload session URLs. Logs carry IDs, codes and sizes; job payloads are summarized to safe fields (`app/logs.py`).

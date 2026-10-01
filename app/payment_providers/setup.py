@@ -1,112 +1,79 @@
-"""What a system admin needs to set up each payment provider (Phase 18A), never a secret value.
+"""The system admin's payment gateway view (Phase 18A, managed since Phase 19), never a secret value.
 
-Credentials stay where they are: payOS in ``instance/bootstrap.json`` (``payos``
-object), OnePAY in the runtime environment (``ONEPAY_*``). They are not copied into
-the database and cannot be edited from the browser. For each field the admin
-sees its name, where it is set and whether it is configured, missing or invalid.
-Identifiers (the payOS client ID, the OnePAY merchant ID) are shown masked; keys,
-access codes, hash keys and passwords only as configured or missing.
+``overview`` describes each provider as ``app.payment_config`` resolves it: where
+the configuration comes from (admin, bootstrap, environment or missing), whether
+it is enabled and offered, each field as configured/missing/invalid (identifiers
+masked), OnePAY's mode and endpoints, why it is unavailable, the URLs to register
+with the provider, recent activity and the change history.
 
-``check`` validates the configuration locally. With ``remote``, OnePAY is asked
-one QueryDR question about a reference that cannot exist: it reads, never
-charges and never creates a checkout. payOS has no read-only call that proves
-its keys without a real order, so its remote check is reported as unsupported.
+``check`` validates the configuration in use. With ``remote``, OnePAY is asked one
+QueryDR question about a reference that cannot exist: it reads, never charges and
+never creates a checkout. payOS has no read-only call that proves its keys without
+a real order, so its remote check is reported as unsupported.
 
-``record_activity`` keeps the time of the last verified webhook, IPN, status
-query and check per provider (system setting ``payment_activity``).
+``record_activity`` keeps the time of the last verified webhook, IPN, status query
+and check per provider (system setting ``payment_activity``).
 """
 from datetime import datetime, timezone
 import json
-import os
-import re
 import time
-from urllib.parse import urlsplit
 
+from app import payment_config
 from app.payment_providers import onepay
 
 ACTIVITY_KEY = "payment_activity"
-SANDBOX_HOSTS = ("mtf.onepay.vn",)
-_HEX = re.compile(r"(?:[0-9A-Fa-f]{2})+\Z")
 
 
-def _mask(value: str) -> str:
-    value = value.strip()
-    return value[:2] + "…" if len(value) <= 8 else f"{value[:4]}…{value[-4:]}"
+def provider_view(db, provider: str, origin: str, activity: dict) -> dict:
+    from app.models import User
 
-
-def _field(name: str, value: str | None, *, source: str, show: bool = False, valid=None) -> dict:
-    value = (value or "").strip()
-    status = "missing" if not value else "invalid" if valid is not None and not valid(value) else "configured"
-    return {"name": name, "source": source, "status": status, **({"value": _mask(value)} if show and value else {})}
-
-
-def onepay_mode(payment_url: str) -> str:
-    host = (urlsplit(payment_url).hostname or "").lower()
-    if host in SANDBOX_HOSTS:
-        return "sandbox"
-    return "production" if host == "onepay.vn" or host.endswith(".onepay.vn") else "custom"
-
-
-def payos_setup(origin: str, activity: dict) -> dict:
-    from app.db import config  # read on use: the bootstrap file belongs to the configured database
-
-    data = config.get("payos") or {}
-    fields = [_field("payos.client_id", data.get("client_id"), source="bootstrap", show=True),
-              _field("payos.api_key", data.get("api_key"), source="bootstrap"),
-              _field("payos.checksum_key", data.get("checksum_key"), source="bootstrap")]
-    return {"provider": "payos", "method": "vietqr", "configured": all(f["status"] == "configured" for f in fields),
-            "fields": fields, "mode": None, "setup_file": "instance/bootstrap.json",
-            "endpoints": [{"key": "webhook", "url": f"{origin}/api/webhooks/payos"}],
-            "activity": activity.get("payos", {})}
-
-
-def onepay_setup(origin: str, activity: dict) -> dict:
-    env = os.environ.get
-    payment_url = env("ONEPAY_PAYMENT_URL", "").strip() or onepay.PRODUCTION_PAYMENT_URL
-    query_url = env("ONEPAY_QUERY_URL", "").strip() or onepay.PRODUCTION_QUERY_URL
-    https = lambda value: urlsplit(value).scheme == "https" and bool(urlsplit(value).hostname)  # noqa: E731
-    fields = [_field("ONEPAY_MERCHANT_ID", env("ONEPAY_MERCHANT_ID"), source="environment", show=True),
-              _field("ONEPAY_ACCESS_CODE", env("ONEPAY_ACCESS_CODE"), source="environment"),
-              _field("ONEPAY_HASH_KEY", env("ONEPAY_HASH_KEY"), source="environment", valid=_HEX.fullmatch),
-              _field("ONEPAY_QUERY_USER", env("ONEPAY_QUERY_USER"), source="environment"),
-              _field("ONEPAY_QUERY_PASSWORD", env("ONEPAY_QUERY_PASSWORD"), source="environment"),
-              # Endpoints are not secret: shown in full, with the OnePAY default when unset.
-              {"name": "ONEPAY_PAYMENT_URL", "source": "environment", "value": payment_url,
-               "status": "configured" if https(payment_url) else "invalid", "default": not env("ONEPAY_PAYMENT_URL")},
-              {"name": "ONEPAY_QUERY_URL", "source": "environment", "value": query_url,
-               "status": "configured" if https(query_url) else "invalid", "default": not env("ONEPAY_QUERY_URL")}]
-    return {"provider": "onepay", "method": "card", "configured": onepay.configured(), "fields": fields,
-            "mode": onepay_mode(payment_url), "setup_file": None,
-            "query_configured": all(f["status"] == "configured" for f in fields[3:5]),
-            "endpoints": [{"key": "ipn", "url": f"{origin}/api/webhooks/onepay"},
-                          {"key": "return", "url": f"{origin}/api/billing/onepay/return"}],
-            "activity": activity.get("onepay", {})}
-
-
-def overview(origin: str, activity: dict) -> list[dict]:
-    origin = origin.rstrip("/")
-    return [payos_setup(origin, activity), onepay_setup(origin, activity)]
-
-
-def check(provider: str, *, remote: bool = False, client=None) -> dict:
-    """Validate one provider's configuration; ``remote`` adds OnePAY's read-only QueryDR round trip."""
-    from app import billing
-
+    resolved = payment_config.get(provider, db)
+    usable = payment_config.usable(resolved)
+    editor = db.get(User, resolved.updated_by_user_id) if resolved.updated_by_user_id else None
+    updated_by = editor.email if editor else None
+    view = {"provider": provider, "method": payment_config.METHOD[provider], "enabled": resolved.enabled,
+            "configured": usable, "available": resolved.enabled and usable, "source": resolved.source,
+            "legacy_source": resolved.legacy_source, "mode": resolved.mode,
+            "fields": payment_config.fields_view(resolved), "issues": payment_config.issues(resolved),
+            "updated_at": resolved.updated_at.isoformat() if resolved.updated_at else None, "updated_by": updated_by,
+            "activity": activity.get(provider, {}), "history": payment_config.history(db, provider)}
     if provider == "payos":
-        local = {"status": "ok"} if billing.configured() else {"status": "error", "code": "not_configured"}
-        return {"provider": provider, "local": local,
+        view["endpoints"] = [{"key": "webhook", "url": f"{origin}/api/webhooks/payos"}]
+    else:
+        payment_url, query_url = payment_config.onepay_urls(resolved)
+        view["urls"] = {"payment_url": payment_url, "query_url": query_url}
+        view["query_configured"] = bool(resolved.values.get("query_user") and resolved.values.get("query_password"))
+        view["endpoints"] = [{"key": "ipn", "url": f"{origin}/api/webhooks/onepay"},
+                             {"key": "return", "url": f"{origin}/api/billing/onepay/return"}]
+    return view
+
+
+def overview(db, origin: str) -> list[dict]:
+    origin, recent = origin.rstrip("/"), activity(db)
+    return [provider_view(db, provider, origin, recent) for provider in payment_config.PROVIDERS]
+
+
+def check(provider: str, *, remote: bool = False, client=None, db=None) -> dict:
+    """Validate one provider's configuration in use; ``remote`` adds OnePAY's read-only QueryDR round trip."""
+    resolved = payment_config.get(provider, db)
+    if resolved.error:
+        return {"provider": provider, "source": resolved.source, "local": {"status": "error", "code": resolved.error},
+                "remote": {"status": "skipped"}}
+    if provider == "payos":
+        local = {"status": "ok"} if payment_config.usable(resolved) else {"status": "error", "code": "not_configured"}
+        return {"provider": provider, "source": resolved.source, "local": local,
                 "remote": {"status": "unsupported" if remote else "skipped"}}
-    if provider != "onepay":
-        raise ValueError("unknown provider")
     try:
-        config = onepay.OnePayConfig.from_environment()
+        config = payment_config.onepay_config(resolved)
     except onepay.OnePayError as exc:
-        return {"provider": provider, "local": {"status": "error", "code": exc.code}, "remote": {"status": "skipped"}}
+        return {"provider": provider, "source": resolved.source, "local": {"status": "error", "code": exc.code},
+                "remote": {"status": "skipped"}}
     local = {"status": "ok"} if config.can_query else {"status": "warning", "code": "query_not_configured"}
+    result = {"provider": provider, "source": resolved.source, "mode": resolved.mode, "local": local}
     if not remote:
-        return {"provider": provider, "local": local, "remote": {"status": "skipped"}}
+        return {**result, "remote": {"status": "skipped"}}
     if not config.can_query:
-        return {"provider": provider, "local": local, "remote": {"status": "skipped", "code": "query_not_configured"}}
+        return {**result, "remote": {"status": "skipped", "code": "query_not_configured"}}
     from app.payment_providers import http_client
 
     try:
@@ -114,8 +81,8 @@ def check(provider: str, *, remote: bool = False, client=None) -> dict:
         with (client or http_client()) as session:
             onepay.query(config, f"RFCHECK{int(time.time())}", client=session)
     except onepay.OnePayError as exc:
-        return {"provider": provider, "local": local, "remote": {"status": "error", "code": exc.code}}
-    return {"provider": provider, "local": local, "remote": {"status": "ok"}}
+        return {**result, "remote": {"status": "error", "code": exc.code}}
+    return {**result, "remote": {"status": "ok"}}
 
 
 def activity(db) -> dict:

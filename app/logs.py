@@ -27,7 +27,7 @@ REDACTED = "[redacted]"
 # Provider keys and other credentials the runtime environment may hold.
 SECRET_ENV_NAMES = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "FAL_KEY", "RUNWARE_API_KEY",
                     "REPLICATE_API_TOKEN", "RUNWAYML_API_SECRET", "DOLA_API_KEY", "GOOGLE_OAUTH_CLIENT_SECRET",
-                    "REELFORGE_TOKEN_ENCRYPTION_KEY")
+                    "REELFORGE_TOKEN_ENCRYPTION_KEY", "ONEPAY_ACCESS_CODE")
 _SECRET_ENV = re.compile(r"(_KEY|_TOKEN|_SECRET|PASSWORD)$")
 # Field names whose values are never logged; counts such as "max_tokens" do not match.
 _SECRET_FIELD = re.compile(r"(^|_)(api_?key|key|secret|password|authorization|cookie|token)$", re.IGNORECASE)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, Radio, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -33,6 +33,7 @@ function checkValue(check: SystemCheck, formatDateTime: (value: string) => strin
   }
   if (typeof check.last_run === "string") parts.push(formatDateTime(check.last_run));
   if (typeof check.last_seen_at === "string") parts.push(formatDateTime(check.last_seen_at));
+  if (typeof check.source === "string") parts.push(check.source);
   if (typeof check.mode === "string") parts.push(check.mode);
   if (Array.isArray(check.variables)) parts.push((check.variables as string[]).join(", "));
   if (typeof check.enabled_models === "number" && check.enabled_models) parts.push(`${check.enabled_models} model`);
@@ -184,8 +185,15 @@ export function AdminVerification() {
         </div>
         <ul className="scrollbar-thin relative min-h-0 flex-1 overflow-y-auto">
           {checklist.isPending && <Loader2 className="m-3 size-4 animate-spin text-muted-foreground" />}
-          {checklist.data?.map((item) => (
-            <ChecklistRow key={`${item.key}-${item.verified_at}-${item.note}`} item={item} />
+          {checklist.data?.map((item, index, all) => (
+            <Fragment key={`${item.key}-${item.verified_at}-${item.note}`}>
+              {item.group && item.group !== all[index - 1]?.group && (
+                <li className="sticky top-0 z-10 border-b border-border bg-surface px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {v.groups[item.group]}
+                </li>
+              )}
+              <ChecklistRow item={item} />
+            </Fragment>
           ))}
         </ul>
       </section>

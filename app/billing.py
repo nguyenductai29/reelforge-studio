@@ -1,18 +1,29 @@
-"""payOS adapter. Credentials live in the private bootstrap file, not in SQL."""
+"""payOS adapter (VietQR). Credentials come from ``app.payment_config``: the admin-managed, encrypted
+configuration when one is saved, else the ``payos`` object of the private bootstrap file; never from SQL columns."""
 from urllib.parse import urlparse
-from app.db import config
+from app import payment_config
+
+
+def _credentials() -> dict | None:
+    return payment_config.payos_credentials(payment_config.get("payos"))
 
 
 def configured() -> bool:
-    data = config.get("payos") or {}
-    return all(data.get(key) for key in ("client_id", "api_key", "checksum_key"))
+    """Whether payOS credentials are usable: enough for webhooks and status checks of existing orders."""
+    return _credentials() is not None
+
+
+def enabled() -> bool:
+    """The system admin's switch for new VietQR checkouts (on when no admin configuration exists)."""
+    return payment_config.get("payos").enabled
 
 
 def client():
-    if not configured():
+    credentials = _credentials()
+    if credentials is None:
         raise RuntimeError("payOS credentials are not configured")
     from payos import PayOS
-    return PayOS(**{key: config["payos"][key] for key in ("client_id", "api_key", "checksum_key")})
+    return PayOS(**credentials)
 
 
 def create_link(order_code: int, amount: int, plan: str, origin: str) -> str:

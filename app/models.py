@@ -346,3 +346,30 @@ class VerificationCheck(Base):
     verified_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PaymentProviderConfig(Base):
+    """A payment provider's admin-managed configuration (migration 0018); every credential is ciphertext."""
+
+    __tablename__ = "payment_provider_configs"
+    provider: Mapped[str] = mapped_column(String(16), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Fernet ciphertext of a JSON object (app/secret_box.py); null while credentials stay in bootstrap/env.
+    config_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class PaymentConfigAudit(Base):
+    """Who changed or tested a payment provider's configuration; changed field names only, never values."""
+
+    __tablename__ = "payment_config_audit"
+    __table_args__ = (Index("ix_payment_config_audit_provider", "provider", "created_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(16))
+    action: Mapped[str] = mapped_column(String(16))
+    admin_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")

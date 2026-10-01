@@ -70,10 +70,19 @@ Migration `0003_billing_orders` adds optional VND prices to plans and payment or
 
 Migration `0004_credits_usage` creates an account for every existing studio, an append-only credit ledger and usage records. Existing balances start at zero. An order saves its credit award when checkout starts; old pending orders from before this migration have a zero award. Subsequent migrations add AI tools (`0005`), workflow runs (`0006`), durable jobs and asset lineage (`0007`), login protection (`0008`), encrypted YouTube OAuth connections (`0009`) and publication records (`0010`). Always apply `upgrade head` with the matching source before starting the API or workers.
 
+### Payment gateways (Phase 19)
+
+A system admin configures both gateways in **Quản trị → Thanh toán → Cổng thanh toán**, with no SSH and no restart.
+
+- **VietQR / Bank Transfer (payOS):** Client ID, API Key and Checksum Key.
+- **Credit / Debit Card (OnePAY):** Merchant ID, Access Code, Hash Key and QueryDR credentials, in Sandbox or Production mode. Production needs a confirmation.
+
+Secrets are write-only and encrypted at rest with `REELFORGE_TOKEN_ENCRYPTION_KEY`; back that key up with the database. Each gateway can be disabled for new checkouts without affecting existing orders. The configuration methods below still work as a fallback for existing deployments. See [docs/PAYMENTS.md](docs/PAYMENTS.md#configuration-phase-19-admin-managed).
+
 ### VNQR checkout with payOS
 
-1. Open a payOS merchant account and create a payment channel. In **Quản trị**, configure the Standard and Pro prices in VND per 30 days. Empty prices keep checkout disabled.
-2. In your ignored `instance/bootstrap.json`, keep `database_url` and add the private keys:
+1. Open a payOS merchant account and create a payment channel. In **Quản trị**, configure the Standard and Pro prices in VND per 30 days. Empty prices keep checkout disabled; Admin → Plans shows whether each plan is purchasable.
+2. Enter the keys in **Quản trị → Thanh toán → Cổng thanh toán → VietQR**. Alternatively (the pre-Phase 19 way, still supported), in your ignored `instance/bootstrap.json`, keep `database_url` and add the private keys:
 
 ```json
 "payos": {"client_id": "YOUR_CLIENT_ID", "api_key": "YOUR_API_KEY", "checksum_key": "YOUR_CHECKSUM_KEY"}
@@ -85,7 +94,7 @@ The workspace owner can select a higher priced plan under **Gói & credits**. Th
 
 ### Card payments with OnePAY
 
-Card payment is a second payment method on the same orders and settlement code (Phase 14). Set `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY` and, recommended, `ONEPAY_QUERY_USER` / `ONEPAY_QUERY_PASSWORD` in `.env.runtime`, and register `https://<frontend>/api/webhooks/onepay` (IPN) and `https://<frontend>/api/billing/onepay/return` (return) with OnePAY. The buyer then chooses **VietQR / Bank transfer** or **Bank card** after picking a plan; only configured methods are offered. An order is paid only by OnePAY's signed IPN or a server-side QueryDR check, for its exact amount, and only once. See [docs/PAYMENTS.md](docs/PAYMENTS.md).
+Card payment is a second payment method on the same orders and settlement code (Phase 14). Configure it in **Cổng thanh toán → Thẻ** (or, as a fallback, set `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY` and, recommended, `ONEPAY_QUERY_USER` / `ONEPAY_QUERY_PASSWORD` in `.env.runtime`), and register `https://<frontend>/api/webhooks/onepay` (IPN) and `https://<frontend>/api/billing/onepay/return` (return) with OnePAY. The buyer then chooses **VietQR / Bank Transfer** or **Credit / Debit Card** after picking a plan; only enabled, configured methods are offered. Card details are entered on OnePAY's page, never in ReelForge. An order is paid only by OnePAY's signed IPN or a server-side QueryDR check, for its exact amount, and only once. See [docs/PAYMENTS.md](docs/PAYMENTS.md).
 
 The same page now permits a paid plan to be renewed for another 30 days and can ask payOS for the authoritative status of a pending order when the webhook has not yet arrived. The status becomes **expired** when the end date passes and protected operations stop; no background scheduler is needed for this check. Subscription renewal is manual, not an automatic debit. A confirmed payment grants the credits captured on its order once; admin adjustments are recorded in the credit ledger. A supported video job reserves credits before it enters the queue and records usage after a successful MP4 save. A clear rejection before the provider accepts a task refunds the reservation. If submission or a later result is uncertain, the run becomes **needs_attention**, keeps the reserved credits, and cannot be retried; a system admin resolves the held reservation in **Admin → Reconciliation** by confirming consumption or refunding the exact held amount. Decisions are audited and idempotent; see [Credit reconciliation](docs/CREDIT_RECONCILIATION.md). Deploy migration `0011_credit_reconciliation` before restarting the updated API/workers. Failed/canceled payments do not grant credits. Refund processing is not automated: reconcile any refund with the payment provider and the admin before changing an existing paid subscription.
 
@@ -243,9 +252,10 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 
 - **Notification bell** with live updates (Server-Sent Events, polling as a fallback) for runs, publishing, payments, credits, storage and support. Behind nginx, turn buffering off for `/api/notifications/stream`; Cloudflare Tunnel needs nothing. See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 - **Support**: account menu → Hỗ trợ for users; Admin → Hỗ trợ for system admins. See [docs/SUPPORT.md](docs/SUPPORT.md).
-- **Payment setup** (system admins): Admin → Payments → Cấu hình cổng shows which payOS/OnePAY fields are set, the mode and the callback URLs, never a secret, and runs a check that never charges. See [docs/PAYMENTS.md](docs/PAYMENTS.md#admin-setup-view).
+- **Payment gateways** (system admins): see *Payment gateways (Phase 19)* above.
 - **Admin → Kiểm định**: safe readiness checks and the manual live-verification checklist. See [docs/LIVE_VERIFICATION.md](docs/LIVE_VERIFICATION.md).
 - Migration `0017_notify_support_verify`.
+- Phase 19: admin-managed payment gateways; migration `0018_admin_payment_config`.
 
 ### Voice, subtitles and the final render (Phases 6–8)
 

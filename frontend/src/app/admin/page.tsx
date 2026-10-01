@@ -28,9 +28,18 @@ import { cn } from "@/lib/utils";
 const TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification"] as const;
 type Tab = (typeof TABS)[number];
 
-function PlanForm({ plan }: { plan: Plan }) {
+/** Why a plan can or cannot be bought right now (the checkout enforces the same rules). */
+function purchasability(plan: Plan, paymentReady: boolean): "free" | "inactive" | "noPrice" | "noGateway" | "ok" {
+  if (plan.code === "trial") return "free";
+  if (!plan.is_active) return "inactive";
+  if (!plan.price_vnd || plan.price_vnd <= 0) return "noPrice";
+  return paymentReady ? "ok" : "noGateway";
+}
+
+function PlanForm({ plan, paymentReady }: { plan: Plan; paymentReady: boolean }) {
   const { t } = useI18n();
   const p = t.admin.plans;
+  const state = purchasability(plan, paymentReady);
   const client = useQueryClient();
   const showError = useErrorToast();
   const [active, setActive] = useState(plan.is_active);
@@ -72,8 +81,14 @@ function PlanForm({ plan }: { plan: Plan }) {
   return (
     <form className="panel space-y-3 p-4" onSubmit={save}>
       <div className="flex items-center justify-between gap-2">
-        <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          {plan.code}
+        <span className="flex flex-wrap items-center gap-1.5">
+          <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            {plan.code}
+          </span>
+          <span className={cn("rounded-md px-2 py-0.5 text-[11px]", state === "ok" ? "bg-success/15 text-success"
+            : state === "free" ? "bg-surface-2 text-muted-foreground" : "bg-warning/15 text-warning")}>
+            {p.purchasable[state]}
+          </span>
         </span>
         <label className="flex items-center gap-2 text-xs">
           {p.active}
@@ -134,6 +149,8 @@ export default function AdminPage() {
   const overview = admin.data;
   if (!overview) return <Loader2 className="mx-auto mt-10 size-5 animate-spin text-muted-foreground" />;
   const counts = overview.counts;
+  // Older APIs report only "configured" per provider.
+  const paymentReady = overview.payment_providers.some((item) => item.available ?? item.configured);
   const stats: [string, number, boolean][] = [
     [a.stats.users, counts.users, false],
     [a.stats.studios, counts.workspaces, false],
@@ -153,6 +170,7 @@ export default function AdminPage() {
           <h1 className="text-xl font-semibold">{a.title}</h1>
           <p className="truncate text-xs text-muted-foreground">{a.subtitle}</p>
           {overview.api_outdated && <p className="text-xs text-warning">{a.apiOutdated}</p>}
+          {!paymentReady && <p className="text-xs text-warning">{a.noGateway}</p>}
         </div>
         <dl className="flex flex-wrap gap-2">
           {stats.map(([label, value, warn]) => (
@@ -194,6 +212,7 @@ export default function AdminPage() {
               <PlanForm
                 key={`${plan.code}-${plan.name}-${plan.price_vnd}-${plan.is_active}-${plan.monthly_credits}-${plan.storage_limit_bytes}`}
                 plan={plan}
+                paymentReady={paymentReady}
               />
             ))}
           </div>

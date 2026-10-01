@@ -7,8 +7,11 @@
 
 Every provider turns what it learns into ``Evidence``. ``payments.settle`` then
 applies it to the order of that provider only, once: the subscription and the
-credits are never touched by provider code. A provider is offered only when the
-server has its credentials; nothing here ever returns a credential.
+credits are never touched by provider code. Credentials come from
+``app.payment_config`` (admin-managed, else bootstrap/env). A provider is offered
+for new checkouts only when the system admin has it enabled and its credentials
+are valid; callbacks and status queries of existing orders need only valid
+credentials. Nothing here ever returns a credential.
 """
 from dataclasses import dataclass
 
@@ -44,7 +47,15 @@ class PaymentProvider:
     method = ""
 
     def configured(self) -> bool:
+        """Whether the credentials are usable (callbacks and status queries need only this)."""
         raise NotImplementedError
+
+    def enabled(self) -> bool:
+        """The system admin's switch for new checkouts."""
+        return True
+
+    def offered(self) -> bool:
+        return self.enabled() and self.configured()
 
     def checkout(self, *, order_code: int, amount_vnd: int, plan_code: str, origin: str, client_ip: str) -> str:
         """The URL the buyer is sent to."""
@@ -69,6 +80,9 @@ class PayOSProvider(PaymentProvider):
     def configured(self) -> bool:
         return _payos().configured()
 
+    def enabled(self) -> bool:
+        return _payos().enabled()
+
     def checkout(self, *, order_code, amount_vnd, plan_code, origin, client_ip):
         return _payos().create_link(order_code, amount_vnd, plan_code, origin)
 
@@ -87,11 +101,25 @@ class OnePayProvider(PaymentProvider):
 
     name, method = "onepay", "card"
 
+    @staticmethod
+    def config() -> onepay.OnePayConfig:
+        """The resolved OnePAY configuration (``app.payment_config``); ``OnePayError`` when incomplete."""
+        from app import payment_config
+        return payment_config.onepay_config(payment_config.get("onepay"))
+
     def configured(self) -> bool:
-        return onepay.configured()
+        try:
+            self.config()
+        except onepay.OnePayError:
+            return False
+        return True
+
+    def enabled(self) -> bool:
+        from app import payment_config
+        return payment_config.get("onepay").enabled
 
     def checkout(self, *, order_code, amount_vnd, plan_code, origin, client_ip):
-        config = onepay.OnePayConfig.from_environment()
+        config = self.config()
         return onepay.checkout_url(config, merch_txn_ref=str(order_code), amount_vnd=amount_vnd,
                                    order_info=f"RF {plan_code.upper()} {order_code}",
                                    return_url=f"{origin}/api/billing/onepay/return", client_ip=client_ip,
@@ -99,22 +127,21 @@ class OnePayProvider(PaymentProvider):
 
     def evidence(self, params) -> Evidence:
         """A signed OnePAY return or IPN as evidence; ``OnePayError`` when the signature does not match."""
-        result = onepay.read_result(params, onepay.OnePayConfig.from_environment())
+        result = onepay.read_result(params, self.config())
         return _evidence(result)
 
     def lookup(self, order_code, amount_vnd):
         with http_client() as client:
-            result = onepay.query(onepay.OnePayConfig.from_environment(), str(order_code), client=client)
+            result = onepay.query(self.config(), str(order_code), client=client)
         evidence = _evidence(result)
         if evidence.order_code != order_code:
             raise ProviderMismatch("Provider order mismatch")
         return evidence
 
-    @staticmethod
-    def can_confirm() -> bool:
+    def can_confirm(self) -> bool:
         """Whether a browser return can be confirmed server to server (QueryDR credentials are set)."""
         try:
-            return onepay.OnePayConfig.from_environment().can_query
+            return self.config().can_query
         except onepay.OnePayError:
             return False
 
@@ -137,11 +164,16 @@ def provider(name: str) -> PaymentProvider | None:
 
 
 def readiness() -> list[dict]:
-    """Which providers the server can use; never their credentials."""
-    return [{"provider": item.name, "method": item.method, "configured": item.configured()}
-            for item in PROVIDERS.values()]
+    """Which providers the server can use and offers, and where their configuration comes from; never values."""
+    from app import payment_config
+    out = []
+    for item in PROVIDERS.values():
+        configured, enabled = item.configured(), item.enabled()
+        out.append({"provider": item.name, "method": item.method, "configured": configured, "enabled": enabled,
+                    "available": configured and enabled, "source": payment_config.get(item.name).source})
+    return out
 
 
 def available_methods() -> list[dict]:
-    """The payment methods a buyer may choose: configured providers only."""
-    return [{"id": item.method, "provider": item.name} for item in PROVIDERS.values() if item.configured()]
+    """The payment methods a buyer may choose: enabled providers with valid credentials only."""
+    return [{"id": item.method, "provider": item.name} for item in PROVIDERS.values() if item.offered()]

@@ -430,7 +430,16 @@ export type Settings = {
   profile: { display_name: string | null };
 };
 
-export type PaymentProviderStatus = { provider: "payos" | "onepay"; method: PaymentMethod; configured: boolean };
+export type PaymentProviderStatus = {
+  provider: "payos" | "onepay";
+  method: PaymentMethod;
+  /** Credentials are usable (callbacks of existing orders work). */
+  configured: boolean;
+  /** Phase 19: the system admin's switch, and whether buyers can choose it now. Absent from older APIs. */
+  enabled?: boolean;
+  available?: boolean;
+  source?: PaymentConfigSource;
+};
 /** GET /api/admin: counts from COUNT queries; the collections have paginated endpoints of their own. */
 export type AdminOverview = {
   counts: {
@@ -548,28 +557,51 @@ export type SupportMessage = {
 export type SupportTicketDetail = SupportTicket & { thread: SupportMessage[] };
 
 /** Phase 18A: payment provider setup as a system admin sees it (never a secret value). */
-export type PaymentSetupField = {
-  name: string;
-  source: "bootstrap" | "environment";
+/** Phase 19: a payment gateway as the server resolves it. Secrets are write-only: never in this type. */
+export type PaymentConfigSource = "admin" | "bootstrap" | "environment" | "missing";
+export type PaymentMode = "sandbox" | "production" | "custom";
+export type PaymentField = {
+  configured: boolean;
   status: "configured" | "missing" | "invalid";
-  /** A masked identifier, or a full endpoint URL; never a key. */
-  value?: string;
-  default?: boolean;
+  secret: boolean;
+  required: boolean;
+  /** Where the legacy source keeps it (a bootstrap key or an environment variable). */
+  legacy: string;
+  /** Identifiers only (client ID, merchant ID), masked. */
+  masked?: string;
 };
+export type PaymentIssue = { level: "error" | "warning"; code: string; field?: string };
 export type PaymentSetup = {
   provider: "payos" | "onepay";
   method: PaymentMethod;
+  enabled: boolean;
   configured: boolean;
-  fields: PaymentSetupField[];
-  mode: "sandbox" | "production" | "custom" | null;
-  setup_file: string | null;
+  available: boolean;
+  source: PaymentConfigSource;
+  legacy_source: "bootstrap" | "environment" | null;
+  mode: PaymentMode | null;
+  fields: Record<string, PaymentField>;
+  issues: PaymentIssue[];
+  updated_at: string | null;
+  updated_by: string | null;
+  urls?: { payment_url: string; query_url: string };
   query_configured?: boolean;
   endpoints: { key: "webhook" | "ipn" | "return"; url: string }[];
   activity: Partial<Record<"webhook" | "ipn" | "query" | "check", string>>;
+  history: { action: "created" | "updated" | "enabled" | "disabled" | "tested"; at: string; by: string | null;
+             metadata: { changed?: string[]; local?: string; remote_status?: string } }[];
 };
+export type PaymentSetupOverview = {
+  providers: PaymentSetup[];
+  any_available: boolean;
+  encryption: { available: boolean; variable: string };
+};
+/** What a secret input sends: untouched fields are kept, never cleared by an empty string. */
+export type SecretUpdate = { action: "keep" } | { action: "replace"; value: string } | { action: "clear" };
 export type PaymentCheckStatus = "ok" | "warning" | "error" | "skipped" | "unsupported";
 export type PaymentCheck = {
   provider: "payos" | "onepay";
+  source: PaymentConfigSource;
   local: { status: PaymentCheckStatus; code?: string };
   remote: { status: PaymentCheckStatus; code?: string };
   checked_at: string;
@@ -581,6 +613,8 @@ export type SystemCheck = { key: string; status: SystemCheckStatus; detail?: str
 export type SystemReadiness = { checked_at: string; sections: { key: string; checks: SystemCheck[] }[] };
 export type VerificationItem = {
   key: string;
+  /** Absent from older APIs. */
+  group?: "platform" | "ai" | "publishing" | "vietqr" | "card" | "operations";
   paid: boolean;
   how: string;
   verified: boolean;

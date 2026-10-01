@@ -7,7 +7,7 @@ Admin → **Kiểm định** answers two questions for system admins:
 
 Only system admins can open it, and the API enforces that. Nothing on the page reads out a secret, sends a paid request, creates a checkout or publishes anything.
 
-Code: `app/readiness.py`, the `/api/admin/readiness` and `/api/admin/verification` endpoints in `app/main.py`, and `frontend/src/components/reelforge/admin/admin-verification.tsx`. Migration `0017` adds `verification_checks`.
+Code: `app/readiness.py`, the `/api/admin/readiness` and `/api/admin/verification` endpoints in `app/main.py`, and `frontend/src/components/reelforge/admin/admin-verification.tsx`. Migration `0017` adds `verification_checks`; Phase 19 splits the payment items per gateway.
 
 ## Readiness (automatic)
 
@@ -27,23 +27,23 @@ Code: `app/readiness.py`, the `/api/admin/readiness` and `/api/admin/verificatio
 
 **Kiểm tra luồng thông báo** opens the notification stream from the admin's own browser, through every proxy between the admin and the API. It passes when the first event arrives within 10 s. If it fails, check the proxy settings in [NOTIFICATIONS.md](NOTIFICATIONS.md#proxies).
 
-The payment setup screen (Admin → Thanh toán → **Cấu hình cổng**) has its own checks; see [PAYMENTS.md](PAYMENTS.md#admin-setup-view).
+The payments section shows each gateway's state (available, disabled, not configured, or an error such as an unreadable saved configuration), where its configuration comes from (admin, bootstrap, environment), OnePAY's mode, and whether the encryption key that protects admin-managed credentials is set. The gateway screen (Admin → Thanh toán → **Cổng thanh toán**) has its own checks; see [PAYMENTS.md](PAYMENTS.md#configuration-check).
 
 ## Manual checklist
 
-The checklist has 18 items, stored in `verification_checks`:
+The checklist has 29 items in six groups (platform, paid AI, publishing, VietQR payments, card payments, operations), stored in `verification_checks`:
 
 - whether the item is verified;
 - who verified it and when;
 - an optional note, for example the video ID, order code or command output.
 
-Nothing ticks an item automatically, and a passing readiness check does not tick it either. Unticking clears who and when; the note stays.
+Nothing ticks an item automatically: not a passing readiness check, and not a saved gateway configuration either. Unticking clears who and when; the note stays.
 
 Items marked **Tốn phí** cost money or credits. Run them deliberately, once.
 
 | Item | How to verify | Paid |
 | --- | --- | --- |
-| Migration upgraded | `python -m alembic upgrade head`, then `python -m alembic current` shows `0017_notify_support_verify (head)`, and readiness shows Migration ok | |
+| Migration upgraded | `python -m alembic upgrade head`, then `python -m alembic current` shows `0018_admin_payment_config (head)`, and readiness shows Migration ok | |
 | Storage on the HDD | `REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge` in `.env.runtime`; readiness shows the root from the environment and writable ([STORAGE.md](STORAGE.md)) | |
 | FFmpeg verified | `python -m app.render_worker --check` | |
 | Gemini TTS live | `python -m app.smoke_test voice --live` ([LIVE_PROVIDER_SMOKE_TEST.md](LIVE_PROVIDER_SMOKE_TEST.md)) | yes |
@@ -55,8 +55,19 @@ Items marked **Tốn phí** cost money or credits. Run them deliberately, once.
 | TikTok upload | Publish to TikTok; it arrives as an inbox draft | |
 | Facebook Reel | Publish a Reel to a test Page | |
 | Scheduled publishing | Schedule a post a few minutes ahead; it goes out and the bell reports it ([SCHEDULING.md](SCHEDULING.md)) | |
-| payOS / VietQR payment | One small real payment; the plan activates, the order shows paid, and the owner is notified ([PAYMENTS.md](PAYMENTS.md)) | yes |
-| OnePAY sandbox payment | A card payment on `mtf.onepay.vn` with OnePAY's test card; IPN and return both arrive | |
+| VietQR: configuration saved | **Cổng thanh toán → VietQR**: saved with *Configured from: Admin*, the webhook URL registered with payOS, **Kiểm tra cấu hình** passes ([PAYMENTS.md](PAYMENTS.md#payos-vietqr)) | |
+| VietQR: small live checkout | One small real payment; the plan activates, the order shows paid, and the owner is notified | yes |
+| VietQR: webhook received | The last webhook time appears under VietQR activity | |
+| VietQR: credits applied once | The studio's credit history shows the plan's credits once, even if payOS repeated the webhook | |
+| Card: sandbox configured | **Cổng thanh toán → Thẻ**: Sandbox mode saved; the SANDBOX badge shows; IPN and Return URLs registered for the test merchant | |
+| Card: sandbox configuration check | **Kiểm tra cấu hình** and **Kiểm tra với OnePAY (QueryDR)** both pass | |
+| Card: sandbox payment succeeded | OnePAY's test card on the sandbox page; the order turns paid | |
+| Card: sandbox cancellation | Cancel on the OnePAY page; the buyer lands on `payment=cancelled` and the order shows cancelled | |
+| Card: IPN received | The last IPN time appears under Card activity, through the public proxy | |
+| Card: QueryDR verified | **Check** on an order confirms it through QueryDR | |
+| Card: production credentials configured | Production credentials saved after the confirmation; the PRODUCTION badge shows; production IPN and Return URLs registered | |
+| Card: small production payment | One small real card payment | yes |
+| Card: credits applied once | The credit history shows the plan's credits once | |
 | Realtime notifications | **Kiểm tra luồng thông báo** passes through the public domain, and a notification arrives without reloading | |
 | Support round trip | A user opens a ticket; an admin replies; the user sees the reply and the bell ([SUPPORT.md](SUPPORT.md)) | |
 | Cleanup dry run | `python -m app.media_maintenance --intermediates` lists what would be deleted and deletes nothing | |
@@ -69,5 +80,5 @@ The tests never run these. Automated tests mock every provider (`python -m unitt
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/admin/readiness` | `{checked_at, sections: [{key, checks: [{key, status, detail?, …}]}]}` |
-| `GET /api/admin/verification` | The 18 items: `{key, paid, how, verified, verified_at, verified_by, note}` |
+| `GET /api/admin/verification` | The 29 items: `{key, group, paid, how, verified, verified_at, verified_by, note}` |
 | `PUT /api/admin/verification/{key}` | `{verified, note?}`: ticks or unticks an item; only system admins |

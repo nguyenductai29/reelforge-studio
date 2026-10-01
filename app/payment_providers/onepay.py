@@ -68,6 +68,7 @@ class OnePayConfig:
 
     @classmethod
     def from_environment(cls) -> "OnePayConfig":
+        """The legacy configuration from ``ONEPAY_*``; checkout and callbacks use ``app.payment_config``."""
         env = os.environ.get
         return cls(merchant=env("ONEPAY_MERCHANT_ID", ""), access_code=env("ONEPAY_ACCESS_CODE", ""),
                    hash_key=env("ONEPAY_HASH_KEY", "").strip(),
@@ -77,6 +78,9 @@ class OnePayConfig:
 
 
 def configured() -> bool:
+    """Whether the legacy ``ONEPAY_*`` environment holds a valid configuration.
+
+    The configuration in use is resolved by ``app.payment_config`` (an admin-managed one first)."""
     try:
         OnePayConfig.from_environment()
     except OnePayError:

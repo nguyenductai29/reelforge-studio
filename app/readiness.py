@@ -22,28 +22,39 @@ from app.models import AITool, SupportTicket, SystemSetting
 from app.runtime_env import ROOT
 
 MAINTENANCE_KEY = "storage_maintenance"
-# key, paid or not, and the command or place that performs it (shown beside the checklist item).
+# key, group, paid or not, and the command or place that performs it (shown beside the checklist item).
 CHECKLIST = (
-    ("migration_upgraded", False, "python -m alembic upgrade head"),
-    ("storage_on_hdd", False, "REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge"),
-    ("ffmpeg_verified", False, "python -m app.render_worker --check"),
-    ("gemini_tts_live", True, "python -m app.smoke_test voice --live"),
-    ("final_render_live", True, "Run a workflow with Render"),
-    ("movie_recap_live", True, "Movie Recap template"),
-    ("article_video_live", True, "Article → Video template"),
-    ("product_video_live", True, "Product Video template"),
-    ("youtube_upload", False, "Publish a private video to YouTube"),
-    ("tiktok_upload", False, "Publish to TikTok (inbox draft)"),
-    ("facebook_reel", False, "Publish a Facebook Reel"),
-    ("scheduled_publishing", False, "Schedule a post a few minutes ahead"),
-    ("payos_payment", True, "One small VietQR payment"),
-    ("onepay_sandbox_payment", False, "OnePAY sandbox card payment"),
-    ("notification_realtime", False, "Check the notification stream below"),
-    ("support_round_trip", False, "User ticket → admin reply → user sees it"),
-    ("cleanup_dry_run", False, "python -m app.media_maintenance --intermediates"),
-    ("maintenance_timer", False, "systemctl list-timers reelforge-media-maintenance.timer"),
+    ("migration_upgraded", "platform", False, "python -m alembic upgrade head"),
+    ("storage_on_hdd", "platform", False, "REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge"),
+    ("ffmpeg_verified", "platform", False, "python -m app.render_worker --check"),
+    ("gemini_tts_live", "ai", True, "python -m app.smoke_test voice --live"),
+    ("final_render_live", "ai", True, "Run a workflow with Render"),
+    ("movie_recap_live", "ai", True, "Movie Recap template"),
+    ("article_video_live", "ai", True, "Article → Video template"),
+    ("product_video_live", "ai", True, "Product Video template"),
+    ("youtube_upload", "publishing", False, "Publish a private video to YouTube"),
+    ("tiktok_upload", "publishing", False, "Publish to TikTok (inbox draft)"),
+    ("facebook_reel", "publishing", False, "Publish a Facebook Reel"),
+    ("scheduled_publishing", "publishing", False, "Schedule a post a few minutes ahead"),
+    ("payos_config_saved", "vietqr", False, "Admin → Payments → Payment gateways → VietQR: Save, then Test"),
+    ("payos_payment", "vietqr", True, "One small VietQR payment"),
+    ("payos_webhook_received", "vietqr", False, "The last webhook time appears under VietQR activity"),
+    ("payos_credits_once", "vietqr", False, "The credit history shows the plan's credits once"),
+    ("onepay_sandbox_configured", "card", False, "Card: Sandbox mode, saved"),
+    ("onepay_sandbox_check", "card", False, "Card: Test configuration and the QueryDR check"),
+    ("onepay_sandbox_payment", "card", False, "OnePAY test card on the sandbox page"),
+    ("onepay_sandbox_cancel", "card", False, "Cancel on the OnePAY page; the order shows cancelled"),
+    ("onepay_ipn_received", "card", False, "The last IPN time appears under Card activity"),
+    ("onepay_querydr_verified", "card", False, "Check on an order confirms it through QueryDR"),
+    ("onepay_production_configured", "card", False, "Card: Production mode saved after confirmation"),
+    ("onepay_production_payment", "card", True, "One small real card payment"),
+    ("onepay_credits_once", "card", False, "The credit history shows the plan's credits once"),
+    ("notification_realtime", "operations", False, "Check the notification stream below"),
+    ("support_round_trip", "operations", False, "User ticket → admin reply → user sees it"),
+    ("cleanup_dry_run", "operations", False, "python -m app.media_maintenance --intermediates"),
+    ("maintenance_timer", "operations", False, "systemctl list-timers reelforge-media-maintenance.timer"),
 )
-CHECKLIST_KEYS = tuple(key for key, _, _ in CHECKLIST)
+CHECKLIST_KEYS = tuple(item[0] for item in CHECKLIST)
 AI_KEYS = (("gemini", ("GEMINI_API_KEY",), True), ("runway", ("RUNWAYML_API_SECRET", "RUNWAY_OUTPUT_HOSTS"), True),
            ("openai", ("OPENAI_API_KEY",), True), ("anthropic", ("ANTHROPIC_API_KEY",), False),
            ("fal", ("FAL_KEY",), False), ("runware", ("RUNWARE_API_KEY",), False),
@@ -165,15 +176,31 @@ def publishing_checks() -> list[dict]:
     return checks
 
 
-def payment_checks() -> list[dict]:
-    from app import billing
-    from app.payment_providers import onepay
-    from app.payment_providers.setup import onepay_mode
+def payment_checks(db) -> list[dict]:
+    """Each provider as resolved (admin-managed, else bootstrap/env), and the key that protects saved credentials."""
+    from app import payment_config, secret_box
 
-    payment_url = os.environ.get("ONEPAY_PAYMENT_URL", "").strip() or onepay.PRODUCTION_PAYMENT_URL
-    return [_check("payos", "ok" if billing.configured() else "off", None if billing.configured() else "not_configured"),
-            _check("onepay", "ok" if onepay.configured() else "off", None if onepay.configured() else "not_configured",
-                   mode=onepay_mode(payment_url))]
+    checks = []
+    for provider in payment_config.PROVIDERS:
+        resolved = payment_config.get(provider, db)
+        usable = payment_config.usable(resolved)
+        if resolved.error:
+            status, detail = "error", resolved.error
+        elif usable:
+            status, detail = ("ok", None) if resolved.enabled else ("warning", "disabled")
+        else:
+            status, detail = "off", "not_configured"
+        values = {"source": resolved.source, "enabled": resolved.enabled}
+        if provider == "onepay":
+            values["mode"] = resolved.mode
+        checks.append(_check(provider, status, detail, **values))
+    saved = any(payment_config.get(provider, db).source == "admin" for provider in payment_config.PROVIDERS)
+    if secret_box.available():
+        checks.append(_check("encryption", "ok"))
+    else:
+        # Without the key, admin-managed gateways cannot be saved, and saved ones cannot be read.
+        checks.append(_check("encryption", "error" if saved else "off", "key_missing"))
+    return checks
 
 
 def report(db, *, streams: int, poll_seconds: float) -> dict:
@@ -188,7 +215,7 @@ def report(db, *, streams: int, poll_seconds: float) -> dict:
         ("workers", worker_checks(db, now)),
         ("ai", ai_checks(db)),
         ("publishing", publishing_checks()),
-        ("payments", payment_checks()),
+        ("payments", payment_checks(db)),
         ("realtime", [_check("stream", "ok", open_streams=streams, poll_seconds=poll_seconds)]),
         ("support", [_check("tickets", "ok", awaiting_support=int(open_tickets or 0))]),
     ]

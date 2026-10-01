@@ -16,7 +16,7 @@ import { keys, useAdminPayments } from "@/lib/queries";
 import type { AdminPayment, PaymentProviderStatus } from "@/lib/types";
 import { DataTable, useDebounced, type Column } from "../data-table";
 import { StatusBadge } from "../primitives";
-import { PaymentSetupDialog } from "./payment-setup";
+import { PaymentGatewaysDialog } from "./payment-gateways";
 import { Detail, FilterSelect } from "./shared";
 
 const LIMIT = 20;
@@ -135,22 +135,27 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
             <FilterSelect value={status} onChange={filtered(setStatus)} all={p.allStatuses}
                           options={STATUSES.map((v) => [v, statusLabel(v)])} />
             <div className="flex flex-wrap gap-1.5 text-[11px]">
-              {providers.map((item) => (
-                <span key={item.provider} className="rounded-md bg-surface-2 px-2 py-1 text-muted-foreground">
-                  {providerLabel(item.provider)}:{" "}
-                  <span className={item.configured ? "text-success" : "text-warning"}>
-                    {item.configured ? p.configured : p.missing}
+              {providers.map((item) => {
+                // Older APIs report only "configured".
+                const state = (item.available ?? item.configured) ? "available"
+                  : item.configured && item.enabled === false ? "disabled" : "missing";
+                return (
+                  <span key={item.provider} className="rounded-md bg-surface-2 px-2 py-1 text-muted-foreground">
+                    {providerLabel(item.provider)}:{" "}
+                    <span className={state === "available" ? "text-success" : state === "disabled" ? "" : "text-warning"}>
+                      {p.providerState[state]}
+                    </span>
                   </span>
-                </span>
-              ))}
+                );
+              })}
             </div>
             <Button variant="outline" size="sm" className="h-8" onClick={() => setSetupOpen(true)}>
-              <KeyRound className="size-3.5" /> {t.admin.paymentSetup.open}
+              <KeyRound className="size-3.5" /> {t.admin.gateways.open}
             </Button>
           </>
         }
       />
-      <PaymentSetupDialog open={setupOpen} onOpenChange={setSetupOpen} />
+      <PaymentGatewaysDialog open={setupOpen} onOpenChange={setSetupOpen} />
       <Dialog open={Boolean(viewing)} onOpenChange={(open) => !open && setViewing(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>

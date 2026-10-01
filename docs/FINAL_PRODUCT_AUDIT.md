@@ -1,6 +1,6 @@
-# Final product audit (Phases 14–18)
+# Final product audit (Phases 14–19)
 
-> Snapshot: branch `feat/studio-foundation`, after Phases 14–18, 2026-10-01. Database head: `0017_notify_support_verify`.
+> Snapshot: branch `feat/studio-foundation`, after Phases 14–19, 2026-10-01. Database head: `0018_admin_payment_config`.
 
 **Rule applied:** every control in the production interface works. An unfinished feature was either built now, when it reuses existing capabilities cheaply, or removed from the interface. No "coming soon" badge, banner, disabled placeholder switch or preview-only template remains.
 
@@ -91,12 +91,12 @@ The console fits the window and never scrolls; each table body scrolls inside it
 | --- | --- |
 | Users | Search, role and status filters; create account in a dialog; view, lock, unlock |
 | Studios & credits | Search, plan and status filters, a **storage** column; view, change plan, adjust credits, pause, activate |
-| Plans | Name, price, limits, monthly credits and **storage limit** |
-| Payments | Search, provider and status filters; view; refresh provider state; **Cấu hình cổng**: each provider's fields as configured/missing, masked IDs, sandbox/production, callback URLs, last webhook/IPN/query, a safe check |
+| Plans | Name, price, limits, monthly credits, **storage limit**, and whether the plan is purchasable (and why not: inactive, no price, no gateway enabled) |
+| Payments | Search, provider and status filters; view; refresh provider state; **Cổng thanh toán** (Phase 19): configure VietQR (payOS) and cards (OnePAY): write-only secrets encrypted at rest, enable/disable, OnePAY Sandbox/Production/Advanced with a persistent mode badge and a production confirmation, source (Admin/Bootstrap/Environment/Missing), why a gateway is unavailable, callback URLs, activity, change history, a safe check |
 | Support | Search, status, category and priority filters; open a ticket, reply, change status or priority, resolve, close |
 | Credit reconciliation | The Phase 3.7 review of held credits |
 | Operations | Worker heartbeats, the job table, the stuck-work audit, and storage: disk free space, studios per warning level, fullest studios |
-| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support), a browser stream check, and the 18-item manual live checklist |
+| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support), a browser stream check, and the 29-item manual live checklist, grouped (payments split per gateway) |
 
 **Publishing and scheduling**: see § 5 and § 6.
 
@@ -126,8 +126,17 @@ They are not shown anywhere in the production interface.
 
 | Provider | Method | Credentials | Where | Callback URLs |
 | --- | --- | --- | --- | --- |
-| payOS | VietQR / Bank transfer | `client_id`, `api_key`, `checksum_key` | `payos` object in `instance/bootstrap.json` | Webhook `https://<frontend>/api/webhooks/payos` |
-| OnePAY | Bank card | `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY` (hex). Recommended: `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`. Optional: `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` | Runtime environment file | IPN `https://<frontend>/api/webhooks/onepay`; return `https://<frontend>/api/billing/onepay/return` |
+| payOS | VietQR / Bank Transfer | Client ID, API Key, Checksum Key | Admin → Cổng thanh toán (encrypted); legacy fallback: `payos` object in `instance/bootstrap.json` | Webhook `https://<frontend>/api/webhooks/payos` |
+| OnePAY | Credit / Debit Card | Merchant ID, Access Code, Hash Key (hex); recommended QueryDR User and Password; mode Sandbox / Production / Advanced | Admin → Cổng thanh toán (encrypted); legacy fallback: `ONEPAY_*` in the runtime environment | IPN `https://<frontend>/api/webhooks/onepay`; return `https://<frontend>/api/billing/onepay/return` |
+
+**Configuration (Phase 19).** `app/payment_config.py` resolves every provider's configuration:
+
+- **Precedence:** the admin-managed configuration first, then the legacy bootstrap/env one.
+- **Errors are not hidden:** a saved configuration that cannot be decrypted is an error, never a silent fallback.
+- **Immediate:** saved changes apply on the next request, with no restart.
+- **Availability:** a provider is offered to buyers only when enabled and valid. Disabling never strands a pending order: callbacks and checks still use its credentials.
+- **Encryption:** credentials are one Fernet ciphertext per provider, keyed by `REELFORGE_TOKEN_ENCRYPTION_KEY` through an HKDF-derived per-purpose key (`app/secret_box.py`).
+- **Audit:** every change and test is recorded in `payment_config_audit` by field name.
 
 **How settlement works**
 
@@ -139,7 +148,8 @@ They are not shown anywhere in the production interface.
 
 - A browser return never pays an order. Only OnePAY's signed IPN, or a server-side QueryDR check, can.
 - No admin "mark paid" action exists.
-- Credentials are never returned. Admin shows each provider as Configured or Missing. **Cấu hình cổng** shows field names and statuses, with only the payOS client ID and the OnePAY merchant ID masked. It is system-admin only, enforced by the API.
+- Credentials are write-only. Once saved, no API, error, log or audit entry returns them; the admin view shows field statuses, with only the payOS client ID and the OnePAY merchant ID masked. It is system-admin only, enforced by the API.
+- ReelForge never collects or stores card data: both methods pay on the provider's hosted page.
 - The admin check never charges: a local validation, and for OnePAY one QueryDR about a reference that cannot exist.
 
 See [PAYMENTS.md](PAYMENTS.md).
@@ -155,7 +165,7 @@ See [PAYMENTS.md](PAYMENTS.md).
   - `/api/admin/storage`;
   - `/api/admin/reconciliation`;
   - `/api/admin/support` (Phase 18).
-- Phase 18 adds `/api/admin/payment-config` (and `/check`), `/api/admin/readiness` and `/api/admin/verification`. They are system-admin only and never return a secret.
+- Phase 18 adds `/api/admin/payment-config` (and `/check`), `/api/admin/readiness` and `/api/admin/verification`. Phase 19 adds `PUT /api/admin/payment-config/{provider}` and `POST …/{provider}/check|enable|disable`. They are system-admin only, same-origin protected for changes, and never return a secret.
 - `q` is a case-insensitive literal substring (`LIKE` with `%`, `_` and `\` escaped).
 - List responses are `{items, total, limit, offset}`, with `limit` 20 by default and at most 100.
 - The frontend's `DataTable` (`frontend/src/components/reelforge/data-table.tsx`) provides the toolbar, loading and empty states, sticky header, internal scroll, pagination and horizontal scroll.
@@ -280,22 +290,23 @@ All of them go in one runtime file (`/etc/reelforge/runtime.env` in production, 
 | YouTube | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` |
 | TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_REDIRECT_URI`, `TIKTOK_APPROVED_SCOPES` |
 | Facebook | `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `FACEBOOK_REDIRECT_URI` |
-| Token encryption | `REELFORGE_TOKEN_ENCRYPTION_KEY` (back it up; never change it) |
-| Card payments | `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` |
+| Token encryption | `REELFORGE_TOKEN_ENCRYPTION_KEY`: OAuth tokens and, since Phase 19, admin-managed payment credentials. Back it up; never change it |
+| Card payments (legacy fallback; normally configured in Admin) | `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` |
 | Notifications | `REELFORGE_SSE_POLL_SECONDS` (3), `REELFORGE_SSE_MAX_SECONDS` (300), `CREDITS_LOW_THRESHOLD` (20) |
 | Logs | `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL` |
 
-The database URL and payOS keys stay in `instance/bootstrap.json`.
+The database URL stays in `instance/bootstrap.json`; payOS keys there are a legacy fallback.
 
 ## 12. DB migration head
 
-`0017_notify_support_verify`. Migrations 0001–0016 are unchanged.
+`0018_admin_payment_config`. Migrations 0001–0017 are unchanged.
 
 | Migration | Adds | Test |
 | --- | --- | --- |
 | `0015_admin_payments_profiles` | `user_profiles` (display name); indexes for the admin and payment pages | `tests/test_admin_payments_migration.py`: 0014 → 0015 and back |
 | `0016_storage_lifecycle` | `plans.storage_limit_bytes` (Trial 1, Standard 10, Pro 30 GiB); `assets.kind` (back-filled from each asset's step); `assets.expired_at`, `expired_reason`, `expired_bytes`; index `ix_assets_kind_created_at` | `tests/test_storage_migration.py`: 0015 → 0016 and back |
 | `0017_notify_support_verify` | `notifications` (integer IDs, which are also the stream's event IDs; unique `(user_id, dedupe_key)`; indexes `(user_id, created_at)` and `(user_id, read_at)`); `support_tickets` and `support_messages` (categories, statuses, priorities and author types checked); `verification_checks` | `tests/test_phase18_migration.py`: 0016 → 0017 and back (SQLite, and PostgreSQL 16 with `REELFORGE_TEST_DATABASE_URL`); every revision ID fits PostgreSQL's 32-character version column |
+| `0018_admin_payment_config` | `payment_provider_configs` (one row per provider: `enabled`, `mode`, `config_ciphertext`, who and when; no secret column); `payment_config_audit` (action, admin, time, field names) | `tests/test_phase19_migration.py`: 0017 → 0018 and back, keeping orders, subscriptions, ledger and `payment_activity` (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
 
 The tests keep every existing row. Set `REELFORGE_TEST_DATABASE_URL` to also run them on PostgreSQL. Apply with `python -m alembic upgrade head` before restarting the services.
 
@@ -328,18 +339,20 @@ See [home-server-deployment.md](home-server-deployment.md) § 11.
 
 ## 15. Live verification requirements
 
-All Phase 14–18 tests are offline; no paid or live API was called. An operator must verify the following, then tick it in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+All Phase 14–19 tests are offline; no paid or live API was called. An operator must verify the following, then tick it in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
 
 **Payments**
 
-- OnePAY sandbox, then one real payment:
+- Configure both gateways in Admin → Cổng thanh toán, with no SSH.
+- OnePAY sandbox, then one real payment ([PAYMENTS.md](PAYMENTS.md#sandbox--production-onepay)):
   - checkout;
   - return;
   - IPN through the proxy (`responsecode=1`);
   - QueryDR;
   - a cancelled payment;
   - credits posted once.
-- payOS: one payment after deployment.
+- payOS: one payment after deployment, with the webhook received.
+- Confirm the sandbox endpoints (`mtf.onepay.vn`) against OnePAY's integration guide.
 
 **Rendering**
 
@@ -384,6 +397,15 @@ The Admin layout, card checkout and storage screens were checked in headless Chr
   - the checklist persisted;
   - none of the eight Admin tabs scrolled at 1366×768;
   - the bell did not overflow at 360 px.
+- Phase 19, same isolated stack:
+  - both gateways were configured from the admin UI;
+  - no secret appeared in the page or in any API response, and the inputs were empty after saving;
+  - the masked client ID showed;
+  - the SANDBOX/PRODUCTION badges showed, and production needed the confirmation;
+  - Billing showed "VietQR / Chuyển khoản" and "Thẻ tín dụng / ghi nợ" without provider names, and disabling VietQR removed it at once;
+  - plans showed why they were not purchasable;
+  - Admin still did not scroll.
+  - Nothing was sent to payOS or OnePAY.
 
 Real devices remain to be checked.
 
@@ -397,6 +419,8 @@ Real devices remain to be checked.
 **Payments**
 
 - Card payment has not been tested live.
+- Changing the encryption key makes saved gateway credentials unreadable; they must be re-entered. There is no key rotation.
+- One configuration per provider: no separate sandbox and production profiles to switch between.
 - Without QueryDR credentials, a card order waits for the IPN.
 - Refunds are handled outside the app.
 - Renewal is manual.

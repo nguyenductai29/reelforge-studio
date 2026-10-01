@@ -209,7 +209,69 @@ class Phase18FrontendTest(unittest.TestCase):
         offenders = [str(path.relative_to(FRONTEND)) for path in users_pages
                      if "payment-config" in path.read_text(encoding="utf-8") and path.name != "queries.ts"]
         self.assertEqual(offenders, [])
-        self.assertIn("PaymentSetupDialog", source("components/reelforge/admin/admin-payments.tsx"))
+        self.assertIn("PaymentGatewaysDialog", source("components/reelforge/admin/admin-payments.tsx"))
+
+
+class Phase19FrontendTest(unittest.TestCase):
+    GATEWAYS = "components/reelforge/admin/payment-gateways.tsx"
+
+    def test_system_admins_manage_both_gateways_in_admin(self):
+        ui = source(self.GATEWAYS)
+        self.assertIn('api(`admin/payment-config/${provider}`, jsonRequest("PUT", body))', ui)
+        self.assertIn('`admin/payment-config/${provider}/${on ? "enable" : "disable"}`', ui)
+        self.assertIn("`admin/payment-config/${provider}/check`", ui)
+        self.assertIn('payos: ["client_id", "api_key", "checksum_key"]', ui)
+        self.assertIn('onepay: ["merchant_id", "access_code", "hash_key", "query_user", "query_password"]', ui)
+
+    def test_saved_secrets_are_never_rendered(self):
+        ui = source(self.GATEWAYS)
+        # An input only ever holds what the admin is typing now; saved values exist only as masked identifiers.
+        self.assertIn('value={update.action === "replace" ? update.value : ""}', ui)
+        self.assertIn('type={field.secret ? "password" : "text"}', ui)
+        self.assertIn("key={`${item.updated_at}-${item.enabled}-${item.mode}`}", ui)
+        types = source("lib/types.ts")
+        field_type = types[types.index("export type PaymentField = {"):types.index("export type PaymentIssue")]
+        self.assertIn("masked?: string", field_type)
+        self.assertNotIn("value", field_type)
+        self.assertIn('export type SecretUpdate = { action: "keep" }', types)
+
+    def test_sandbox_and_production_are_obvious_and_production_is_confirmed(self):
+        ui = source(self.GATEWAYS)
+        self.assertIn("export function ModeBadge", ui)
+        self.assertIn("<ModeBadge mode={item.mode} />", ui)
+        self.assertIn("<AlertDialog open={confirming !== null}", ui)
+        self.assertIn('mode === "production" && !wasLiveProduction', ui)
+        for locale, phrase in (("vi", "tiền thật"), ("en", "Real customer payments can now be accepted"),
+                               ("ja", "実際の顧客決済")):
+            with self.subTest(locale=locale):
+                self.assertIn(phrase, source(f"lib/i18n/{locale}.ts"))
+
+    def test_billing_names_methods_for_buyers_without_internals(self):
+        for locale, vietqr, card in (("vi", "VietQR / Chuyển khoản", "Thẻ tín dụng / ghi nợ"),
+                                     ("en", "VietQR / Bank Transfer", "Credit / Debit Card"),
+                                     ("ja", "VietQR / 銀行振込", "クレジット / デビットカード")):
+            with self.subTest(locale=locale):
+                text = source(f"lib/i18n/{locale}.ts")
+                self.assertIn(f'vietqr: {{ name: "{vietqr}"', text)
+                self.assertIn(f'card: {{ name: "{card}"', text)
+                methods = text[text.index("    methods: {"):text.index("    chooseMethod:")]
+                missing = next(line for line in text.splitlines() if line.strip().startswith("noPaymentMethod:"))
+                for internal in ("payOS", "OnePAY", "server", "máy chủ", "サーバー", "merchant"):
+                    self.assertNotIn(internal, methods + missing)
+
+    def test_gateway_configuration_lives_only_in_admin(self):
+        outside = [path for path in frontend_files()
+                   if "admin" not in path.as_posix() and path.name != "queries.ts"]
+        for path in outside:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=str(path.relative_to(FRONTEND))):
+                self.assertNotIn("payment-config", text)
+                self.assertNotIn("PaymentGatewaysDialog", text)
+
+    def test_admin_shows_plan_purchasability_and_missing_gateways(self):
+        admin = source("app/admin/page.tsx")
+        self.assertIn("function purchasability(plan: Plan, paymentReady: boolean)", admin)
+        self.assertIn("{!paymentReady && <p className=\"text-xs text-warning\">{a.noGateway}</p>}", admin)
 
 
 if __name__ == "__main__":

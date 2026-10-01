@@ -18,7 +18,7 @@ from urllib.parse import parse_qsl
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from sqlalchemy import case, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -26,8 +26,9 @@ from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import Notification, SupportMessage, SupportTicket, UserProfile, VerificationCheck
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import (auth_security, billing, heartbeat, jobs, media_maintenance, notifications, payment_providers, payments,
-                 publications, readiness, reconciliation, run_summary, sources, storage, support, usage)
+from app import (auth_security, billing, heartbeat, jobs, media_maintenance, notifications, payment_config,
+                 payment_providers, payments, publications, readiness, reconciliation, run_summary, secret_box, sources,
+                 storage, support, usage)
 from app.payment_providers import onepay
 from app.payment_providers import setup as payment_setup
 from app.models import CreditReconciliation
@@ -760,8 +761,9 @@ def billing_overview(request: Request):
                 "subscription": {"plan_code": subscription.plan_code, "status": effective_status(subscription),
                                  "ends_at": subscription.ends_at.isoformat() if subscription.ends_at else None},
                 "orders": [order_data(o) for o in orders], "orders_total": total,
-                # Only the payment methods this server can take; payos_ready is kept for older clients.
-                "methods": payment_providers.available_methods(), "payos_ready": billing.configured()}
+                # Only the payment methods buyers may choose now; payos_ready is kept for older clients.
+                "methods": payment_providers.available_methods(),
+                "payos_ready": billing.configured() and billing.enabled()}
 
 
 @app.get("/api/billing/orders")
@@ -780,8 +782,9 @@ def billing_orders(request: Request, limit: int = ORDER_PAGE, offset: int = Quer
 def billing_checkout(data: CheckoutInput, request: Request):
     same_origin(request)
     provider = payment_providers.for_method(data.method)
-    if not provider.configured():
-        raise HTTPException(503, "payOS is not configured" if provider.name == "payos" else "Card payment is not configured")
+    # A disabled provider takes no new checkout; its existing orders still settle (webhooks, IPN, Check).
+    if not provider.offered():
+        raise HTTPException(503, "This payment method is not available")
     with Session.begin() as db:
         ws = workspace_for(request, db)
         if db.get(Membership, (authorize(request, db).id, ws.id)).role != "owner":
@@ -1328,33 +1331,180 @@ def admin_storage(request: Request, limit: int = ADMIN_LIMIT, offset: int = ADMI
                 "retention": retention_data(storage.RetentionPolicy.from_environment())}
 
 
-# --- Phase 18A: payment provider setup (system admins only) ---------------------------------------------
+# --- Phase 18A/19: payment gateway configuration (system admins only) -------------------------------------
+# Secrets are write-only: a saved value is never returned, logged or echoed in an error. Request bodies are
+# parsed here rather than by FastAPI so a validation error can never quote a submitted value back.
+
+class SecretUpdate(BaseModel):
+    action: Literal["keep", "replace", "clear"] = "keep"
+    value: str | None = None
+
+
+class PayOSConfigInput(BaseModel):
+    enabled: bool
+    client_id: SecretUpdate = SecretUpdate()
+    api_key: SecretUpdate = SecretUpdate()
+    checksum_key: SecretUpdate = SecretUpdate()
+
+
+class OnePayConfigInput(BaseModel):
+    enabled: bool
+    mode: Literal["sandbox", "production", "custom"]
+    merchant_id: SecretUpdate = SecretUpdate()
+    access_code: SecretUpdate = SecretUpdate()
+    hash_key: SecretUpdate = SecretUpdate()
+    query_user: SecretUpdate = SecretUpdate()
+    query_password: SecretUpdate = SecretUpdate()
+    # Custom mode only; endpoints are not secret.
+    payment_url: str | None = None
+    query_url: str | None = None
+    # Required to turn on (or switch to) the production card gateway.
+    confirm_production: bool = False
+
 
 class PaymentCheckInput(BaseModel):
-    provider: Literal["payos", "onepay"]
     # Remote: one read-only OnePAY QueryDR about a reference that cannot exist; never a charge.
     remote: bool = False
 
 
+class LegacyPaymentCheckInput(PaymentCheckInput):
+    provider: Literal["payos", "onepay"]
+
+
+class PaymentSwitchInput(BaseModel):
+    confirm_production: bool = False
+
+
+PAYMENT_CONFIG_INPUT = {"payos": PayOSConfigInput, "onepay": OnePayConfigInput}
+
+
+def _payment_provider(provider: str) -> str:
+    if provider not in payment_config.PROVIDERS:
+        raise HTTPException(404, "Unknown payment provider")
+    return provider
+
+
+async def _payment_body(request: Request, model):
+    """The JSON body as ``model``; a 422 names the field only, never the submitted value."""
+    body = await request.body()
+    if len(body) > 16384:
+        raise HTTPException(413, "Request too large")
+    try:
+        return model.model_validate(json.loads(body or b"{}"))
+    except (ValueError, ValidationError) as exc:
+        errors = exc.errors() if isinstance(exc, ValidationError) else []
+        location = next((str(part) for part in (errors[0]["loc"] if errors else ()) if isinstance(part, str)), None)
+        raise HTTPException(422, {"code": "invalid_request", "field": location,
+                                  "message": "Invalid payment configuration"}) from None
+
+
+def _config_failure(exc: payment_config.ConfigError) -> HTTPException:
+    status = 409 if exc.code == "confirm_production" else 422
+    return HTTPException(status, {"code": exc.code, "field": exc.field, "message": "Payment configuration not saved"})
+
+
+def _payment_view(db, provider: str) -> dict:
+    origin = setting(db, "frontend_origin").rstrip("/")
+    return payment_setup.provider_view(db, provider, origin, payment_setup.activity(db))
+
+
 @app.get("/api/admin/payment-config")
 def admin_payment_config(request: Request):
-    """What each provider needs and whether it is set; identifiers masked, secrets only as configured/missing."""
+    """Each gateway as resolved (admin, bootstrap, environment or missing); identifiers masked, secrets never."""
     with Session() as db:
         admin_for(request, db)
-        return {"providers": payment_setup.overview(setting(db, "frontend_origin"), payment_setup.activity(db))}
+        providers = payment_setup.overview(db, setting(db, "frontend_origin"))
+        return {"providers": providers, "any_available": any(item["available"] for item in providers),
+                "encryption": {"available": secret_box.available(), "variable": secret_box.KEY_VARIABLE}}
+
+
+@app.put("/api/admin/payment-config/{provider}")
+async def update_payment_config(provider: str, request: Request):
+    """Save a gateway's configuration: encrypted at rest, effective at once, audited by field name."""
+    same_origin(request)
+    provider = _payment_provider(provider)
+    with Session() as db:
+        admin_for(request, db)  # before reading the body: a non-admin learns nothing about its validation
+    data = await _payment_body(request, PAYMENT_CONFIG_INPUT[provider])
+    updates = {spec.name: (getattr(data, spec.name).action, getattr(data, spec.name).value or "")
+               for spec in payment_config.FIELDS[provider]}
+    urls = {"payment_url": data.payment_url or "", "query_url": data.query_url or ""} if provider == "onepay" else None
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        try:
+            actions = payment_config.save(db, provider, admin.id, enabled=data.enabled,
+                                          mode=getattr(data, "mode", None), updates=updates, urls=urls,
+                                          confirm_production=getattr(data, "confirm_production", False))
+        except payment_config.ConfigError as exc:
+            raise _config_failure(exc) from None
+    changed = sorted(name for name, (action, _) in updates.items() if action != "keep")
+    log_event(logger, "payment_config_saved", provider=provider, actions=",".join(actions) or "none",
+              changed=",".join(changed))
+    with Session() as db:
+        return _payment_view(db, provider)
+
+
+@app.post("/api/admin/payment-config/{provider}/disable")
+def disable_payment_provider(provider: str, request: Request):
+    """Stop new checkouts; historical orders are untouched and pending ones still settle."""
+    same_origin(request)
+    provider = _payment_provider(provider)
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        payment_config.set_enabled(db, provider, admin.id, False)
+    log_event(logger, "payment_config_saved", provider=provider, actions="disabled", changed="")
+    with Session() as db:
+        return _payment_view(db, provider)
+
+
+@app.post("/api/admin/payment-config/{provider}/enable")
+async def enable_payment_provider(provider: str, request: Request):
+    same_origin(request)
+    provider = _payment_provider(provider)
+    with Session() as db:
+        admin_for(request, db)
+    data = await _payment_body(request, PaymentSwitchInput)
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        try:
+            payment_config.set_enabled(db, provider, admin.id, True, confirm_production=data.confirm_production)
+        except payment_config.ConfigError as exc:
+            raise _config_failure(exc) from None
+    log_event(logger, "payment_config_saved", provider=provider, actions="enabled", changed="")
+    with Session() as db:
+        return _payment_view(db, provider)
+
+
+def _run_payment_check(request: Request, provider: str, remote: bool) -> dict:
+    with Session() as db:
+        admin = admin_for(request, db)
+    result = payment_setup.check(provider, remote=remote)
+    if result["local"]["status"] == "ok" and result["remote"]["status"] in ("ok", "skipped"):
+        payment_setup.record_activity(provider, "check")
+    with Session.begin() as db:
+        payment_config.audit(db, provider, "tested", admin.id, source=result["source"], remote=remote,
+                             local=result["local"]["status"], remote_status=result["remote"]["status"])
+    log_event(logger, "payment_config_checked", provider=provider, remote=remote,
+              local=result["local"]["status"], remote_status=result["remote"]["status"])
+    return {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/api/admin/payment-config/{provider}/check")
+async def check_payment_provider(provider: str, request: Request):
+    """Validate the configuration in use. Never creates an order, charges, activates a plan or awards credits."""
+    same_origin(request)
+    provider = _payment_provider(provider)
+    with Session() as db:
+        admin_for(request, db)
+    data = await _payment_body(request, PaymentCheckInput)
+    return _run_payment_check(request, provider, data.remote)
 
 
 @app.post("/api/admin/payment-config/check")
-def admin_payment_check(data: PaymentCheckInput, request: Request):
+def admin_payment_check(data: LegacyPaymentCheckInput, request: Request):
+    """Phase 18 route, kept for older clients: the same check with the provider in the body."""
     same_origin(request)
-    with Session() as db:
-        admin_for(request, db)
-    result = payment_setup.check(data.provider, remote=data.remote)
-    if result["local"]["status"] == "ok" and result["remote"]["status"] in ("ok", "skipped"):
-        payment_setup.record_activity(data.provider, "check")
-    log_event(logger, "payment_config_checked", provider=data.provider, remote=data.remote,
-              local=result["local"]["status"], remote_status=result["remote"]["status"])
-    return {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
+    return _run_payment_check(request, data.provider, data.remote)
 
 
 # --- Phase 18D: readiness and the manual live-verification checklist (system admins only) ----------------
@@ -1379,12 +1529,12 @@ def admin_verification(request: Request):
         rows = {row.key: row for row in db.scalars(select(VerificationCheck))}
         emails = dict(db.execute(select(User.id, User.email).where(
             User.id.in_([row.verified_by_user_id for row in rows.values() if row.verified_by_user_id]))).all())
-        return {"items": [{"key": key, "paid": paid, "how": how,
+        return {"items": [{"key": key, "group": group, "paid": paid, "how": how,
                            "verified": bool(rows.get(key) and rows[key].verified_at),
                            "verified_at": _iso_or_none(rows[key].verified_at) if key in rows else None,
                            "verified_by": emails.get(rows[key].verified_by_user_id) if key in rows else None,
                            "note": rows[key].note if key in rows else None}
-                          for key, paid, how in readiness.CHECKLIST]}
+                          for key, group, paid, how in readiness.CHECKLIST]}
 
 
 @app.put("/api/admin/verification/{key}")

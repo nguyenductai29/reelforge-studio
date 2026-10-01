@@ -1,11 +1,11 @@
 # Payments: VietQR (payOS) and cards (OnePAY)
 
-Phase 14 adds card payments next to the existing VietQR checkout. Both payment methods use the same order table, the same settlement code and the same subscription and credit rules. There is no second accounting system.
+Phase 14 adds card payments next to the existing VietQR checkout; Phase 19 lets a system admin configure both gateways from the web UI. Both payment methods use the same order table, the same settlement code and the same subscription and credit rules. There is no second accounting system.
 
 | Method (Billing UI) | Provider | Code | Configured by |
 | --- | --- | --- | --- |
-| VietQR / Bank transfer | payOS | `app/billing.py`, `PayOSProvider` | `payos` object in `instance/bootstrap.json` (unchanged) |
-| Bank card | OnePAY | `app/payment_providers/onepay.py`, `OnePayProvider` | `ONEPAY_*` environment variables |
+| VietQR / Bank Transfer | payOS | `app/billing.py`, `PayOSProvider` | Admin → Cổng thanh toán (encrypted); legacy: `payos` object in `instance/bootstrap.json` |
+| Credit / Debit Card | OnePAY | `app/payment_providers/onepay.py`, `OnePayProvider` | Admin → Cổng thanh toán (encrypted); legacy: `ONEPAY_*` environment variables |
 
 ## Architecture
 
@@ -25,12 +25,13 @@ Evidence (signed webhook/IPN, or a server-to-server status query)
 - **Provider check:** `apply_paid` settles an order only when the evidence comes from the provider that created it. A OnePAY callback can never pay a VietQR order, and the reverse.
 - **Exact amount:** the paid amount must equal the order's frozen `amount_vnd`. A mismatch raises and nothing is applied. The payOS webhook answers 400. The OnePAY IPN answers `responsecode=0&desc=amount-mismatch`.
 - **Late payments:** an order that was closed as failed, cancelled or expired can still be paid by later evidence from the same provider.
-- **Secrets:** they are never returned or logged. `GET /api/admin/payment-providers` and `GET /api/admin` expose only `{provider, method, configured}`. Order responses carry no `checkout_url`, raw payload or hash.
+- **Secrets:** they are never returned or logged. `GET /api/admin/payment-providers` and `GET /api/admin` expose only `{provider, method, configured, enabled, available, source}`. Order responses carry no `checkout_url`, raw payload or hash.
+- **Card data:** ReelForge never collects, proxies or stores a card number or CVV. Buyers enter them on OnePAY's hosted page; VietQR is paid on payOS's hosted page.
 
 ## Billing flow
 
 1. **Choose a plan.** The owner picks a plan on **Gói & credits**.
-2. **Choose a method.** The dialog lists only configured methods (`GET /api/billing` → `methods`). When none is configured, the page says so and shows no button.
+2. **Choose a method.** The dialog lists only the methods offered now (`GET /api/billing` → `methods`): **VietQR / Bank Transfer** and **Credit / Debit Card**. When none is available, the page says "No payment method is currently available" and shows no button. A plan is purchasable when it is active, has a price, and at least one method is offered; Admin → Plans shows which applies.
 3. **Checkout.** `POST /api/billing/checkout` with `{plan_code, method: "vietqr" | "card"}` freezes the price and credits in a pending order and returns the hosted payment URL. An unconfigured method returns 503.
 4. **Return.**
    - payOS sends the buyer back to `/billing`.
@@ -65,84 +66,211 @@ Evidence (signed webhook/IPN, or a server-to-server status query)
 - Signed failed and cancelled returns close the pending order. Payment can still be retried later.
 - A return with a bad signature is logged as `payment_return_rejected` and shown as `payment=invalid`.
 
-## Configuration
+## Configuration (Phase 19: admin-managed)
 
-**payOS:** unchanged. See README → "VNQR checkout with payOS" and `docs/home-server-deployment.md` § 15. Webhook: `https://<public frontend>/api/webhooks/payos`.
+A system admin configures both gateways in **Admin → Thanh toán → Cổng thanh toán**. No SSH, file edit or restart is needed: a saved change applies to the next checkout and callback in every API process.
 
-**OnePAY:** set these in `.env.runtime` on the API server. The OnePAY merchant contract supplies the values.
+**Who can change it.** Only system admins. Every payment-config route checks this on the server, and studio owners and other users get 403. Owners keep what they had: choose a plan and a method, pay, and see their own orders. `GET /api/billing` returns only the methods buyers may choose now, never configuration.
+
+### Where credentials come from
+
+`app/payment_config.py` is the only module that reads payment credentials. Checkout, the payOS webhook, the OnePAY return and IPN, status checks (**Check**, admin **Refresh**), the admin view and readiness all use what it resolves. For each provider, in order:
+
+1. **Admin:** the configuration a system admin saved, from the `payment_provider_configs` table (encrypted).
+2. **Legacy:**
+   - payOS: the `payos` object of `instance/bootstrap.json`;
+   - OnePAY: the `ONEPAY_*` variables of the runtime environment.
+
+   These are deployments configured before Phase 19. They keep working unchanged and are shown as *Bootstrap* or *Environment*. Changing them still needs a file edit and an API restart.
+3. **Missing.**
+
+**Rules:**
+
+- **Admin wins.** Once an admin saves credentials for a provider, the legacy source is ignored for it; the admin view still notes that one exists.
+- **No silent fallback.** A saved configuration that cannot be decrypted (the key is missing or was changed) is reported as an error, and the provider is unavailable. The server never falls back silently to the legacy credentials, which may belong to another merchant account or to production.
+- **Nothing is imported.** Saving never copies legacy values into the database. To switch a provider to admin-managed configuration, enter every required field once.
+
+### The enabled switch
+
+Each provider has an **enabled** switch, on by default for legacy deployments.
+
+- **Offered to buyers** only when enabled and its credentials are complete and valid. `GET /api/billing` → `methods` lists `vietqr` and/or `card` on that basis, and a checkout for any other method answers 503 "This payment method is not available".
+- **Disabling stops new checkouts only.** Webhooks, IPNs, returns and status checks of existing orders still use the provider's credentials, so a pending order still settles and a paid order is untouched. Credits are still posted once by `apply_paid`.
+- **Without saved credentials** (a legacy deployment), disabling records only the switch.
+
+### Encrypted at rest
+
+All of a provider's credentials are stored together as one Fernet-encrypted JSON object in `payment_provider_configs.config_ciphertext`; no secret has a column of its own. The encryption is done by `app/secret_box.py`.
+
+**Which key.** It reuses `REELFORGE_TOKEN_ENCRYPTION_KEY`, the key that already encrypts OAuth tokens:
+
+- **Why share it.** Both keys would sit in the same runtime file and be read by the same API process, so they would be lost or leaked together. A second key would add a backup burden without a security boundary.
+- **No swapping.** Each purpose gets its own key derived with HKDF-SHA256 (`reelforge:payment-config:payos`, `…:onepay`). A payment ciphertext cannot be decrypted as an OAuth token, or as the other provider's configuration.
+- **No key, no save.** Without the variable, saving answers 422 `key_missing` and nothing is generated. Set it once:
+  1. Run `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+  2. Put the output in the runtime file.
+  3. Restart the API.
+
+**Back the key up with the database.** A database backup alone cannot reveal any payment secret, and also cannot use them without the key.
+
+**Never returned.** Saved values never leave the server:
+
+- API responses show each field as configured / missing / invalid;
+- only the payOS client ID and the OnePAY merchant ID are shown, masked (`abcd…wxyz`);
+- errors name the field, never the value;
+- logs record field names only.
+
+### payOS (VietQR)
+
+| Field | Required | Shown |
+| --- | --- | --- |
+| Client ID | yes | masked |
+| API Key | yes | configured / missing |
+| Checksum Key | yes | configured / missing |
+
+**Webhook URL to register with payOS:** `https://<public frontend>/api/webhooks/payos`.
+
+payOS has no sandbox endpoint and no read-only call that proves the keys, so **Kiểm tra cấu hình** validates locally and reports the remote check as unsupported. Verify it with one small real payment.
+
+### OnePAY (cards)
+
+| Field | Required | Shown |
+| --- | --- | --- |
+| Merchant ID | yes | masked |
+| Access Code | yes | configured / missing |
+| Hash Key | yes | configured / missing / invalid (must be hex) |
+| QueryDR User, QueryDR Password | recommended (both or neither) | configured / missing |
+
+**Mode.** The admin picks a mode instead of typing gateway URLs:
+
+| Mode | Payment page | QueryDR |
+| --- | --- | --- |
+| Sandbox | `https://mtf.onepay.vn/paygate/vpcpay.op` | `https://mtf.onepay.vn/msp/api/v1/vpc/invoices/queries` |
+| Production | `https://onepay.vn/paygate/vpcpay.op` | `https://onepay.vn/msp/api/v1/vpc/invoices/queries` |
+| Advanced (custom) | entered by the admin (https only) | entered by the admin (https only) |
+
+Confirm the sandbox endpoints against OnePAY's merchant integration guide before the first sandbox test; if OnePAY gives you others, use **Advanced**.
+
+**The mode is always visible.** The tab and the panel show a **SANDBOX** or **PRODUCTION** badge.
+
+**Going live needs confirmation.** Turning on production asks: "You are enabling the production card gateway. Real customer payments can now be accepted." The confirmation is required whether the admin switches to production or re-enables a production gateway. The API enforces it: without `confirm_production: true` it answers 409 `confirm_production`.
+
+**URLs to register with OnePAY:**
+
+- IPN URL: `https://<public frontend>/api/webhooks/onepay`;
+- Return URL: `https://<public frontend>/api/billing/onepay/return`, also sent with each checkout.
+
+Both come from System Settings → `frontend_origin`.
+
+**Without QueryDR credentials**, the IPN still confirms payments, but **Check** and confirming a returning buyer cannot.
+
+**Legacy variables.** When no admin configuration is saved, the legacy `ONEPAY_*` variables apply as before:
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
 | `ONEPAY_MERCHANT_ID` | yes | `vpc_Merchant` |
 | `ONEPAY_ACCESS_CODE` | yes | `vpc_AccessCode` |
 | `ONEPAY_HASH_KEY` | yes | Secure hash key (hex) |
-| `ONEPAY_PAYMENT_URL` | no | Payment page. Default `https://onepay.vn/paygate/vpcpay.op`; use OnePAY's sandbox URL while testing |
-| `ONEPAY_QUERY_URL` | no | QueryDR endpoint. Default `https://onepay.vn/msp/api/v1/vpc/invoices/queries` |
-| `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD` | recommended | QueryDR credentials. Without them, a browser return cannot be confirmed, and **Check** reports that the provider is unavailable |
+| `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` | no | Default production; the mode is derived from the host |
+| `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD` | recommended | QueryDR credentials |
 
-Both URLs must be `https`. An incomplete or invalid configuration means card payment is "not configured": it is hidden in Billing and shown as **Missing** in Admin → Payments.
+### Saving: write-only secrets
 
-Register these addresses with OnePAY:
+`PUT /api/admin/payment-config/{payos|onepay}` takes each credential as an explicit update, so an empty string is never ambiguous:
 
-- **Return URL:** `https://<public frontend>/api/billing/onepay/return` (sent with each checkout; it comes from System Settings → `frontend_origin`).
-- **IPN URL:** `https://<public frontend>/api/webhooks/onepay`.
+```json
+{
+  "enabled": true,
+  "mode": "sandbox",
+  "merchant_id": {"action": "keep"},
+  "hash_key": {"action": "replace", "value": "…"},
+  "query_password": {"action": "clear"},
+  "confirm_production": false
+}
+```
 
-The frontend proxies `/api/*` to the API, as for the payOS webhook. Restart the API after changing the variables.
+**Actions:**
+
+- `keep` keeps the saved value. It is also the default when a field is omitted, and what the form sends for a field left blank.
+- `replace` sets a new value. An empty replacement is refused.
+- `clear` removes an optional value; clearing a required one is refused.
+
+`mode`, `payment_url` and `query_url` apply to OnePAY only, and the URLs only in custom mode.
+
+**Validation.** A save that touches credentials or the mode must produce a complete, valid configuration, or nothing is written: 422 with `{code, field}`. The codes are:
+
+- `missing`, `invalid_value`, `invalid_hash_key`, `invalid_url`, `query_incomplete`;
+- `key_missing`, `cannot_decrypt`;
+- `invalid_request`, used for malformed JSON or wrong types, without echoing the input.
+
+A save that keeps every field and the mode changes only the switch.
+
+**Other routes:**
+
+| Route | Effect |
+| --- | --- |
+| `GET /api/admin/payment-config` | Per provider: `enabled`, `configured` (credentials valid), `available` (offered to buyers), `source` (`admin`/`bootstrap`/`environment`/`missing`), `legacy_source`, `mode`, `fields`, `issues`, `updated_at`, `updated_by`, `urls` and `query_configured` (OnePAY), the URLs to register, activity, and the last changes. Also `any_available` and whether the encryption key is set |
+| `POST /api/admin/payment-config/{provider}/disable` | Stop new checkouts |
+| `POST /api/admin/payment-config/{provider}/enable` | `{confirm_production}`. Needs valid credentials |
+| `POST /api/admin/payment-config/{provider}/check` | `{remote}`. Validates the configuration in use (see below) |
+
+`POST /api/admin/payment-config/check` with `{provider, remote}` is kept for Phase 18 clients.
+
+All modifying routes are same-origin protected and system-admin only.
+
+### Configuration check
+
+The check never creates a payable order, charges, activates a plan or awards credits.
+
+- **Local:** validates the configuration in use, exactly as checkout would build it.
+- **OnePAY remote:** sends one signed QueryDR about the reference `RFCHECK<time>`, which no checkout ever used. A signed "no such transaction" proves the endpoint, the QueryDR credentials and the hash key.
+- **payOS remote:** reported as unsupported (see above).
+
+### Audit trail
+
+`payment_config_audit` records each change: `created` (first admin-managed credentials), `updated`, `enabled`, `disabled` and `tested`, with the admin and the time.
+
+- Its `metadata_json` holds changed field **names** (`{"changed": ["api_key"], "mode": "sandbox"}`) and check statuses, never a value.
+- The admin view lists the last eight entries per provider.
+- The log events `payment_config_saved` and `payment_config_checked` carry the same names and statuses.
+
+### Activity
+
+The time of the last verified payOS webhook, OnePAY IPN, status query and successful check is kept per provider in the system setting `payment_activity`, timestamps only. The admin view shows it.
+
+### Sandbox → production (OnePAY)
+
+1. **Configure the sandbox.** Save Sandbox mode with OnePAY's test merchant, access code, hash key and QueryDR credentials. Register the IPN and Return URLs for the test merchant.
+2. **Check it.** Press **Kiểm tra cấu hình**, then **Kiểm tra với OnePAY (QueryDR)**.
+3. **Test payments.** Pay with OnePAY's test card. Then:
+   - confirm the order turns paid;
+   - confirm the IPN time appears under activity;
+   - confirm the plan's credits are posted once.
+
+   Cancel one payment, and press **Check** on an order.
+4. **Go live.** Enter the production credentials from the merchant contract, select **Production**, save and confirm. Register the production IPN and Return URLs.
+5. **Pay once for real.** Make one small real payment and check that the credits are posted once.
+6. **Record it.** Tick each step in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+
+### Disaster recovery
+
+| Situation | What happens | Fix |
+| --- | --- | --- |
+| Database restored with its key | Everything works | — |
+| Database restored, key lost or changed | Saved gateways show "cannot decrypt" and are unavailable; legacy credentials are **not** used instead | Restore the old `REELFORGE_TOKEN_ENCRYPTION_KEY` and restart the API, or re-enter every secret of each gateway in the admin UI. The admin UI is the only route for payment secrets; OAuth tokens need their channels reconnected |
+| Key missing on a new server | Admin-managed gateways cannot be saved (`key_missing`); legacy credentials still work | Set the key, restart the API |
+| Wrong credentials saved | Checkouts or callbacks fail; pending orders stay pending | Save the right values (blank fields keep the others), then **Check** pending orders |
+| Need to stop payments now | — | **Tắt** on the gateway: new checkouts stop at once; existing orders still settle |
+
+`payment_provider_configs` is ordinary data: it is in every `pg_dump`. Keep the runtime file, which holds the key, backed up separately from the dump.
 
 ## Admin
 
 - **Admin → Payments** lists every order, server-paginated (`GET /api/admin/payments?q&provider&status&limit&offset`). `q` matches the owner email, studio name, provider reference, or the order code when it is all digits.
 - **Refresh provider state** (`POST /api/admin/payments/{id}/refresh`) runs the same provider query as **Check**.
 - There is deliberately no "mark as paid" action. Manual plan changes stay in **Studios & credits** and do not charge anyone.
-- Provider readiness (Configured/Missing) is shown above the table.
+- Each provider's state (available, disabled, not configured) is shown above the table; **Cổng thanh toán** opens the gateway configuration. With no gateway enabled, the Admin header warns.
 - When an order is paid but cannot be applied (`paid_unapplied`), system admins get a notification ([NOTIFICATIONS.md](NOTIFICATIONS.md)). Owners are notified when their payment succeeds or fails.
-
-## Admin setup view
-
-Admin → Thanh toán → **Cấu hình cổng** (Phase 18A) shows what each provider needs.
-
-**Who can see it.** Only system admins: `GET /api/admin/payment-config` and `POST /api/admin/payment-config/check` answer 403 to anyone else, studio owners included. Owners keep what they had: choose a plan and a method, pay, and see their own orders. `GET /api/billing` still returns only the available `methods`, never configuration.
-
-**Where secrets live.** Credentials stay where they are and are never moved into the database or editable from the browser:
-
-- payOS in the `payos` object of `instance/bootstrap.json`;
-- OnePAY in the `ONEPAY_*` variables of `.env.runtime`.
-
-To change them, edit that file on the server and restart the API.
-
-| Provider | Field (where it is set) | Shown as |
-| --- | --- | --- |
-| payOS | `payos.client_id` (bootstrap) | Masked (`abcd…wxyz`) |
-| payOS | `payos.api_key`, `payos.checksum_key` (bootstrap) | Configured / missing |
-| OnePAY | `ONEPAY_MERCHANT_ID` | Masked |
-| OnePAY | `ONEPAY_ACCESS_CODE`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD` | Configured / missing |
-| OnePAY | `ONEPAY_HASH_KEY` | Configured / missing / invalid (not hex) |
-| OnePAY | `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` | In full (they are not secret), marked when the default is used |
-
-**Also shown:**
-
-- OnePAY's mode, from the payment URL:
-  - **Sandbox:** `mtf.onepay.vn`;
-  - **Production:** `onepay.vn`;
-  - **Custom:** any other host.
-- Whether QueryDR is configured.
-- The addresses to register with the provider, each with a copy button:
-  - payOS webhook `…/api/webhooks/payos`;
-  - OnePAY IPN `…/api/webhooks/onepay`;
-  - OnePAY return `…/api/billing/onepay/return`.
-
-  They come from System Settings → `frontend_origin`.
-- Activity: when the last verified payOS webhook, OnePAY IPN, status query and successful check arrived. This is kept in the system setting `payment_activity`, timestamps only.
-
-The response never contains a key, access code, hash key, password, the bootstrap file or the runtime environment. The tests plant sentinel secrets and assert that none of them appears.
-
-**Kiểm tra cấu hình** (`POST /api/admin/payment-config/check` with `{provider, remote}`) never charges and never creates a checkout:
-
-- **On the server** (`remote: false`): validates the configuration locally, as the checkout would. For OnePAY this covers the required fields, hex hash key and https URLs; missing QueryDR credentials are a warning.
-- **With OnePAY** (`remote: true`, OnePAY only): sends one signed QueryDR about the reference `RFCHECK<time>`, which no checkout ever used. A signed "no such transaction" answer proves the endpoint, credentials and hash key. Nothing is read or written for any real order.
-- **payOS** has no read-only call that proves its keys without creating a payment link, so its remote check is reported as unsupported. Verify payOS with one small real payment (Admin → Kiểm định checklist).
-
-Each check is logged as `payment_config_checked` with the statuses only.
 
 ## Tests
 
@@ -165,6 +293,28 @@ Each check is logged as `payment_config_checked` with the statuses only.
 - the read-only QueryDR check against a mocked client;
 - the activity timestamp after a successful check.
 
+`tests/test_phase19.py` covers admin-managed configuration (payOS through a fake SDK class, OnePAY through `httpx.MockTransport`; any other request fails the test):
+
+- **Access:** a normal user and a studio owner get 403 on every route.
+- **Storage:** the stored ciphertext and every other table hold no plaintext secret.
+- **Never returned:** sentinel secrets never appear in responses, errors (bad hash key, oversized values, wrong types, broken JSON), the audit trail or logs.
+- **Key problems:** with the key missing nothing is saved. With another key the provider is unavailable and the bootstrap credentials are not used. A payOS ciphertext pasted into OnePAY's row never decrypts.
+- **payOS:**
+  - bootstrap fallback, then the admin override applied to the next checkout and webhook (the old checksum key is refused);
+  - updating only the API key, keep versus empty replace, clearing a required key refused;
+  - disable and enable; a pending order settling by webhook and by Check while disabled; the paid order untouched; credits posted once;
+  - disabling a bootstrap-configured provider without importing its values;
+  - a test that creates no order and awards no credit.
+- **OnePAY:**
+  - environment fallback, then the admin sandbox configuration used for checkout, the IPN (the environment's hash key and merchant refused) and QueryDR (sandbox URL, saved user and password);
+  - updating one secret; clearing and half-setting QueryDR;
+  - invalid values refused without changes;
+  - custom endpoints; production refused without confirmation and accepted with it;
+  - disable with a pending IPN settling; re-enabling production needing confirmation;
+  - the read-only QueryDR check; the audit trail; readiness.
+
+`tests/test_phase19_migration.py` runs 0017 → 0018 and back, keeping orders, subscriptions, the credit ledger and `payment_activity`.
+
 Live payments have not been verified. See [Live verification](#live-verification).
 
 ## Live verification
@@ -179,10 +329,6 @@ Before accepting customers, an operator must check, with the OnePAY sandbox and 
 
 Repeat steps 1, 3 and 5 for payOS if its configuration changed.
 
-Before the sandbox test, open **Cấu hình cổng**:
-
-1. Check that the mode reads **Sandbox**.
-2. Run **Kiểm tra cấu hình** with OnePAY.
-3. After the payment, confirm that the IPN time appears under activity.
+Follow [Sandbox → production](#sandbox--production-onepay) for the card gateway. Configure payOS in **Cổng thanh toán → VietQR**, press **Kiểm tra cấu hình**, make one small payment, and confirm the webhook time appears under activity.
 
 Record the results in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).

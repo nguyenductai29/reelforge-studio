@@ -12,7 +12,7 @@ import type {
   AdminWorkspace,
   AiTool,
   NotificationPage,
-  PaymentSetup,
+  PaymentSetupOverview,
   SupportTicket,
   SystemReadiness,
   SupportTicketDetail,
@@ -433,7 +433,7 @@ export function useAdminSupportTicket(id: string | null) {
 export function usePaymentSetup(enabled: boolean) {
   return useQuery({
     queryKey: keys.paymentSetup,
-    queryFn: () => api<{ providers: PaymentSetup[] }>("admin/payment-config").then((data) => data.providers),
+    queryFn: () => api<PaymentSetupOverview>("admin/payment-config"),
     enabled,
   });
 }
