@@ -1,6 +1,6 @@
-# Final product audit (Phases 14–19)
+# Final product audit (Phases 14–20)
 
-> Snapshot: branch `feat/studio-foundation`, after Phases 14–19, 2026-10-01. Database head: `0018_admin_payment_config`.
+> Snapshot: branch `feat/studio-foundation`, after Phases 14–20, 2026-10-01. Database head: `0019_system_configuration`.
 
 **Rule applied:** every control in the production interface works. An unfinished feature was either built now, when it reuses existing capabilities cheaply, or removed from the interface. No "coming soon" badge, banner, disabled placeholder switch or preview-only template remains.
 
@@ -85,7 +85,7 @@
 
 **Administration**
 
-The console fits the window and never scrolls; each table body scrolls inside it, with sticky headers and pagination always visible. It has eight tabs:
+The console fits the window and never scrolls; each table body scrolls inside it, with sticky headers and pagination always visible. It has nine tabs:
 
 | Tab | What it shows and does |
 | --- | --- |
@@ -96,7 +96,8 @@ The console fits the window and never scrolls; each table body scrolls inside it
 | Support | Search, status, category and priority filters; open a ticket, reply, change status or priority, resolve, close |
 | Credit reconciliation | The Phase 3.7 review of held credits |
 | Operations | Worker heartbeats, the job table, the stuck-work audit, and storage: disk free space, studios per warning level, fullest studios |
-| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support), a browser stream check, and the 29-item manual live checklist, grouped (payments split per gateway) |
+| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security: the master key), a browser stream check, and the 31-item manual live checklist, grouped (payments split per gateway) |
+| System settings (Phase 20) | Security (master key status), General, AI providers (switch, write-only key, connection test), Social OAuth (app credentials, derived redirect URLs), Storage (validated root, no silent moves, ceiling, retention), Runtime, Credit pricing, Notifications; every value's source (Admin / Environment / Default) |
 
 **Publishing and scheduling**: see § 5 and § 6.
 
@@ -276,9 +277,21 @@ python -m app.media_maintenance --apply --intermediates
 
 Payments, notifications and support need no worker: the API serves the notification stream. Admin → Operations shows each worker's heartbeat.
 
-## 11. Required environment variables
+## 11. Bootstrap and configuration
 
-All of them go in one runtime file (`/etc/reelforge/runtime.env` in production, loaded by every unit; `.env.runtime` in development). A blank `KEY=` line means "use the default". See `.env.runtime.example`.
+**Since Phase 20, production needs only:**
+
+- `instance/bootstrap.json` with the database URL;
+- the master key file `/etc/reelforge/master.key` (chmod 600; `python -m app.master_key init`).
+
+**Everything else is in the admin UI:**
+
+- **Admin → Cài đặt hệ thống:** AI providers, social OAuth, storage, runtime, credit pricing, notifications.
+- **Admin → Thanh toán → Cổng thanh toán:** VietQR manual/payOS, OnePAY.
+
+Values are stored in PostgreSQL (secrets encrypted) and picked up without restarts. See [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md).
+
+**Legacy variables.** The variables below remain a fallback for settings nobody saved in the admin UI; a saved value always wins. They live in `/etc/reelforge/runtime.env` (optional, `EnvironmentFile=-…`) or in `.env.runtime` in development. A blank `KEY=` line means "use the default". Only the logging variables, `REELFORGE_MASTER_KEY_FILE`, the live smoke-test choices and the experimental `DOLA_*` stay environment-only.
 
 | Area | Variables |
 | --- | --- |
@@ -290,7 +303,7 @@ All of them go in one runtime file (`/etc/reelforge/runtime.env` in production, 
 | YouTube | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` |
 | TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_REDIRECT_URI`, `TIKTOK_APPROVED_SCOPES` |
 | Facebook | `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `FACEBOOK_REDIRECT_URI` |
-| Token encryption | `REELFORGE_TOKEN_ENCRYPTION_KEY`: OAuth tokens and, since Phase 19, admin-managed payment credentials. Back it up; never change it |
+| Master key | `/etc/reelforge/master.key` (or `REELFORGE_MASTER_KEY_FILE`); legacy `REELFORGE_TOKEN_ENCRYPTION_KEY`. Encrypts OAuth tokens and every admin-managed secret. Back it up; never change it |
 | Card payments (legacy fallback; normally configured in Admin) | `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` |
 | Notifications | `REELFORGE_SSE_POLL_SECONDS` (3), `REELFORGE_SSE_MAX_SECONDS` (300), `CREDITS_LOW_THRESHOLD` (20) |
 | Logs | `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL` |
@@ -299,7 +312,7 @@ The database URL stays in `instance/bootstrap.json`; payOS keys there are a lega
 
 ## 12. DB migration head
 
-`0018_admin_payment_config`. Migrations 0001–0017 are unchanged.
+`0019_system_configuration`. Migrations 0001–0018 are unchanged.
 
 | Migration | Adds | Test |
 | --- | --- | --- |
@@ -307,6 +320,7 @@ The database URL stays in `instance/bootstrap.json`; payOS keys there are a lega
 | `0016_storage_lifecycle` | `plans.storage_limit_bytes` (Trial 1, Standard 10, Pro 30 GiB); `assets.kind` (back-filled from each asset's step); `assets.expired_at`, `expired_reason`, `expired_bytes`; index `ix_assets_kind_created_at` | `tests/test_storage_migration.py`: 0015 → 0016 and back |
 | `0017_notify_support_verify` | `notifications` (integer IDs, which are also the stream's event IDs; unique `(user_id, dedupe_key)`; indexes `(user_id, created_at)` and `(user_id, read_at)`); `support_tickets` and `support_messages` (categories, statuses, priorities and author types checked); `verification_checks` | `tests/test_phase18_migration.py`: 0016 → 0017 and back (SQLite, and PostgreSQL 16 with `REELFORGE_TEST_DATABASE_URL`); every revision ID fits PostgreSQL's 32-character version column |
 | `0018_admin_payment_config` | `payment_provider_configs` (one row per provider: `enabled`, `mode`, `config_ciphertext`, who and when; no secret column); `payment_config_audit` (action, admin, time, field names) | `tests/test_phase19_migration.py`: 0017 → 0018 and back, keeping orders, subscriptions, ledger and `payment_activity` (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
+| `0019_system_configuration` | `system_config` (one row per admin-managed setting: JSON value or ciphertext, never both); `system_config_audit`; `payment_orders.transfer_reported_at`; `payment_order_events` (manual VietQR reported/confirmed/rejected) | `tests/test_phase20_migration.py`: 0018 → 0019 and back (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
 
 The tests keep every existing row. Set `REELFORGE_TEST_DATABASE_URL` to also run them on PostgreSQL. Apply with `python -m alembic upgrade head` before restarting the services.
 
@@ -339,11 +353,13 @@ See [home-server-deployment.md](home-server-deployment.md) § 11.
 
 ## 15. Live verification requirements
 
-All Phase 14–19 tests are offline; no paid or live API was called. An operator must verify the following, then tick it in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+All Phase 14–20 tests are offline; no paid or live API was called. An operator must verify the following, then tick it in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
 
 **Payments**
 
 - Configure both gateways in Admin → Cổng thanh toán, with no SSH.
+- Manual VietQR: scan the QR with a real banking app, transfer a small amount, report it, confirm it in Admin; the credits are posted once.
+- Move the master key into `/etc/reelforge/master.key` and back it up.
 - OnePAY sandbox, then one real payment ([PAYMENTS.md](PAYMENTS.md#sandbox--production-onepay)):
   - checkout;
   - return;
@@ -418,6 +434,7 @@ Real devices remain to be checked.
 
 **Payments**
 
+- Manual VietQR depends on an administrator checking the bank account; there is no bank statement integration.
 - Card payment has not been tested live.
 - Changing the encryption key makes saved gateway credentials unreadable; they must be re-entered. There is no key rotation.
 - One configuration per provider: no separate sandbox and production profiles to switch between.

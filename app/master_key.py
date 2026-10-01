@@ -1,0 +1,171 @@
+"""The master encryption key: the one secret ReelForge keeps outside PostgreSQL (Phase 20).
+
+Every secret the application stores — OAuth tokens, upload sessions, payment
+gateway credentials, AI provider keys, OAuth app secrets — is encrypted with this
+Fernet key or a key derived from it (``app/secret_box.py``). A database backup
+alone therefore reveals nothing; the key file is backed up separately.
+
+Where the key comes from, first match wins:
+
+1. ``REELFORGE_MASTER_KEY_FILE``: an explicit file. If it is set, it must exist and
+   hold a valid key; there is no fallback, so a typo cannot silently switch keys.
+2. ``/etc/reelforge/master.key``: the production default.
+3. ``instance/master.key``: the development default (``instance/`` is git-ignored).
+4. ``REELFORGE_TOKEN_ENCRYPTION_KEY``: the legacy environment variable, so existing
+   installations keep working until the key is moved into a file.
+
+A key is never generated implicitly. ``python -m app.master_key init`` writes one
+(chmod 600): it copies the legacy key when one is set, generates a new one only
+when the database holds no encrypted data, and otherwise refuses.
+``python -m app.master_key status`` reports where the key comes from, never the key.
+"""
+import argparse
+import os
+from pathlib import Path
+import stat
+import sys
+
+from cryptography.fernet import Fernet
+
+ROOT = Path(__file__).resolve().parents[1]
+FILE_ENV = "REELFORGE_MASTER_KEY_FILE"
+LEGACY_ENV = "REELFORGE_TOKEN_ENCRYPTION_KEY"
+PRODUCTION_FILE = Path("/etc/reelforge/master.key")
+DEVELOPMENT_FILE = ROOT / "instance" / "master.key"
+
+
+def _valid(value: str) -> bool:
+    try:
+        Fernet(value.encode("ascii"))
+    except (TypeError, ValueError, UnicodeError):
+        return False
+    return True
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return None
+
+
+def resolve() -> dict:
+    """``{source, path, key, problem}``. ``source`` is file, legacy_env or missing; ``key`` is "" unless usable."""
+    explicit = os.environ.get(FILE_ENV, "").strip()
+    candidates = [Path(explicit)] if explicit else [PRODUCTION_FILE, DEVELOPMENT_FILE]
+    for path in candidates:
+        if not path.is_file():
+            if explicit:
+                return {"source": "file", "path": str(path), "key": "", "problem": "missing"}
+            continue
+        value = _read(path)
+        if value is None:
+            return {"source": "file", "path": str(path), "key": "", "problem": "unreadable"}
+        if not _valid(value):
+            return {"source": "file", "path": str(path), "key": "", "problem": "invalid"}
+        return {"source": "file", "path": str(path), "key": value, "problem": None}
+    legacy = os.environ.get(LEGACY_ENV, "").strip()
+    if legacy:
+        if not _valid(legacy):
+            return {"source": "legacy_env", "path": None, "key": "", "problem": "invalid"}
+        return {"source": "legacy_env", "path": None, "key": legacy, "problem": None}
+    return {"source": "missing", "path": None, "key": "", "problem": "missing"}
+
+
+def load() -> str:
+    """The master key, or "" when none is usable (callers report ``key_missing``)."""
+    return resolve()["key"]
+
+
+def status() -> dict:
+    """What an admin may see: where the key comes from and what is wrong, never the key itself."""
+    found = resolve()
+    info = {"source": found["source"], "path": found["path"], "problem": found["problem"],
+            "permissions_ok": None, "legacy_env_set": bool(os.environ.get(LEGACY_ENV, "").strip()),
+            "legacy_env_matches": None}
+    if found["source"] == "file" and found["path"] and os.name == "posix":
+        try:
+            mode = stat.S_IMODE(os.stat(found["path"]).st_mode)
+            info["permissions_ok"] = mode & 0o077 == 0
+        except OSError:
+            info["permissions_ok"] = False
+    if found["source"] == "file" and found["key"] and info["legacy_env_set"]:
+        info["legacy_env_matches"] = os.environ.get(LEGACY_ENV, "").strip() == found["key"]
+    return info
+
+
+def _write(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+        handle.write(value + "\n")
+    if os.name == "posix":
+        os.chmod(path, 0o600)
+
+
+def encrypted_data_exists() -> bool:
+    """Whether the database already holds anything encrypted (then a new key would make it unreadable)."""
+    from sqlalchemy import inspect, text
+
+    from app.db import engine
+
+    checks = (("system_config", "ciphertext"), ("payment_provider_configs", "config_ciphertext"),
+              ("youtube_connections", "refresh_token_ciphertext"), ("channel_connections", "access_token_ciphertext"),
+              ("publications", "upload_session_ciphertext"))
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        for table, column in checks:
+            if not inspector.has_table(table):
+                continue
+            if column not in {item["name"] for item in inspector.get_columns(table)}:
+                continue
+            if connection.execute(text(f"SELECT 1 FROM {table} WHERE {column} IS NOT NULL LIMIT 1")).first():
+                return True
+    return False
+
+
+def init(path: Path, *, out=print) -> int:
+    found = resolve()
+    if found["source"] == "file" and found["key"]:
+        out(f"A master key already exists at {found['path']}; nothing changed.")
+        return 0
+    if Path(path).exists():
+        out(f"{path} exists but holds no valid key; fix or remove it by hand. Nothing changed.")
+        return 1
+    legacy = os.environ.get(LEGACY_ENV, "").strip()
+    if legacy and _valid(legacy):
+        _write(Path(path), legacy)
+        out(f"Copied {LEGACY_ENV} into {path} (chmod 600). Keep it backed up; the variable can now be removed.")
+        return 0
+    if encrypted_data_exists():
+        out("The database already holds encrypted data. Restore the original key file (or set "
+            f"{LEGACY_ENV}) instead of generating a new key: a new key would make that data unreadable.")
+        return 1
+    _write(Path(path), Fernet.generate_key().decode("ascii"))
+    out(f"Generated a new master key at {path} (chmod 600). Back it up separately from the database.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="ReelForge master encryption key")
+    commands = parser.add_subparsers(dest="command", required=True)
+    create = commands.add_parser("init", help="write the key file (copies the legacy key when set)")
+    create.add_argument("--path", type=Path, default=None,
+                        help=f"default: ${FILE_ENV}, else {PRODUCTION_FILE} on Linux, else {DEVELOPMENT_FILE}")
+    commands.add_parser("status", help="where the key comes from (never prints the key)")
+    args = parser.parse_args(argv)
+    if args.command == "status":
+        info = status()
+        for key, value in info.items():
+            print(f"{key}: {value}")
+        return 0 if info["problem"] is None else 1
+    from app.runtime_env import load_runtime_env
+
+    load_runtime_env()  # a legacy key may still live in the runtime file
+    path = args.path or Path(os.environ.get(FILE_ENV, "").strip() or
+                             (PRODUCTION_FILE if sys.platform.startswith("linux") else DEVELOPMENT_FILE))
+    return init(path)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

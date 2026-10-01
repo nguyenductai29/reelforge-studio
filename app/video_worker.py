@@ -30,6 +30,7 @@ from app.provider_progress import provider_progress, safe_error_code, step_outpu
 from app.runtime_env import start_process
 from app.video_files import download_video, mp4_duration_seconds, valid_mp4
 from app.workflow import ExecutionContext, NodeError, NodeExecutionResult, default_executor
+from app import system_config
 
 # Submit errors that prove the provider did not accept the job, so its credits can be refunded.
 DEFINITIVE_SUBMIT_REJECTIONS = frozenset({"invalid_request", "authentication_error", "billing_error",
@@ -56,7 +57,7 @@ def _now():
 def video_job_max_age_seconds() -> int:
     """Bound polling and credit holds when a provider never reaches a final state."""
     try:
-        seconds = int(os.environ.get("VIDEO_JOB_MAX_AGE_SECONDS", "").strip() or "21600")
+        seconds = int(system_config.env("VIDEO_JOB_MAX_AGE_SECONDS").strip() or "21600")
     except ValueError as exc:
         raise RuntimeError("VIDEO_JOB_MAX_AGE_SECONDS must be an integer") from exc
     if not 60 <= seconds <= 86400:
@@ -286,7 +287,7 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
             return True
     owned_client = client is None
     if owned_client:
-        key = os.environ.get(key_name)
+        key = system_config.env(key_name)
         if not key:
             _terminal_failure(job_id, token, f"Server chưa cấu hình {key_name}.", refund=action == "queued")
             return True
@@ -416,7 +417,7 @@ VIDEO_KIND = media_jobs.MediaKind(
     max_age_seconds=_scene_max_age,
     config_issue=_scene_config_issue,
     open_client=lambda payload: VIDEO_PROVIDERS[payload["provider"]].client_type(
-        os.environ[VIDEO_PROVIDERS[payload["provider"]].key_env]),
+        system_config.env(VIDEO_PROVIDERS[payload["provider"]].key_env)),
     submit=_scene_submit,
     status=lambda client, payload, submission: client.status(_module(payload).Submission(**submission)),
     result_urls=lambda client, payload, submission: [

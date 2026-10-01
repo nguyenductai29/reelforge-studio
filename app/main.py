@@ -24,11 +24,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
-from app.models import Notification, SupportMessage, SupportTicket, UserProfile, VerificationCheck
+from app.models import Notification, PaymentOrderEvent, SupportMessage, SupportTicket, UserProfile, VerificationCheck
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import (auth_security, billing, heartbeat, jobs, media_maintenance, notifications, payment_config,
-                 payment_providers, payments, publications, readiness, reconciliation, run_summary, secret_box, sources,
-                 storage, support, usage)
+from app import (auth_security, bank_qr, billing, config_checks, heartbeat, jobs, master_key, media_maintenance,
+                 notifications, payment_config, payment_providers, payments, publications, readiness, reconciliation,
+                 run_summary, secret_box, sources, storage, support, system_config, usage)
 from app.payment_providers import onepay
 from app.payment_providers import setup as payment_setup
 from app.models import CreditReconciliation
@@ -98,7 +98,9 @@ with Session.begin() as db:
                 db.add(WorkspaceSetting(workspace_id=workspace_id, key=key, value=json.dumps(default)))
 @asynccontextmanager
 async def lifespan(_app):
-    # The API loads the same runtime environment file as the workers (app/runtime_env.py).
+    # Like every worker: the optional legacy runtime file, then settings from PostgreSQL (Admin → System
+    # settings, app/system_config.py). Activation happens here, not at import, because workers and tests
+    # import this module without serving the API.
     start_process("api")
     yield
 
@@ -599,8 +601,8 @@ def get_settings(request: Request):
             system = {key: setting(db, key) for key in SYSTEM_DEFAULTS}
             # The folder in use: REELFORGE_STORAGE_ROOT wins over the stored setting (app/storage.py).
             system["storage_dir"] = str(storage.media_root(db))
-            from_env = bool(os.environ.get(storage.STORAGE_ROOT_ENV, "").strip())
-            system["storage_dir_source"] = "environment" if from_env else "setting"
+            root_source = system_config.source("storage.root")
+            system["storage_dir_source"] = root_source if root_source in ("admin", "environment") else "setting"
         profile = db.get(UserProfile, user.id)
         return {"workspace": workspace_settings(db, ws.id), "system": system,
                 "profile": {"display_name": profile.display_name if profile else None}}
@@ -740,11 +742,16 @@ def plan_data(plan):
 
 def order_data(order):
     """A payment order without anything secret: no checkout token, no provider payload."""
-    method = next((m for m, name in payment_providers.METHODS.items() if name == order.provider), None)
-    return {"id": order.id, "plan_code": order.plan_code, "provider": order.provider, "method": method,
+    data = {"id": order.id, "plan_code": order.plan_code, "provider": order.provider,
+            "method": payment_providers.PROVIDER_METHOD.get(order.provider),
             "reference": str(order.order_code), "provider_reference": order.provider_reference,
             "amount_vnd": order.amount_vnd, "status": order.status,
             "created_at": order.created_at.isoformat(), "paid_at": order.paid_at.isoformat() if order.paid_at else None}
+    if order.provider == "bank_qr":
+        # Manual VietQR: the content the buyer must write, and when they said they paid.
+        data["transfer_content"] = order.provider_reference
+        data["transfer_reported_at"] = _iso_or_none(order.transfer_reported_at)
+    return data
 
 
 ORDER_PAGE = Query(default=10, ge=1, le=50)
@@ -763,7 +770,7 @@ def billing_overview(request: Request):
                 "orders": [order_data(o) for o in orders], "orders_total": total,
                 # Only the payment methods buyers may choose now; payos_ready is kept for older clients.
                 "methods": payment_providers.available_methods(),
-                "payos_ready": billing.configured() and billing.enabled()}
+                "payos_ready": billing.configured() and billing.enabled() and payment_providers.vietqr_mode() == "payos"}
 
 
 @app.get("/api/billing/orders")
@@ -798,13 +805,23 @@ def billing_checkout(data: CheckoutInput, request: Request):
         if not plan or not plan.is_active or not plan.price_vnd:
             raise HTTPException(400, "Plan price is not configured")
         origin = setting(db, "frontend_origin")
+        order_code = secrets.randbelow(8_000_000_000_000) + 1_000_000_000_000
+        manual = bank_qr.settings() if provider.name == "bank_qr" else None
         order = PaymentOrder(id=ident(), workspace_id=ws.id, plan_code=plan.code,
-                             provider=provider.name, order_code=secrets.randbelow(8_000_000_000_000) + 1_000_000_000_000,
+                             provider=provider.name, order_code=order_code,
                              amount_vnd=plan.price_vnd, credits_award=plan.monthly_credits,
+                             # A manual transfer is told apart by its content: the prefix and the order code.
+                             provider_reference=bank_qr.transfer_content(manual["transfer_prefix"], order_code)
+                             if manual else None,
                              status="pending", created_at=datetime.now(timezone.utc))
         db.add(order)
         db.flush()
         order_id, code, amount, plan_code = order.id, order.order_code, order.amount_vnd, plan.code
+        content = order.provider_reference
+    if manual is not None:
+        # Manual VietQR: the QR is shown in ReelForge; an admin confirms the money arrived.
+        return {"order_id": order_id, "checkout_url": None,
+                "transfer": bank_qr.details(manual, amount_vnd=amount, content=content)}
     try:
         link = provider.checkout(order_code=code, amount_vnd=amount, plan_code=plan_code, origin=origin.rstrip("/"),
                                  client_ip=request.client.host if request.client else "")
@@ -853,7 +870,8 @@ def refresh_order(order_id: str, workspace_id: str | None = None):
         order = db.scalar(query)
         if not order:
             raise HTTPException(404, "Order not found")
-        if order.status in ("paid", "paid_unapplied"):
+        if order.status in ("paid", "paid_unapplied") or order.provider == "bank_qr":
+            # Nothing to ask for a manual transfer: a system admin confirms it.
             return order_data(order)
         provider = payment_providers.provider(order.provider)
         if provider is None or not provider.configured():
@@ -874,6 +892,52 @@ def refresh_order(order_id: str, workspace_id: str | None = None):
             raise HTTPException(502, "Payment amount mismatch") from exc
         result = order_data(db.get(PaymentOrder, order_id))
     payment_setup.record_activity(name, "query")
+    return result
+
+
+def _manual_order(db, order_id: str, workspace_id: str, lock: bool = False) -> PaymentOrder:
+    """A manual VietQR order of this studio; anything else answers 404 (no cross-studio access)."""
+    query = select(PaymentOrder).where(PaymentOrder.id == order_id, PaymentOrder.workspace_id == workspace_id,
+                                       PaymentOrder.provider == "bank_qr")
+    order = db.scalar(query.with_for_update() if lock else query)
+    if order is None:
+        raise HTTPException(404, "Order not found")
+    return order
+
+
+@app.get("/api/billing/orders/{order_id}/transfer")
+def manual_transfer_details(order_id: str, request: Request):
+    """The QR and bank details of a pending manual VietQR order, to show it again."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        order = _manual_order(db, order_id, ws.id)
+        values = bank_qr.settings()
+        if bank_qr.problems(values):
+            raise HTTPException(503, "This payment method is not available")
+        return {"order": order_data(order),
+                "transfer": bank_qr.details(values, amount_vnd=order.amount_vnd, content=order.provider_reference)}
+
+
+@app.post("/api/billing/orders/{order_id}/transferred")
+def report_manual_transfer(order_id: str, request: Request):
+    """The buyer says the transfer is made. Nothing is paid until a system admin confirms the money arrived."""
+    same_origin(request)
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        user = authorize(request, db)
+        if db.get(Membership, (user.id, ws.id)).role != "owner":
+            raise HTTPException(403, "Workspace owner required")
+        order = _manual_order(db, order_id, ws.id, lock=True)
+        if order.status != "pending":
+            raise HTTPException(409, "Order is not awaiting payment")
+        if order.transfer_reported_at is None:
+            now = datetime.now(timezone.utc)
+            order.transfer_reported_at = now
+            db.add(PaymentOrderEvent(order_id=order.id, action="transfer_reported", user_id=user.id,
+                                     amount_vnd=order.amount_vnd, created_at=now))
+            notifications.transfer_reported(db, order, order.provider_reference or "")
+        result = order_data(order)
+    log_event(logger, "manual_transfer_reported", order_id=order_id)
     return result
 
 
@@ -1056,6 +1120,10 @@ def admin_overview(request: Request):
                 "storage_alerts": sum(levels[name] for name in ("critical", "full")),
                 "support_open": count_of(db, select(SupportTicket.id).where(
                     SupportTicket.status.in_(support.AWAITING_SUPPORT))),
+                # Manual VietQR transfers waiting for an admin (migration 0019).
+                "transfers_to_confirm": count_of(db, select(PaymentOrder.id).where(
+                    PaymentOrder.provider == "bank_qr", PaymentOrder.status == "pending",
+                    PaymentOrder.transfer_reported_at.is_not(None))) if system_config.ready(db) else 0,
             },
             "storage_levels": levels,
             "plans": [plan_data(p) for p in db.scalars(select(Plan).order_by(Plan.code))],
@@ -1210,8 +1278,9 @@ def admin_workspace_detail(workspace_id: str, request: Request):
 
 @app.get("/api/admin/payments")
 def admin_payments(request: Request, q: str | None = Query(default=None, max_length=255),
-                   provider: Literal["payos", "onepay"] | None = None,
-                   status: Literal["pending", "paid", "paid_unapplied", "failed", "cancelled", "expired"] | None = None,
+                   provider: Literal["payos", "bank_qr", "onepay"] | None = None,
+                   status: Literal["pending", "awaiting_confirmation", "paid", "paid_unapplied", "failed", "cancelled",
+                                   "expired"] | None = None,
                    limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
     """Payment orders of every studio, newest first; ``q`` searches the owner's email, the studio name,
     the order reference and the provider reference. No checkout URL or provider payload is returned."""
@@ -1230,13 +1299,89 @@ def admin_payments(request: Request, q: str | None = Query(default=None, max_len
             query = query.where(or_(*matches))
         if provider:
             query = query.where(PaymentOrder.provider == provider)
-        if status:
+        if status == "awaiting_confirmation":
+            # Manual transfers the buyer reported and nobody has confirmed or rejected yet.
+            query = query.where(PaymentOrder.provider == "bank_qr", PaymentOrder.status == "pending",
+                                PaymentOrder.transfer_reported_at.is_not(None))
+        elif status:
             query = query.where(PaymentOrder.status == status)
         total = count_of(db, query)
         rows = db.execute(query.order_by(PaymentOrder.created_at.desc(), PaymentOrder.id).limit(limit).offset(offset)).all()
         return {"items": [{**order_data(order), "workspace_id": order.workspace_id, "workspace_name": name,
                            "owner_email": email} for order, name, email in rows],
                 "total": total, "limit": limit, "offset": offset}
+
+
+class ManualConfirmInput(BaseModel):
+    # The amount the admin saw arrive; it must equal the order's exact amount.
+    amount_vnd: int = Field(gt=0)
+
+
+class ManualRejectInput(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+def _admin_manual_order(db, order_id: str) -> PaymentOrder:
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order_id).with_for_update())
+    if order is None:
+        raise HTTPException(404, "Order not found")
+    if order.provider != "bank_qr":
+        raise HTTPException(409, "Only manual bank transfers are confirmed by an administrator")
+    return order
+
+
+@app.post("/api/admin/payments/{order_id}/confirm")
+def confirm_manual_payment(order_id: str, data: ManualConfirmInput, request: Request):
+    """A system admin confirms a manual VietQR transfer arrived. Settles through the shared path, exactly once."""
+    same_origin(request)
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        order = _admin_manual_order(db, order_id)
+        if order.status in ("paid", "paid_unapplied"):
+            raise HTTPException(409, "Order already settled")
+        if data.amount_vnd != order.amount_vnd:
+            raise HTTPException(422, {"code": "amount_mismatch", "field": "amount_vnd",
+                                      "message": "The confirmed amount must equal the order amount"})
+        status = payments.apply_paid(db, order.order_code, order.amount_vnd, order.provider_reference or "",
+                                     provider="bank_qr")
+        db.add(PaymentOrderEvent(order_id=order.id, action="confirmed", user_id=admin.id, amount_vnd=order.amount_vnd,
+                                 created_at=datetime.now(timezone.utc)))
+        result = order_data(order)
+        admin_id = admin.id
+    log_event(logger, "manual_payment_confirmed", admin_id=admin_id, order_id=order_id, amount=data.amount_vnd,
+              status=status)
+    return result
+
+
+@app.post("/api/admin/payments/{order_id}/reject")
+def reject_manual_payment(order_id: str, data: ManualRejectInput, request: Request):
+    """The transfer was not found. The order fails; if the money turns up later it can still be confirmed."""
+    same_origin(request)
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        order = _admin_manual_order(db, order_id)
+        if order.status != "pending":
+            raise HTTPException(409, "Order is not awaiting payment")
+        order.status = "failed"
+        db.add(PaymentOrderEvent(order_id=order.id, action="rejected", user_id=admin.id, amount_vnd=order.amount_vnd,
+                                 note=(data.note or "").strip() or None, created_at=datetime.now(timezone.utc)))
+        notifications.payment_settled(db, order, "failed")
+        result = order_data(order)
+        admin_id = admin.id
+    log_event(logger, "manual_payment_rejected", admin_id=admin_id, order_id=order_id)
+    return result
+
+
+@app.get("/api/admin/payments/{order_id}/events")
+def manual_payment_events(order_id: str, request: Request):
+    """A manual order's history: reported, confirmed, rejected, with who and the amount."""
+    with Session() as db:
+        admin_for(request, db)
+        rows = db.execute(select(PaymentOrderEvent, User.email).outerjoin(User, User.id == PaymentOrderEvent.user_id)
+                          .where(PaymentOrderEvent.order_id == order_id)
+                          .order_by(PaymentOrderEvent.created_at, PaymentOrderEvent.id)).all()
+        return {"items": [{"action": event.action, "at": _iso(event.created_at), "by": email,
+                           "amount_vnd": event.amount_vnd, "note": event.note} for event, email in rows]}
 
 
 @app.post("/api/admin/payments/{order_id}/refresh")
@@ -1342,6 +1487,8 @@ class SecretUpdate(BaseModel):
 
 class PayOSConfigInput(BaseModel):
     enabled: bool
+    # Phase 20: make payOS the VietQR mode (automatic) in the same save.
+    use_for_vietqr: bool = False
     client_id: SecretUpdate = SecretUpdate()
     api_key: SecretUpdate = SecretUpdate()
     checksum_key: SecretUpdate = SecretUpdate()
@@ -1375,13 +1522,50 @@ class PaymentSwitchInput(BaseModel):
     confirm_production: bool = False
 
 
-PAYMENT_CONFIG_INPUT = {"payos": PayOSConfigInput, "onepay": OnePayConfigInput}
+class BankQRConfigInput(BaseModel):
+    enabled: bool
+    bank_bin: str = ""
+    bank_name: str = ""
+    account_number: str = ""
+    account_name: str = ""
+    transfer_prefix: str = "RF"
+    note: str = ""
+    sla_message: str = ""
+    # Make the manual bank QR the VietQR mode in the same save.
+    use_for_vietqr: bool = True
+
+
+class BankQRPreviewInput(BaseModel):
+    bank_bin: str = ""
+    account_number: str = ""
+    account_name: str = ""
+    transfer_prefix: str = "RF"
+
+
+PAYMENT_CONFIG_INPUT = {"payos": PayOSConfigInput, "onepay": OnePayConfigInput, "bank_qr": BankQRConfigInput}
 
 
 def _payment_provider(provider: str) -> str:
-    if provider not in payment_config.PROVIDERS:
+    if provider not in (*payment_config.PROVIDERS, "bank_qr"):
         raise HTTPException(404, "Unknown payment provider")
     return provider
+
+
+def _settings_failure(exc: system_config.ConfigError) -> HTTPException:
+    return HTTPException(422, {"code": exc.code, "field": exc.key, "message": "Settings not saved"})
+
+
+def _save_bank_qr(db, admin_id: str, data: "BankQRConfigInput") -> list[str]:
+    values = {name: getattr(data, name).strip() for name in bank_qr.FIELDS}
+    values["transfer_prefix"] = values["transfer_prefix"].upper()
+    values["account_name"] = values["account_name"].upper()
+    if data.enabled and (missing := bank_qr.problems(values)):
+        raise system_config.ConfigError("missing", f"payments.bank_qr.{missing[0]}")
+    stored = {f"payments.bank_qr.{name}": value for name, value in values.items()}
+    stored["payments.bank_qr.enabled"] = data.enabled
+    if data.use_for_vietqr:
+        stored["payments.vietqr_mode"] = "manual"
+    return system_config.save(db, admin_id, values=stored, section="payments")
 
 
 async def _payment_body(request: Request, model):
@@ -1398,9 +1582,10 @@ async def _payment_body(request: Request, model):
                                   "message": "Invalid payment configuration"}) from None
 
 
-def _config_failure(exc: payment_config.ConfigError) -> HTTPException:
+def _config_failure(exc) -> HTTPException:
     status = 409 if exc.code == "confirm_production" else 422
-    return HTTPException(status, {"code": exc.code, "field": exc.field, "message": "Payment configuration not saved"})
+    field = getattr(exc, "field", None) or getattr(exc, "key", None)
+    return HTTPException(status, {"code": exc.code, "field": field, "message": "Payment configuration not saved"})
 
 
 def _payment_view(db, provider: str) -> dict:
@@ -1415,6 +1600,8 @@ def admin_payment_config(request: Request):
         admin_for(request, db)
         providers = payment_setup.overview(db, setting(db, "frontend_origin"))
         return {"providers": providers, "any_available": any(item["available"] for item in providers),
+                "vietqr_mode": payment_providers.vietqr_mode(),
+                "banks": [{"bin": code, "name": name} for code, name in bank_qr.BANKS],
                 "encryption": {"available": secret_box.available(), "variable": secret_box.KEY_VARIABLE}}
 
 
@@ -1426,6 +1613,16 @@ async def update_payment_config(provider: str, request: Request):
     with Session() as db:
         admin_for(request, db)  # before reading the body: a non-admin learns nothing about its validation
     data = await _payment_body(request, PAYMENT_CONFIG_INPUT[provider])
+    if provider == "bank_qr":
+        with Session.begin() as db:
+            admin = admin_for(request, db)
+            try:
+                changed = _save_bank_qr(db, admin.id, data)
+            except system_config.ConfigError as exc:
+                raise _config_failure(exc) from None
+        log_event(logger, "payment_config_saved", provider=provider, actions="updated", changed=",".join(changed))
+        with Session() as db:
+            return _payment_view(db, provider)
     updates = {spec.name: (getattr(data, spec.name).action, getattr(data, spec.name).value or "")
                for spec in payment_config.FIELDS[provider]}
     urls = {"payment_url": data.payment_url or "", "query_url": data.query_url or ""} if provider == "onepay" else None
@@ -1435,6 +1632,8 @@ async def update_payment_config(provider: str, request: Request):
             actions = payment_config.save(db, provider, admin.id, enabled=data.enabled,
                                           mode=getattr(data, "mode", None), updates=updates, urls=urls,
                                           confirm_production=getattr(data, "confirm_production", False))
+            if getattr(data, "use_for_vietqr", False):
+                system_config.save(db, admin.id, values={"payments.vietqr_mode": "payos"}, section="payments")
         except payment_config.ConfigError as exc:
             raise _config_failure(exc) from None
     changed = sorted(name for name, (action, _) in updates.items() if action != "keep")
@@ -1451,7 +1650,10 @@ def disable_payment_provider(provider: str, request: Request):
     provider = _payment_provider(provider)
     with Session.begin() as db:
         admin = admin_for(request, db)
-        payment_config.set_enabled(db, provider, admin.id, False)
+        if provider == "bank_qr":
+            system_config.save(db, admin.id, values={"payments.bank_qr.enabled": False}, section="payments")
+        else:
+            payment_config.set_enabled(db, provider, admin.id, False)
     log_event(logger, "payment_config_saved", provider=provider, actions="disabled", changed="")
     with Session() as db:
         return _payment_view(db, provider)
@@ -1467,7 +1669,12 @@ async def enable_payment_provider(provider: str, request: Request):
     with Session.begin() as db:
         admin = admin_for(request, db)
         try:
-            payment_config.set_enabled(db, provider, admin.id, True, confirm_production=data.confirm_production)
+            if provider == "bank_qr":
+                if not bank_qr.configured():
+                    raise payment_config.ConfigError("not_configured")
+                system_config.save(db, admin.id, values={"payments.bank_qr.enabled": True}, section="payments")
+            else:
+                payment_config.set_enabled(db, provider, admin.id, True, confirm_production=data.confirm_production)
         except payment_config.ConfigError as exc:
             raise _config_failure(exc) from None
     log_event(logger, "payment_config_saved", provider=provider, actions="enabled", changed="")
@@ -1478,6 +1685,12 @@ async def enable_payment_provider(provider: str, request: Request):
 def _run_payment_check(request: Request, provider: str, remote: bool) -> dict:
     with Session() as db:
         admin = admin_for(request, db)
+    if provider == "bank_qr":
+        missing = bank_qr.problems(bank_qr.settings())
+        return {"provider": provider, "source": "admin",
+                "local": {"status": "error", "code": "missing"} if missing else {"status": "ok"},
+                "remote": {"status": "unsupported" if remote else "skipped"},
+                "checked_at": datetime.now(timezone.utc).isoformat()}
     result = payment_setup.check(provider, remote=remote)
     if result["local"]["status"] == "ok" and result["remote"]["status"] in ("ok", "skipped"):
         payment_setup.record_activity(provider, "check")
@@ -1500,11 +1713,141 @@ async def check_payment_provider(provider: str, request: Request):
     return _run_payment_check(request, provider, data.remote)
 
 
+@app.post("/api/admin/payment-config/bank_qr/preview")
+async def preview_bank_qr(request: Request):
+    """A sample QR (100,000 VND, content <prefix>TEST01) for the values on screen; nothing is saved or sent."""
+    same_origin(request)
+    with Session() as db:
+        admin_for(request, db)
+    data = await _payment_body(request, BankQRPreviewInput)
+    values = {name: getattr(data, name).strip() for name in ("bank_bin", "account_number", "account_name",
+                                                               "transfer_prefix")}
+    values["transfer_prefix"] = values["transfer_prefix"].upper()
+    if missing := bank_qr.problems(values):
+        raise HTTPException(422, {"code": "missing", "field": f"payments.bank_qr.{missing[0]}",
+                                  "message": "Incomplete bank details"})
+    return bank_qr.preview(values)
+
+
 @app.post("/api/admin/payment-config/check")
 def admin_payment_check(data: LegacyPaymentCheckInput, request: Request):
     """Phase 18 route, kept for older clients: the same check with the provider in the body."""
     same_origin(request)
     return _run_payment_check(request, data.provider, data.remote)
+
+
+# --- Phase 20: central system settings (system admins only) ------------------------------------------------
+# The same write-only rules as payment gateways: secrets are encrypted at rest, never returned, never echoed.
+
+ADMIN_SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications")
+
+
+class SystemConfigInput(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+    secrets: dict[str, SecretUpdate] = Field(default_factory=dict)
+    reset: list[str] = Field(default_factory=list, max_length=100)
+    # Required to point the media root elsewhere while files exist; files are never moved.
+    confirm_root_change: bool = False
+
+
+class StorageCheckInput(BaseModel):
+    root: str = Field(default="", max_length=1000)
+
+
+def _stored_files(db) -> int:
+    return count_of(db, select(Asset.id).where(Asset.bytes > 0))
+
+
+def _system_overview(db) -> dict:
+    origin = setting(db, "frontend_origin").rstrip("/")
+    used = dict(db.execute(select(AITool.provider, func.count(AITool.id)).where(AITool.is_enabled.is_(True))
+                           .group_by(AITool.provider)).all())
+    return {
+        "sections": {name: system_config.section_view(db, name) for name in ADMIN_SECTIONS},
+        "history": {name: system_config.history(db, name) for name in ADMIN_SECTIONS},
+        "redirects": {channel: system_config.redirect_uri(channel) for channel in system_config.REDIRECT_PATHS},
+        "derived_redirects": {channel: f"{origin}{path}" for channel, path in system_config.REDIRECT_PATHS.items()},
+        "models_in_use": {name: int(used.get(name, 0)) for name in system_config.AI_PROVIDERS},
+        "master_key": {**master_key.status(), "encryption_available": secret_box.available()},
+        "storage": {"root": str(storage.media_root(db)), "source": system_config.source("storage.root"),
+                    "files": _stored_files(db), "disk": storage.disk_usage(db)},
+        "migrated": system_config.ready(db),
+    }
+
+
+@app.get("/api/admin/system-config")
+def admin_system_config(request: Request):
+    """Every admin-managed setting, where its value comes from (admin, environment, default), never a secret."""
+    with Session() as db:
+        admin_for(request, db)
+        return _system_overview(db)
+
+
+@app.put("/api/admin/system-config/{section}")
+async def update_system_config(section: str, request: Request):
+    """Save one section; values apply at once here and within seconds in every worker, without a restart."""
+    same_origin(request)
+    if section not in ADMIN_SECTIONS:
+        raise HTTPException(404, "Unknown settings section")
+    with Session() as db:
+        admin_for(request, db)  # before reading the body: a non-admin learns nothing about its validation
+    data = await _payment_body(request, SystemConfigInput)
+    secrets = {key: (update.action, update.value or "") for key, update in data.secrets.items()}
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        if section == "storage" and ("storage.root" in data.values or "storage.root" in data.reset):
+            current = storage.media_root(db)
+            if "storage.root" in data.values:
+                raw = data.values["storage.root"]
+                check = config_checks.storage_root(raw if isinstance(raw, str) else "")
+                if not check["ok"]:
+                    raise HTTPException(422, {"code": "invalid_storage_root", "field": "storage.root",
+                                              "problem": check["problem"], "message": "Storage root not usable"})
+                moves = Path(check["path"]).resolve() != current.resolve()
+            else:
+                moves = True  # back to the environment or the stored folder: possibly elsewhere
+            files = _stored_files(db)
+            if moves and files and not data.confirm_root_change:
+                raise HTTPException(409, {"code": "root_change_requires_confirmation", "field": "storage.root",
+                                          "files": files, "message": "Existing files are not moved"})
+        try:
+            changed = system_config.save(db, admin.id, values=data.values, secrets=secrets, reset=data.reset,
+                                         section=section)
+        except system_config.ConfigError as exc:
+            raise _settings_failure(exc) from None
+    log_event(logger, "system_settings_saved", section=section, changed=",".join(changed))
+    with Session() as db:
+        return _system_overview(db)
+
+
+@app.post("/api/admin/system-config/ai/{provider}/test")
+def test_ai_provider_config(provider: str, request: Request):
+    """Local check, then one free authenticated listing request; never generates anything or spends credits."""
+    same_origin(request)
+    if provider not in system_config.AI_PROVIDERS:
+        raise HTTPException(404, "Unknown provider")
+    with Session() as db:
+        admin = admin_for(request, db)
+    result = config_checks.test_ai_provider(provider)
+    with Session.begin() as db:
+        system_config.audit(db, "ai", "tested", admin.id, provider=provider, local=result["local"]["status"],
+                            remote=result["remote"]["status"])
+    log_event(logger, "ai_provider_tested", provider=provider, local=result["local"]["status"],
+              remote=result["remote"]["status"])
+    return {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/api/admin/system-config/storage/check")
+def check_storage_root(data: StorageCheckInput, request: Request):
+    """Whether a proposed media root is usable (absolute, existing, writable, not a link); nothing is saved."""
+    same_origin(request)
+    with Session() as db:
+        admin_for(request, db)
+        current = storage.media_root(db)
+        files = _stored_files(db)
+    result = config_checks.storage_root(data.root)
+    moves = bool(result["ok"]) and Path(result["path"]).resolve() != current.resolve()
+    return {**result, "current": str(current), "moves": moves, "files": files}
 
 
 # --- Phase 18D: readiness and the manual live-verification checklist (system admins only) ----------------
@@ -2781,7 +3124,7 @@ def _sse_settings() -> tuple[float, float]:
     """(seconds between checks, seconds before the server ends a stream so the client reconnects)."""
     def number(name, default, low, high):
         try:
-            return min(high, max(low, float(os.environ.get(name, "").strip() or default)))
+            return min(high, max(low, float(system_config.env(name).strip() or default)))
         except ValueError:
             return default
     return number("REELFORGE_SSE_POLL_SECONDS", 3, 0.1, 30), number("REELFORGE_SSE_MAX_SECONDS", 300, 1, 3600)

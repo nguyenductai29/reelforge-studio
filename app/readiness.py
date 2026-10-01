@@ -27,6 +27,7 @@ CHECKLIST = (
     ("migration_upgraded", "platform", False, "python -m alembic upgrade head"),
     ("storage_on_hdd", "platform", False, "REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge"),
     ("ffmpeg_verified", "platform", False, "python -m app.render_worker --check"),
+    ("master_key_file", "platform", False, "python -m app.master_key init; chmod 600; backed up off the server"),
     ("gemini_tts_live", "ai", True, "python -m app.smoke_test voice --live"),
     ("final_render_live", "ai", True, "Run a workflow with Render"),
     ("movie_recap_live", "ai", True, "Movie Recap template"),
@@ -40,6 +41,7 @@ CHECKLIST = (
     ("payos_payment", "vietqr", True, "One small VietQR payment"),
     ("payos_webhook_received", "vietqr", False, "The last webhook time appears under VietQR activity"),
     ("payos_credits_once", "vietqr", False, "The credit history shows the plan's credits once"),
+    ("bank_qr_round_trip", "vietqr", True, "Manual VietQR: scan, transfer, report, admin confirms, credits once"),
     ("onepay_sandbox_configured", "card", False, "Card: Sandbox mode, saved"),
     ("onepay_sandbox_check", "card", False, "Card: Test configuration and the QueryDR check"),
     ("onepay_sandbox_payment", "card", False, "OnePAY test card on the sandbox page"),
@@ -66,7 +68,9 @@ def _check(key: str, status: str, detail: str | None = None, **values) -> dict:
 
 
 def _set(name: str) -> bool:
-    return bool(os.environ.get(name, "").strip())
+    from app import system_config
+
+    return bool(system_config.env(name).strip())
 
 
 def database(db) -> list[dict]:
@@ -151,12 +155,11 @@ def ai_checks(db) -> list[dict]:
         in_use = int(used.get(provider, 0))
         status = "ok" if configured else "error" if in_use else "missing" if primary else "off"
         checks.append(_check(provider, status, None if configured else "key_missing", variables=list(names),
-                             enabled_models=in_use))
+                             enabled_models=in_use, source=_source(names[0])))
     return checks
 
 
 def publishing_checks() -> list[dict]:
-    from cryptography.fernet import Fernet
     from app.publishers import channel_oauth, google_oauth
 
     checks = []
@@ -168,12 +171,32 @@ def publishing_checks() -> list[dict]:
     for channel in ("tiktok", "facebook"):
         checks.append(_check(channel, "ok" if channel_oauth.configured(channel) else "missing",
                              None if channel_oauth.configured(channel) else "not_configured"))
-    try:
-        Fernet(os.environ.get("REELFORGE_TOKEN_ENCRYPTION_KEY", "").encode())
-        checks.append(_check("token_encryption", "ok"))
-    except (TypeError, ValueError):
-        checks.append(_check("token_encryption", "missing", "invalid_or_missing"))
     return checks
+
+
+def _source(env_name: str) -> str:
+    from app import system_config
+
+    setting = system_config.BY_ENV.get(env_name)
+    return system_config.source(setting.key) if setting else "environment"
+
+
+def security_checks() -> list[dict]:
+    """The master key: from a file (chmod 600) is the target; the legacy variable still works, with a warning."""
+    from app import master_key
+
+    info = master_key.status()
+    if info["problem"]:
+        status, detail = "error", info["problem"]
+    elif info["source"] == "legacy_env":
+        status, detail = "warning", "legacy_env"
+    elif info["permissions_ok"] is False:
+        status, detail = "warning", "permissions"
+    elif info["legacy_env_matches"] is False:
+        status, detail = "warning", "legacy_differs"
+    else:
+        status, detail = "ok", None
+    return [_check("master_key", status, detail, path=info["path"], key_source=info["source"])]
 
 
 def payment_checks(db) -> list[dict]:
@@ -194,6 +217,14 @@ def payment_checks(db) -> list[dict]:
         if provider == "onepay":
             values["mode"] = resolved.mode
         checks.append(_check(provider, status, detail, **values))
+    from app import bank_qr, system_config
+    from app.payment_providers import vietqr_mode
+
+    # Manual VietQR (Phase 20): offered when it is the VietQR mode, enabled and complete.
+    mode, ready_manual = vietqr_mode(), bank_qr.configured()
+    manual_on = bool(system_config.get("payments.bank_qr.enabled"))
+    status, detail = (("ok", None) if manual_on else ("warning", "disabled")) if ready_manual else ("off", "not_configured")
+    checks.append(_check("bank_qr", status, detail, vietqr_mode=mode))
     saved = any(payment_config.get(provider, db).source == "admin" for provider in payment_config.PROVIDERS)
     if secret_box.available():
         checks.append(_check("encryption", "ok"))
@@ -216,6 +247,7 @@ def report(db, *, streams: int, poll_seconds: float) -> dict:
         ("ai", ai_checks(db)),
         ("publishing", publishing_checks()),
         ("payments", payment_checks(db)),
+        ("security", security_checks()),
         ("realtime", [_check("stream", "ok", open_streams=streams, poll_seconds=poll_seconds)]),
         ("support", [_check("tickets", "ok", awaiting_support=int(open_tickets or 0))]),
     ]

@@ -7,3 +7,4 @@ alembic>=1.13,<2
 payos>=1.1,<2
 httpx>=0.27,<1
 cryptography>=44,<50
+segno>=1.6,<2

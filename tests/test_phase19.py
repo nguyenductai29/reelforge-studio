@@ -206,7 +206,7 @@ missing_key = save("onepay", {"enabled": True, "mode": "sandbox", "merchant_id":
 assert missing_key.status_code == 422 and missing_key.json()["detail"]["code"] == "key_missing", missing_key.text
 assert "REELFORGE_TOKEN_ENCRYPTION_KEY" not in os.environ
 state = client.get("/api/admin/payment-config").json()
-assert state["encryption"] == {"available": False, "variable": "REELFORGE_TOKEN_ENCRYPTION_KEY"}
+assert state["encryption"] == {"available": False, "variable": secret_box.KEY_VARIABLE}
 payos_state = {p["provider"]: p for p in state["providers"]}["payos"]
 assert payos_state["issues"] == [{"level": "error", "code": "key_missing"}] and not payos_state["available"]
 readiness = {c["key"]: c for s in client.get("/api/admin/readiness").json()["sections"] if s["key"] == "payments"

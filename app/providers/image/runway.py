@@ -16,6 +16,7 @@ import httpx
 from app.providers import runway
 from app.providers.image.base import (GeneratedImage, ImageFailure, ImageGenerationProvider, ImageModel,
                                       ImageProviderError, ImageRequest, ImageResult, ImageStatus, ImageSubmission)
+from app import system_config
 
 # One image per task. "standard" is 720p and "high" 1080p, per Runway's ratio list for gen4_image.
 _RATIOS = {
@@ -39,7 +40,7 @@ def _error(exc: runway.ProviderError) -> ImageProviderError:
 def validate_media_url(url: str) -> None:
     """HTTPS on an exact RUNWAY_OUTPUT_HOSTS host, with an image path; the signed query is kept."""
     try:
-        hosts = runway.validate_output_hosts(os.environ.get("RUNWAY_OUTPUT_HOSTS"))
+        hosts = runway.validate_output_hosts(system_config.env("RUNWAY_OUTPUT_HOSTS"))
         parsed = urlsplit(url)
     except runway.ProviderError as exc:
         raise _error(exc) from exc

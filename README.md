@@ -30,9 +30,20 @@ The dev server writes generated files to `frontend/.next-dev`; `npm run build` a
 
 Open http://localhost:3000 to create the first admin account, or run `npm run create-admin` in `frontend` while the API is running (it prompts for the email and password, or reads `ADMIN_EMAIL` and `ADMIN_PASSWORD`). On a public server, create the admin this way before the site is reachable; until an account exists, the first visitor can claim it. API documentation is at http://127.0.0.1:8000/docs. The Next.js proxy defaults to `http://127.0.0.1:8000`; if the API is at a different server address, copy `frontend/config.example.json` to `frontend/instance/config.json` and set `api_base_url` to the address **reachable by the Next.js server**. That address is the frontend's connection bootstrap, not an application preference.
 
+### Configuration (Phase 20)
+
+**Bootstrap.** Production needs only `instance/bootstrap.json` (the database URL) and the master encryption key file `/etc/reelforge/master.key` (`python -m app.master_key init`; chmod 600; back it up separately).
+
+**Everything else** is configured by a system admin, stored in PostgreSQL (secrets encrypted) and picked up by the API and every worker without a restart:
+
+- **Quản trị → Cài đặt hệ thống:** AI provider keys, social OAuth apps, storage, runtime limits, credit prices, notifications;
+- **Quản trị → Thanh toán → Cổng thanh toán:** VietQR manual or payOS, and OnePAY cards.
+
+**Legacy files.** `.env.runtime` is now an optional fallback: a setting nobody saved in the admin UI still reads its variable. See [docs/SYSTEM_CONFIGURATION.md](docs/SYSTEM_CONFIGURATION.md).
+
 ### Provider keys, processes and logs
 
-Provider keys and prices are environment variables that the API and every worker must share: a worker that finishes one step also starts the next (the text worker queues the video step after an AI Writer). Copy `.env.runtime.example` to `.env.runtime` (git-ignored) and fill in only the providers you use. The API loads it at startup, and so do `python -m app.text_worker`, `app.image_worker`, `app.video_worker`, `app.voice_worker`, `app.render_worker`, `app.source_worker`, `app.youtube_worker`, `app.social_worker`, `app.scheduler_worker`, `app.provider_check` and `app.smoke_test`. A variable already set in the process wins, and `REELFORGE_ENV_FILE` names another file (production uses one `EnvironmentFile=` for every systemd unit). Start each process in its own terminal:
+Provider keys and prices are configured in Quản trị → Cài đặt hệ thống (Phase 20). The environment variables below remain a fallback that the API and every worker share: a worker that finishes one step also starts the next (the text worker queues the video step after an AI Writer). Copy `.env.runtime.example` to `.env.runtime` (git-ignored) and fill in only the providers you use. The API loads it at startup, and so do `python -m app.text_worker`, `app.image_worker`, `app.video_worker`, `app.voice_worker`, `app.render_worker`, `app.source_worker`, `app.youtube_worker`, `app.social_worker`, `app.scheduler_worker`, `app.provider_check` and `app.smoke_test`. A variable already set in the process wins, and `REELFORGE_ENV_FILE` names another file (production uses one `EnvironmentFile=` for every systemd unit). Start each process in its own terminal:
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000   # API
@@ -256,6 +267,7 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 - **Admin → Kiểm định**: safe readiness checks and the manual live-verification checklist. See [docs/LIVE_VERIFICATION.md](docs/LIVE_VERIFICATION.md).
 - Migration `0017_notify_support_verify`.
 - Phase 19: admin-managed payment gateways; migration `0018_admin_payment_config`.
+- Phase 20: central system configuration (database over environment; master key file), manual VietQR confirmed by an admin; migration `0019_system_configuration`.
 
 ### Voice, subtitles and the final render (Phases 6–8)
 

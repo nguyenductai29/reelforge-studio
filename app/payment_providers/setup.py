@@ -27,12 +27,19 @@ ACTIVITY_KEY = "payment_activity"
 def provider_view(db, provider: str, origin: str, activity: dict) -> dict:
     from app.models import User
 
+    from app.payment_providers import vietqr_mode
+
+    if provider == "bank_qr":
+        return bank_qr_view(db)
     resolved = payment_config.get(provider, db)
     usable = payment_config.usable(resolved)
+    # payOS takes VietQR checkouts only while the VietQR mode is automatic (Phase 20).
+    active = provider != "payos" or vietqr_mode() == "payos"
     editor = db.get(User, resolved.updated_by_user_id) if resolved.updated_by_user_id else None
     updated_by = editor.email if editor else None
     view = {"provider": provider, "method": payment_config.METHOD[provider], "enabled": resolved.enabled,
-            "configured": usable, "available": resolved.enabled and usable, "source": resolved.source,
+            "configured": usable, "available": resolved.enabled and usable and active, "active": active,
+            "source": resolved.source,
             "legacy_source": resolved.legacy_source, "mode": resolved.mode,
             "fields": payment_config.fields_view(resolved), "issues": payment_config.issues(resolved),
             "updated_at": resolved.updated_at.isoformat() if resolved.updated_at else None, "updated_by": updated_by,
@@ -48,9 +55,38 @@ def provider_view(db, provider: str, origin: str, activity: dict) -> dict:
     return view
 
 
+def bank_qr_view(db) -> dict:
+    """Manual VietQR: the bank details (not secret: buyers see them), what is missing, and a sample QR."""
+    from sqlalchemy import select
+
+    from app import bank_qr, system_config
+    from app.models import SystemConfig, User
+    from app.payment_providers import vietqr_mode
+
+    values = bank_qr.settings()
+    missing = bank_qr.problems(values)
+    enabled = bool(system_config.get("payments.bank_qr.enabled"))
+    active = vietqr_mode() == "manual"
+    latest = db.execute(select(SystemConfig.updated_at, User.email)
+                        .outerjoin(User, User.id == SystemConfig.updated_by_user_id)
+                        .where(SystemConfig.key.like("payments.bank_qr.%"))
+                        .order_by(SystemConfig.updated_at.desc()).limit(1)).first() if system_config.ready(db) else None
+    issues = [{"level": "error", "code": "missing", "field": name} for name in missing]
+    if not enabled:
+        issues.append({"level": "warning", "code": "disabled"})
+    return {"provider": "bank_qr", "method": "vietqr", "enabled": enabled, "configured": not missing,
+            "available": enabled and not missing and active, "active": active,
+            "source": "admin" if any(values[name] for name in ("bank_bin", "account_number")) else "missing",
+            "legacy_source": None, "mode": None, "fields": {}, "values": values,
+            "bank_name": bank_qr.bank_name(values), "issues": issues,
+            "updated_at": latest[0].isoformat() if latest else None, "updated_by": latest[1] if latest else None,
+            "endpoints": [], "activity": {}, "history": system_config.history(db, "payments"),
+            "preview": bank_qr.preview(values) if not missing else None}
+
+
 def overview(db, origin: str) -> list[dict]:
     origin, recent = origin.rstrip("/"), activity(db)
-    return [provider_view(db, provider, origin, recent) for provider in payment_config.PROVIDERS]
+    return [provider_view(db, provider, origin, recent) for provider in ("payos", "bank_qr", "onepay")]
 
 
 def check(provider: str, *, remote: bool = False, client=None, db=None) -> dict:

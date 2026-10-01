@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DataTable, type Column } from "@/components/reelforge/data-table";
+import { TransferCard } from "@/components/reelforge/bank-transfer";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader, StatCard, StatusBadge } from "@/components/reelforge/primitives";
 import { api, jsonRequest } from "@/lib/api";
@@ -23,7 +24,7 @@ import { toDate, useI18n } from "@/lib/i18n";
 import type { Dictionary } from "@/lib/i18n/vi";
 import { keys, useBilling, useBillingOrders, useUsage } from "@/lib/queries";
 import { formatBytes } from "@/lib/studio";
-import type { Order, PaymentMethod } from "@/lib/types";
+import type { BankTransfer, CheckoutResult, Order, PaymentMethod } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const rank = (code: string) => ["trial", "standard", "pro"].indexOf(code);
@@ -47,6 +48,8 @@ export default function BillingPage() {
   const [choosing, setChoosing] = useState<string | null>(null);
   const [method, setMethod] = useState<PaymentMethod | null>(null);
   const [orderOffset, setOrderOffset] = useState(0);
+  // Manual VietQR: the QR shown in ReelForge for one order, until the buyer reports the transfer.
+  const [transfer, setTransfer] = useState<{ orderId: string; details: BankTransfer; reported: boolean } | null>(null);
   const orders = useBillingOrders(orderOffset, ORDER_PAGE);
   const payment = useSearchParam("payment");
 
@@ -83,15 +86,51 @@ export default function BillingPage() {
   async function checkout(code: string, chosen: PaymentMethod) {
     setBusy(code);
     try {
-      const result = await api<{ checkout_url: string }>(
+      const result = await api<CheckoutResult>(
         "billing/checkout",
         jsonRequest("POST", { plan_code: code, method: chosen }),
       );
+      if (result.transfer) {
+        // Pay by bank transfer to the QR shown here; an administrator confirms it.
+        setChoosing(null);
+        setTransfer({ orderId: result.order_id, details: result.transfer, reported: false });
+        setBusy(null);
+        void refreshAll();
+        return;
+      }
+      if (!result.checkout_url) throw new Error(t.billing.invalidCheckout);
       const url = new URL(result.checkout_url);
       if (url.protocol !== "https:") throw new Error(t.billing.invalidCheckout);
       window.location.assign(url.toString());
     } catch (error) {
       showError(error);
+      setBusy(null);
+    }
+  }
+
+  async function showTransfer(order: Order) {
+    setBusy(order.id);
+    try {
+      const result = await api<{ transfer: BankTransfer }>(`billing/orders/${encodeURIComponent(order.id)}/transfer`);
+      setTransfer({ orderId: order.id, details: result.transfer, reported: Boolean(order.transfer_reported_at) });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reportTransfer() {
+    if (!transfer) return;
+    setBusy("transfer");
+    try {
+      await api(`billing/orders/${encodeURIComponent(transfer.orderId)}/transferred`, { method: "POST" });
+      toast.success(t.billing.transfer.reported);
+      setTransfer(null);
+      await refreshAll();
+    } catch (error) {
+      showError(error);
+    } finally {
       setBusy(null);
     }
   }
@@ -134,7 +173,9 @@ export default function BillingPage() {
     { key: "amount", header: t.billing.history.amount, className: "whitespace-nowrap text-right tabular-nums",
       cell: (order) => formatMoney(order.amount_vnd) },
     { key: "status", header: t.billing.history.status,
-      cell: (order) => <StatusBadge status={order.status} label={orderStatus(order.status)} /> },
+      cell: (order) => order.status === "pending" && order.transfer_reported_at
+        ? <StatusBadge status="needs_attention" label={t.billing.transfer.awaiting} />
+        : <StatusBadge status={order.status} label={orderStatus(order.status)} /> },
     { key: "created", header: t.billing.history.created, className: "whitespace-nowrap text-muted-foreground",
       cell: (order) => formatDateTime(order.created_at) },
     { key: "paid", header: t.billing.history.paid, className: "whitespace-nowrap text-muted-foreground",
@@ -143,7 +184,12 @@ export default function BillingPage() {
       cell: (order) => order.reference },
     { key: "actions", header: <span className="sr-only">{t.billing.check}</span>, className: "text-right",
       cell: (order) =>
-        ["pending", "expired", "failed"].includes(order.status) ? (
+        order.provider === "bank_qr" ? (order.status === "pending" ? (
+          <Button variant="outline" size="sm" className="h-7" disabled={Boolean(busy)} onClick={() => void showTransfer(order)}>
+            {busy === order.id && <Loader2 className="size-3.5 animate-spin" />}
+            {t.billing.transfer.show}
+          </Button>
+        ) : null) : ["pending", "expired", "failed"].includes(order.status) ? (
           <Button variant="outline" size="sm" className="h-7" disabled={Boolean(busy)} onClick={() => void checkOrder(order.id)}>
             {busy === order.id && <Loader2 className="size-3.5 animate-spin" />}
             {t.billing.check}
@@ -291,6 +337,32 @@ export default function BillingPage() {
           minWidth={820}
         />
       </section>
+
+      <Dialog open={transfer !== null} onOpenChange={(open) => !open && busy !== "transfer" && setTransfer(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t.billing.transfer.title}</DialogTitle>
+            <DialogDescription>{t.billing.transfer.description}</DialogDescription>
+          </DialogHeader>
+          {transfer && (
+            <div className="space-y-3">
+              <TransferCard transfer={transfer.details} />
+              <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
+                {t.billing.transfer.exact(transfer.details.content)}
+              </p>
+              {transfer.details.note && <p className="text-xs text-muted-foreground">{transfer.details.note}</p>}
+              <p className="text-xs text-muted-foreground">{transfer.details.sla_message || t.billing.transfer.defaultSla}</p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTransfer(null)} disabled={busy === "transfer"}>{t.billing.transfer.later}</Button>
+            <Button onClick={() => void reportTransfer()} disabled={busy === "transfer" || transfer?.reported}>
+              {busy === "transfer" && <Loader2 className="size-4 animate-spin" />}
+              {transfer?.reported ? t.billing.transfer.awaiting : t.billing.transfer.done}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(choosing)} onOpenChange={(open) => !open && !busy && setChoosing(null)}>
         <DialogContent className="sm:max-w-md">

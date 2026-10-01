@@ -114,7 +114,7 @@ summary = page("/api/admin")
 assert summary["counts"]["users"] == 26 and summary["counts"]["workspaces"] == 26 and summary["counts"]["plans"] == 3
 assert summary["counts"]["pending_payments"] == 1 and summary["counts"]["admins"] == 1
 assert "users" not in summary and "workspaces" not in summary  # no collection in the overview any more
-assert {p["provider"] for p in summary["payment_providers"]} == {"payos", "onepay"}
+assert {p["provider"] for p in summary["payment_providers"]} == {"payos", "bank_qr", "onepay"}
 
 # Only system admins see any of it.
 assert member.post("/api/login", json={"email": "user09@example.com", "password": "long-password-123"}).status_code == 200

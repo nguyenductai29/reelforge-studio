@@ -35,6 +35,7 @@ from sqlalchemy.orm import aliased
 from app import notifications
 from app.models import Asset, Plan, Subscription, SystemSetting, Workspace
 from app.runtime_env import ROOT
+from app import system_config
 
 STORAGE_ROOT_ENV = "REELFORGE_STORAGE_ROOT"
 DEFAULT_STORAGE_DIR = "instance/media"
@@ -70,7 +71,7 @@ def safe_id(value) -> str:
 
 
 def resolve_root(setting_value: str | None = None) -> Path:
-    raw = os.environ.get(STORAGE_ROOT_ENV, "").strip() or (setting_value or "").strip() or DEFAULT_STORAGE_DIR
+    raw = system_config.env(STORAGE_ROOT_ENV).strip() or (setting_value or "").strip() or DEFAULT_STORAGE_DIR
     path = Path(raw).expanduser()
     return path if path.is_absolute() else ROOT / path
 
@@ -102,7 +103,7 @@ def kind_for_node(node_type: str | None) -> str:
 
 def server_cap() -> int | None:
     """``WORKSPACE_MEDIA_QUOTA_BYTES`` when set: no workspace may store more, whatever its plan says."""
-    raw = os.environ.get(QUOTA_ENV, "").strip()
+    raw = system_config.env(QUOTA_ENV).strip()
     if not raw:
         return None
     try:
@@ -234,7 +235,7 @@ def disk_usage(db) -> dict | None:
 # --- retention ---------------------------------------------------------------------------------------------
 
 def _days(name: str, default: int, minimum: int) -> int:
-    raw = os.environ.get(name, "").strip()
+    raw = system_config.env(name).strip()
     if not raw:
         return default
     try:

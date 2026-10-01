@@ -54,7 +54,9 @@ assert "ix_workspaces_owner_id" in {i["name"] for i in inspector.get_indexes("wo
 assert {"ix_payment_orders_created_at", "ix_payment_orders_provider_status"} <= {
     i["name"] for i in inspector.get_indexes("payment_orders")}
 for table, old in before.items():
-    assert rows(table, "id") == old, (table, old, rows(table, "id"))
+    # Columns later migrations add (e.g. 0019's transfer_reported_at) are not part of this comparison.
+    now = [{key: row[key] for key in old_row} for row, old_row in zip(rows(table, "id"), old)]
+    assert now == old, (table, old, now)
 # A card order needs no schema change: it is a payment_orders row whose provider is onepay.
 with engine.begin() as connection:
     connection.execute(text(

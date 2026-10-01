@@ -17,12 +17,13 @@ from app.image_files import download_image, inspect_image
 from app.providers.image import (ImageRequest, ImageSubmission, create_image_provider, image_provider_config_issue)
 from app.providers.errors import ProviderError
 from app.runtime_env import start_process
+from app import system_config
 
 
 def image_job_max_age_seconds() -> int:
     """How long an image job may take before its credits are held for review (default 1 hour)."""
     try:
-        seconds = int(os.environ.get("IMAGE_JOB_MAX_AGE_SECONDS", "").strip() or "3600")
+        seconds = int(system_config.env("IMAGE_JOB_MAX_AGE_SECONDS").strip() or "3600")
     except ValueError as exc:
         raise RuntimeError("IMAGE_JOB_MAX_AGE_SECONDS must be an integer") from exc
     if not 60 <= seconds <= 86400:

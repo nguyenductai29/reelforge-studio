@@ -17,12 +17,13 @@ from app.audio_files import inspect_audio
 from app.providers.errors import ProviderError
 from app.providers.voice import VoiceRequest, create_voice_provider, voice_provider_config_issue
 from app.runtime_env import start_process
+from app import system_config
 
 
 def voice_job_max_age_seconds() -> int:
     """How long a voice job may wait before its credits are held for review (default 30 minutes)."""
     try:
-        seconds = int(os.environ.get("VOICE_JOB_MAX_AGE_SECONDS", "").strip() or "1800")
+        seconds = int(system_config.env("VOICE_JOB_MAX_AGE_SECONDS").strip() or "1800")
     except ValueError as exc:
         raise RuntimeError("VOICE_JOB_MAX_AGE_SECONDS must be an integer") from exc
     if not 60 <= seconds <= 86400:

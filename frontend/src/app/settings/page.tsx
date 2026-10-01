@@ -320,7 +320,8 @@ export default function SettingsPage() {
                 <FieldLabel>{s.storage.path}</FieldLabel>
                 <p className="break-all font-mono text-xs">{system.storage_dir}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {system.storage_dir_source === "environment" ? s.storage.pathFromEnv : s.storage.pathHint}
+                  {system.storage_dir_source === "admin" ? s.storage.pathFromAdmin
+                    : system.storage_dir_source === "environment" ? s.storage.pathFromEnv : s.storage.pathHint}
                 </p>
               </div>
             )}

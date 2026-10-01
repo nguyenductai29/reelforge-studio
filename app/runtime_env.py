@@ -1,9 +1,13 @@
-"""One runtime environment file for the API, every worker and the CLI tools.
+"""The legacy runtime environment file, and process start-up for the API, workers and CLI tools.
 
-Provider keys and prices are environment variables. Every process that runs
-workflow steps needs the same ones: a worker that finishes one step also starts
-the next (the text worker queues the video step after an AI Writer). Put them in
-one file and load it in every process:
+Since Phase 20 the application is configured in Admin → System settings and read
+from PostgreSQL (``app/system_config.py``); production needs only the database URL
+and the master key file (``app/master_key.py``). This file remains an optional
+fallback: a setting nobody saved in the admin UI still reads its environment
+variable, so an installation configured before Phase 20 keeps working. Logging
+(``REELFORGE_LOG_*``) and the live smoke-test choices stay environment-only.
+
+Where the file is still used, every process loads the same one:
 
 * development: ``.env.runtime`` in the repository root (git-ignored), used by
   ``python -m app.run …`` and by ``app.provider_check`` / ``app.smoke_test``;
@@ -77,14 +81,18 @@ def provider_key_summary() -> dict[str, str | None]:
 
 
 def start_process(name: str) -> None:
-    """Entry-point setup for the API, workers and tools: load the runtime file, then configure logging.
+    """Entry-point setup for the API, workers and tools.
 
-    Logs which file was loaded and which provider keys are set (fingerprints only),
-    so a process started with a different environment stands out in the logs.
+    Loads the optional legacy runtime file, turns on database-backed settings
+    (``system_config.activate``) and configures logging. Logs which file was loaded
+    and which provider keys the environment sets (fingerprints only), so a process
+    started with a different environment stands out in the logs.
     """
+    from app import system_config
     from app.logs import configure_logging, log_event
 
     path, loaded = load_runtime_env()
+    system_config.activate()
     configure_logging()
     log_event(logging.getLogger("app.runtime"), "process_started", process=name, pid=os.getpid(),
               env_file=str(path) if path else None, env_file_values=len(loaded),

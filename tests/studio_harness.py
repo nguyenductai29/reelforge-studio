@@ -43,6 +43,9 @@ from sqlalchemy import func, select, update, text
 command.upgrade(Config("alembic.ini"), "head")
 import app.main as main
 from app.main import app
+from app import system_config
+# The API activates database-backed settings in its lifespan, which TestClient(app) without "with" does not run.
+system_config.activate()
 from app.db import Session
 from app import jobs, publications, render, render_worker, source_worker, text_worker, usage
 from app.media_paths import media_root

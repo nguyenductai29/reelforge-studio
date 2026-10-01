@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, Copy, Eraser, Loader2, ShieldCheck, Undo2 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,7 +23,8 @@ import { ApiError, api, jsonRequest } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
 import { keys, usePaymentSetup } from "@/lib/queries";
-import type { PaymentCheck, PaymentField, PaymentMode, PaymentSetup, SecretUpdate } from "@/lib/types";
+import { TransferCard } from "../bank-transfer";
+import type { BankTransfer, PaymentCheck, PaymentField, PaymentMode, PaymentSetup, SecretUpdate } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const FIELD_ORDER = {
@@ -142,11 +143,16 @@ function SecretField({ id, label, field, update, onChange, adminSource }: {
   );
 }
 
-function GatewayPanel({ setup, encryption }: { setup: PaymentSetup; encryption: { available: boolean; variable: string } }) {
+function GatewayPanel({ setup, encryption, useForVietqr = false }: {
+  setup: PaymentSetup;
+  encryption: { available: boolean; variable: string };
+  /** In the VietQR tab: saving payOS also makes it the VietQR mode. */
+  useForVietqr?: boolean;
+}) {
   const { t, formatDateTime } = useI18n();
   const g = t.admin.gateways;
   const client = useQueryClient();
-  const provider = setup.provider;
+  const provider = setup.provider as "payos" | "onepay";
   const fieldNames = FIELD_ORDER[provider];
   const adminSource = setup.source === "admin";
   const initialMode: PaymentMode = setup.mode ?? "sandbox";
@@ -187,6 +193,7 @@ function GatewayPanel({ setup, encryption }: { setup: PaymentSetup; encryption: 
     setFailure(null);
     try {
       const body: Record<string, unknown> = { enabled, ...updates };
+      if (provider === "payos" && useForVietqr) body.use_for_vietqr = true;
       if (provider === "onepay") {
         Object.assign(body, { mode, confirm_production: confirmProduction });
         if (mode === "custom") Object.assign(body, urls);
@@ -446,14 +453,207 @@ function GatewayPanel({ setup, encryption }: { setup: PaymentSetup; encryption: 
   );
 }
 
-/** System admins only (enforced by the API): configure VietQR (payOS) and cards (OnePAY). Secrets are write-only. */
+const BANK_FIELDS = ["account_number", "account_name", "transfer_prefix"] as const;
+
+/** Manual VietQR: the studio's bank account; buyers transfer and a system admin confirms each payment. */
+function BankQRPanel({ setup, banks }: { setup: PaymentSetup; banks: { bin: string; name: string }[] }) {
+  const { t, formatDateTime } = useI18n();
+  const g = t.admin.gateways;
+  const q = g.bankQr;
+  const client = useQueryClient();
+  const saved = setup.values ?? { bank_bin: "", bank_name: "", account_number: "", account_name: "",
+                                  transfer_prefix: "RF", note: "", sla_message: "" };
+  const [enabled, setEnabled] = useState(setup.enabled || !setup.configured);
+  const [values, setValues] = useState(saved);
+  const [preview, setPreview] = useState<BankTransfer | null>(setup.preview ?? null);
+  const [busy, setBusy] = useState<"save" | "switch" | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const set = (name: keyof typeof values, value: string) => setValues((current) => ({ ...current, [name]: value }));
+
+  // A live sample QR for what is on screen (nothing is saved or sent anywhere but our API).
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        setPreview(await api<BankTransfer>("admin/payment-config/bank_qr/preview", jsonRequest("POST", {
+          bank_bin: values.bank_bin, account_number: values.account_number, account_name: values.account_name,
+          transfer_prefix: values.transfer_prefix,
+        })));
+      } catch {
+        setPreview(null);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [values.bank_bin, values.account_number, values.account_name, values.transfer_prefix]);
+
+  const describe = (error: unknown) => {
+    if (error instanceof ApiError && error.error) {
+      const field = error.error.field?.replace("payments.bank_qr.", "") ?? "";
+      const label = q.fields[field as keyof typeof q.fields];
+      const message = g.errors[error.error.code as keyof typeof g.errors];
+      if (message) return label ? `${message} — ${label}` : message;
+    }
+    return errorText(error, t);
+  };
+
+  async function refresh() {
+    await Promise.all([
+      client.invalidateQueries({ queryKey: keys.paymentSetup }),
+      client.invalidateQueries({ queryKey: keys.admin }),
+      client.invalidateQueries({ queryKey: keys.billing }),
+    ]);
+  }
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy("save");
+    setFailure(null);
+    try {
+      await api("admin/payment-config/bank_qr", jsonRequest("PUT", { enabled, ...values, use_for_vietqr: true }));
+      await refresh();
+      toast.success(g.saved);
+    } catch (error) {
+      setFailure(describe(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggle(on: boolean) {
+    setBusy("switch");
+    setFailure(null);
+    try {
+      await api(`admin/payment-config/bank_qr/${on ? "enable" : "disable"}`, jsonRequest("POST", {}));
+      await refresh();
+      toast.success(on ? g.enabledToast : g.disabledToast);
+    } catch (error) {
+      setFailure(describe(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const status = setup.available ? "available" : !setup.configured ? "unavailable" : "disabled";
+  return (
+    <form className="space-y-4" onSubmit={save} autoComplete="off">
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className={cn("rounded-md px-2 py-0.5 font-medium", status === "available" ? "bg-success/15 text-success"
+          : status === "disabled" ? "bg-surface-2 text-muted-foreground" : "bg-warning/15 text-warning")}>
+          {setup.active === false && setup.configured ? q.notActive : g.status[status]}
+        </span>
+        {setup.updated_at && (
+          <span className="text-muted-foreground">{g.updated(formatDateTime(setup.updated_at), setup.updated_by ?? "—")}</span>
+        )}
+      </div>
+      <p className="rounded-lg border border-info/40 bg-info/10 px-3 py-2 text-xs">{q.explain}</p>
+
+      <label className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 text-sm">
+        <span>
+          <span className="block font-medium">{g.enabled}</span>
+          <span className="block text-xs text-muted-foreground">{g.enabledHint}</span>
+        </span>
+        <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={g.enabled} />
+      </label>
+
+      <div className="grid gap-4 md:grid-cols-[1fr_auto]">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1 sm:col-span-2">
+            <label htmlFor="bank_qr-bank" className="text-xs font-medium">{q.fields.bank}</label>
+            <select id="bank_qr-bank" value={values.bank_bin}
+                    onChange={(e) => setValues((current) => ({ ...current, bank_bin: e.target.value,
+                                                               bank_name: banks.find((b) => b.bin === e.target.value)?.name ?? "" }))}
+                    className="h-8 w-full rounded-md border border-border bg-surface-2 px-2 text-sm">
+              <option value="">{q.chooseBank}</option>
+              {banks.map((bank) => (
+                <option key={bank.bin} value={bank.bin}>{bank.name} ({bank.bin})</option>
+              ))}
+              {values.bank_bin && !banks.some((b) => b.bin === values.bank_bin) && (
+                <option value={values.bank_bin}>{values.bank_name || values.bank_bin}</option>
+              )}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="bank_qr-bank_bin" className="text-xs font-medium">{q.fields.bank_bin}</label>
+            <Input id="bank_qr-bank_bin" value={values.bank_bin} inputMode="numeric" maxLength={6}
+                   onChange={(e) => set("bank_bin", e.target.value.replace(/\D/g, ""))} className="h-8 bg-surface-2 font-mono text-xs" />
+          </div>
+          {BANK_FIELDS.map((name) => (
+            <div key={name} className="space-y-1">
+              <label htmlFor={`bank_qr-${name}`} className="text-xs font-medium">{q.fields[name]}</label>
+              <Input id={`bank_qr-${name}`} value={values[name]} maxLength={name === "transfer_prefix" ? 8 : 50}
+                     onChange={(e) => set(name, name === "account_number" ? e.target.value.replace(/\s/g, "")
+                       : name === "account_name" || name === "transfer_prefix" ? e.target.value.toUpperCase() : e.target.value)}
+                     className={cn("h-8 bg-surface-2 text-xs", name !== "account_name" && "font-mono")} />
+            </div>
+          ))}
+          <div className="space-y-1 sm:col-span-2">
+            <label htmlFor="bank_qr-note" className="text-xs font-medium">{q.fields.note}</label>
+            <Input id="bank_qr-note" value={values.note} maxLength={300} onChange={(e) => set("note", e.target.value)}
+                   placeholder={q.notePlaceholder} className="h-8 bg-surface-2 text-xs" />
+          </div>
+          <div className="space-y-1 sm:col-span-2">
+            <label htmlFor="bank_qr-sla_message" className="text-xs font-medium">{q.fields.sla_message}</label>
+            <Input id="bank_qr-sla_message" value={values.sla_message} maxLength={300}
+                   onChange={(e) => set("sla_message", e.target.value)} placeholder={q.slaPlaceholder}
+                   className="h-8 bg-surface-2 text-xs" />
+          </div>
+          <p className="text-[11px] text-muted-foreground sm:col-span-2">{q.contentHint(values.transfer_prefix || "RF")}</p>
+        </div>
+        <div className="w-full space-y-1 md:w-56">
+          <p className="text-xs font-medium">{q.preview}</p>
+          {preview ? <TransferCard transfer={preview} compact /> : (
+            <p className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">{q.previewMissing}</p>
+          )}
+        </div>
+      </div>
+
+      {failure && <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{failure}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" size="sm" disabled={busy !== null}>
+          {busy === "save" && <Loader2 className="size-3.5 animate-spin" />}
+          {q.save}
+        </Button>
+        {setup.enabled ? (
+          <Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={busy !== null}
+                  onClick={() => void toggle(false)}>{g.disable}</Button>
+        ) : (
+          <Button type="button" variant="ghost" size="sm" disabled={busy !== null || !setup.configured}
+                  onClick={() => void toggle(true)}>{g.enable}</Button>
+        )}
+      </div>
+      {setup.history.length > 0 && (
+        <details className="border-t border-border pt-3 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer select-none">{g.history}</summary>
+          <ul className="mt-1 space-y-0.5">
+            {setup.history.map((entry, index) => (
+              <li key={index}>{formatDateTime(entry.at)} · {entry.by ?? "—"}
+                {entry.metadata.changed?.length ? ` · ${entry.metadata.changed.map((key) => {
+                  const name = key.replace("payments.bank_qr.", "").replace("payments.", "");
+                  return q.fields[name as keyof typeof q.fields] ?? name;
+                }).join(", ")}` : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </form>
+  );
+}
+
+/** System admins only (enforced by the API): VietQR (manual bank QR or payOS) and cards (OnePAY). */
 export function PaymentGatewaysDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { t } = useI18n();
   const g = t.admin.gateways;
   const setup = usePaymentSetup(open);
-  const providers = setup.data?.providers ?? [];
+  const data = setup.data;
+  const byProvider = Object.fromEntries((data?.providers ?? []).map((item) => [item.provider, item])) as
+    Partial<Record<PaymentSetup["provider"], PaymentSetup>>;
+  const savedMode = data?.vietqr_mode ?? "payos";
+  const [mode, setMode] = useState<"manual" | "payos" | null>(null);
+  const vietqrMode = mode ?? savedMode;
+  const vietqr = byProvider[vietqrMode === "manual" ? "bank_qr" : "payos"];
+  const card = byProvider.onepay;
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { onOpenChange(next); if (!next) setMode(null); }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>{g.title}</DialogTitle>
@@ -461,29 +661,58 @@ export function PaymentGatewaysDialog({ open, onOpenChange }: { open: boolean; o
         </DialogHeader>
         {setup.isPending ? (
           <Loader2 className="mx-auto my-6 size-5 animate-spin text-muted-foreground" />
-        ) : setup.data ? (
+        ) : data ? (
           <>
-            {!setup.data.any_available && (
+            {!data.any_available && (
               <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs">{g.noneEnabled}</p>
             )}
-            <Tabs defaultValue="payos">
+            <Tabs defaultValue="vietqr">
               <TabsList>
-                {providers.map((item) => (
-                  <TabsTrigger key={item.provider} value={item.provider} className="gap-1.5">
-                    <span className={cn("size-1.5 rounded-full", item.available ? "bg-success"
-                      : item.configured ? "bg-muted-foreground" : "bg-warning")} />
-                    {g.tabs[item.provider]}
-                    {item.provider === "onepay" && item.mode && <ModeBadge mode={item.mode} />}
+                <TabsTrigger value="vietqr" className="gap-1.5">
+                  <span className={cn("size-1.5 rounded-full", byProvider[savedMode === "manual" ? "bank_qr" : "payos"]?.available
+                    ? "bg-success" : "bg-warning")} />
+                  {g.tabs.vietqr}
+                  <span className="rounded bg-surface-2 px-1.5 text-[10px] text-muted-foreground">{g.vietqrModes[savedMode]}</span>
+                </TabsTrigger>
+                {card && (
+                  <TabsTrigger value="card" className="gap-1.5">
+                    <span className={cn("size-1.5 rounded-full", card.available ? "bg-success" : card.configured
+                      ? "bg-muted-foreground" : "bg-warning")} />
+                    {g.tabs.card}
+                    {card.mode && <ModeBadge mode={card.mode} />}
                   </TabsTrigger>
-                ))}
+                )}
               </TabsList>
-              {providers.map((item) => (
-                <TabsContent key={item.provider} value={item.provider} className="mt-4">
+              <TabsContent value="vietqr" className="mt-4 space-y-4">
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-medium">{g.vietqrMode}</legend>
+                  <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={g.vietqrMode}>
+                    {(["manual", "payos"] as const).map((value) => (
+                      <button key={value} type="button" role="radio" aria-checked={vietqrMode === value}
+                              onClick={() => setMode(value)}
+                              className={cn("rounded-lg border p-2 text-left text-xs", vietqrMode === value
+                                ? "border-primary bg-primary/10" : "border-border bg-surface hover:border-border-strong")}>
+                        <span className="block font-medium">{g.vietqrModes[value]}</span>
+                        <span className="block text-muted-foreground">{g.vietqrModeHints[value]}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {vietqrMode !== savedMode && <p className="text-[11px] text-warning">{g.vietqrModePending}</p>}
+                </fieldset>
+                {vietqr && (vietqrMode === "manual" ? (
+                  <BankQRPanel key={`${vietqr.updated_at}-${vietqr.enabled}`} setup={vietqr} banks={data.banks ?? []} />
+                ) : (
+                  <GatewayPanel key={`${vietqr.updated_at}-${vietqr.enabled}-${savedMode}`} setup={vietqr}
+                                encryption={data.encryption} useForVietqr />
+                ))}
+              </TabsContent>
+              {card && (
+                <TabsContent value="card" className="mt-4">
                   {/* Remount after every save, so no secret ever lingers in an input. */}
-                  <GatewayPanel key={`${item.updated_at}-${item.enabled}-${item.mode}`} setup={item}
-                                encryption={setup.data.encryption} />
+                  <GatewayPanel key={`${card.updated_at}-${card.enabled}-${card.mode}`} setup={card}
+                                encryption={data.encryption} />
                 </TabsContent>
-              ))}
+              )}
             </Tabs>
           </>
         ) : (

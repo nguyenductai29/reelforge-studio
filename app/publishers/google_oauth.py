@@ -18,8 +18,10 @@ import httpx
 from sqlalchemy import DateTime, ForeignKey, String, Text, delete, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from app import master_key
 from app.models import Base, Membership
 from app.publishers.youtube import UPLOAD_SCOPE
+from app import system_config
 
 
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -61,10 +63,11 @@ class GoogleOAuthConfig:
     @classmethod
     def from_environment(cls) -> "GoogleOAuthConfig":
         return cls(
-            client_id=os.environ.get("GOOGLE_OAUTH_CLIENT_ID", ""),
-            client_secret=os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", ""),
-            redirect_uri=os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", ""),
-            encryption_key=os.environ.get("REELFORGE_TOKEN_ENCRYPTION_KEY", ""),
+            client_id=system_config.env("GOOGLE_OAUTH_CLIENT_ID"),
+            client_secret=system_config.env("GOOGLE_OAUTH_CLIENT_SECRET"),
+            # An explicit override (admin, then environment), else derived from frontend_origin.
+            redirect_uri=system_config.redirect_uri("youtube"),
+            encryption_key=master_key.load(),
         )
 
 

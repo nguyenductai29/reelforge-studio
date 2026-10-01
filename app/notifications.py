@@ -26,11 +26,12 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.models import Membership, Notification, User, Workflow, WorkflowRunStep
+from app import system_config
 
 TYPES = (
     "run.completed", "run.failed", "run.needs_attention", "run.awaiting_review",
     "publish.scheduled", "publish.succeeded", "publish.failed", "publish.needs_attention",
-    "payment.succeeded", "payment.failed", "payment.unapplied",
+    "payment.succeeded", "payment.failed", "payment.unapplied", "payment.transfer_reported",
     "credits.low", "credits.adjusted",
     "storage.warning", "storage.critical", "storage.full",
     "support.new", "support.reply", "support.status",
@@ -207,8 +208,17 @@ def payment_settled(db, order, status: str) -> None:
                       params={**params, "order_id": order.id}, dedupe=f"payment:{order.id}:unapplied")
 
 
+def transfer_reported(db, order, content: str) -> None:
+    """A buyer says a manual VietQR transfer was made: system admins check the bank and confirm or reject it."""
+    notify_admins(db, "payment.transfer_reported", "Bank transfer to confirm",
+                  f"{order.amount_vnd} VND for the {order.plan_code.upper()} plan ({content}).",
+                  link="/admin?tab=payments&review=1",
+                  params={"plan": order.plan_code, "amount": order.amount_vnd, "reference": content,
+                          "order_id": order.id}, dedupe=f"payment:{order.id}:transfer_reported")
+
+
 def low_credit_threshold() -> int:
-    raw = os.environ.get("CREDITS_LOW_THRESHOLD", "").strip()
+    raw = system_config.env("CREDITS_LOW_THRESHOLD").strip()
     try:
         return max(0, int(raw)) if raw else 20
     except ValueError:

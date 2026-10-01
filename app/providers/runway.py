@@ -22,6 +22,7 @@ import httpx
 
 from app.providers.errors import (NETWORK_ERROR, PROVIDER_UNAVAILABLE, TIMEOUT,
                                  ProviderError as BaseProviderError, response_detail, status_error)
+from app import system_config
 
 
 API_BASE = "https://api.dev.runwayml.com/v1"
@@ -111,7 +112,7 @@ def validate_output_hosts(value: str | None) -> frozenset[str]:
 
 def validate_media_url(url: str) -> None:
     """Allow only an exact configured HTTPS host and an MP4 path, preserving signed query."""
-    hosts = validate_output_hosts(os.environ.get("RUNWAY_OUTPUT_HOSTS"))
+    hosts = validate_output_hosts(system_config.env("RUNWAY_OUTPUT_HOSTS"))
     try:
         parsed = urlsplit(url)
     except (TypeError, ValueError) as exc:

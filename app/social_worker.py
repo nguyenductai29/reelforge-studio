@@ -37,6 +37,7 @@ from app.media_paths import media_root
 from app.models import Asset
 from app.publishers import channel_oauth, facebook, tiktok
 from app.runtime_env import start_process
+from app import system_config
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class _Job:
 
 def approved_tiktok_scopes() -> frozenset[str]:
     """Scopes the TikTok app is approved for (``TIKTOK_APPROVED_SCOPES``, comma-separated)."""
-    value = os.environ.get("TIKTOK_APPROVED_SCOPES", "user.info.basic,video.upload")
+    value = system_config.env("TIKTOK_APPROVED_SCOPES", "user.info.basic,video.upload")
     return frozenset(item.strip() for item in value.split(",") if item.strip())
 
 

@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, FieldLabel } from "@/components/reelforge/primitives";
 import { AdminPayments } from "@/components/reelforge/admin/admin-payments";
 import { AdminSupport } from "@/components/reelforge/admin/admin-support";
+import { AdminSystem } from "@/components/reelforge/admin/admin-system";
 import { AdminVerification } from "@/components/reelforge/admin/admin-verification";
 import { AdminStudios } from "@/components/reelforge/admin/admin-studios";
 import { AdminUsers } from "@/components/reelforge/admin/admin-users";
@@ -25,7 +26,7 @@ import { GIB, formatBytes } from "@/lib/studio";
 import type { Plan } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification"] as const;
+const TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification", "system"] as const;
 type Tab = (typeof TABS)[number];
 
 /** Why a plan can or cannot be bought right now (the checkout enforces the same rules). */
@@ -138,6 +139,8 @@ export default function AdminPage() {
   // Notifications link here with ?tab=support&ticket=…
   const requestedTab = useSearchParam("tab");
   const requestedTicket = useSearchParam("ticket");
+  // A transfer notification links here with ?tab=payments&review=1.
+  const reviewTransfers = useSearchParam("review") === "1";
   useEffect(() => {
     if (requestedTab && (TABS as readonly string[]).includes(requestedTab)) setTab(requestedTab as Tab);
   }, [requestedTab]);
@@ -159,6 +162,7 @@ export default function AdminPage() {
     [a.stats.pendingReconciliation, counts.pending_reconciliation, counts.pending_reconciliation > 0],
     [a.stats.storageAlerts, counts.storage_alerts, counts.storage_alerts > 0],
     [a.stats.supportOpen, counts.support_open ?? 0, (counts.support_open ?? 0) > 0],
+    [a.stats.transfersToConfirm, counts.transfers_to_confirm ?? 0, (counts.transfers_to_confirm ?? 0) > 0],
     [a.stats.stuckJobs, counts.stuck_jobs, counts.stuck_jobs > 0],
   ];
 
@@ -218,7 +222,7 @@ export default function AdminPage() {
           </div>
         </TabsContent>
         <TabsContent value="payments" className="mt-3 flex min-h-0 flex-1 flex-col">
-          <AdminPayments providers={overview.payment_providers} />
+          <AdminPayments providers={overview.payment_providers} initialStatus={reviewTransfers ? "awaiting_confirmation" : ""} />
         </TabsContent>
         <TabsContent value="support" className="mt-3 flex min-h-0 flex-1 flex-col">
           <AdminSupport initialTicket={requestedTicket} />
@@ -231,6 +235,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="verification" className="mt-3 flex min-h-0 flex-1 flex-col">
           <AdminVerification />
+        </TabsContent>
+        <TabsContent value="system" className="mt-3 flex min-h-0 flex-1 flex-col">
+          <AdminSystem />
         </TabsContent>
       </Tabs>
     </div>

@@ -13,6 +13,7 @@ import type {
   AiTool,
   NotificationPage,
   PaymentSetupOverview,
+  SystemConfigOverview,
   SupportTicket,
   SystemReadiness,
   SupportTicketDetail,
@@ -56,6 +57,7 @@ export const keys = {
   support: ["support"] as const,
   adminSupport: ["admin", "support"] as const,
   paymentSetup: ["admin", "payment-config"] as const,
+  systemConfig: ["admin", "system-config"] as const,
   systemReadiness: ["admin", "readiness"] as const,
   verification: ["admin", "verification"] as const,
   runs: ["runs"] as const,
@@ -436,6 +438,10 @@ export function usePaymentSetup(enabled: boolean) {
     queryFn: () => api<PaymentSetupOverview>("admin/payment-config"),
     enabled,
   });
+}
+
+export function useSystemConfig(enabled: boolean) {
+  return useQuery({ queryKey: keys.systemConfig, queryFn: () => api<SystemConfigOverview>("admin/system-config"), enabled });
 }
 
 export function useSystemReadiness(enabled: boolean) {

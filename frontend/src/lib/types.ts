@@ -218,7 +218,25 @@ export type Order = {
   status: string;
   created_at: string;
   paid_at: string | null;
+  /** Manual VietQR only (Phase 20): the content the buyer must write, and when they said they paid. */
+  transfer_content?: string | null;
+  transfer_reported_at?: string | null;
 };
+/** Manual VietQR: everything the buyer needs to pay; the QR is drawn on the server. */
+export type BankTransfer = {
+  bank_bin: string;
+  bank_name: string;
+  account_number: string;
+  account_name: string;
+  amount_vnd: number;
+  content: string;
+  payload: string;
+  /** An SVG data URI. */
+  qr: string;
+  note: string;
+  sla_message: string;
+};
+export type CheckoutResult = { order_id: string; checkout_url: string | null; transfer?: BankTransfer };
 export type Billing = {
   plans: Plan[];
   subscription: { plan_code: string; status: string; ends_at: string | null };
@@ -420,7 +438,7 @@ export type SystemSettings = {
   secure_cookies: boolean;
   storage_dir: string;
   /** Where the folder in use comes from: REELFORGE_STORAGE_ROOT or the stored setting. */
-  storage_dir_source?: "environment" | "setting";
+  storage_dir_source?: "admin" | "environment" | "setting";
   trial_project_limit: number;
   registration_enabled: boolean;
 };
@@ -431,7 +449,7 @@ export type Settings = {
 };
 
 export type PaymentProviderStatus = {
-  provider: "payos" | "onepay";
+  provider: "payos" | "bank_qr" | "onepay";
   method: PaymentMethod;
   /** Credentials are usable (callbacks of existing orders work). */
   configured: boolean;
@@ -456,6 +474,8 @@ export type AdminOverview = {
     storage_alerts: number;
     /** Support requests awaiting an answer (Phase 18C); absent from an older API. */
     support_open?: number;
+    /** Manual VietQR transfers waiting for an admin (Phase 20). */
+    transfers_to_confirm?: number;
   };
   storage_levels: Record<Exclude<StorageLevel, "ok">, number>;
   plans: Plan[];
@@ -572,7 +592,7 @@ export type PaymentField = {
 };
 export type PaymentIssue = { level: "error" | "warning"; code: string; field?: string };
 export type PaymentSetup = {
-  provider: "payos" | "onepay";
+  provider: "payos" | "bank_qr" | "onepay";
   method: PaymentMethod;
   enabled: boolean;
   configured: boolean;
@@ -590,17 +610,35 @@ export type PaymentSetup = {
   activity: Partial<Record<"webhook" | "ipn" | "query" | "check", string>>;
   history: { action: "created" | "updated" | "enabled" | "disabled" | "tested"; at: string; by: string | null;
              metadata: { changed?: string[]; local?: string; remote_status?: string } }[];
+  /** Whether this provider takes the method's new checkouts (VietQR: payOS or the manual bank QR). */
+  active?: boolean;
+  /** Manual VietQR (bank_qr) only: the bank details (not secret) and a sample QR. */
+  values?: BankQRValues;
+  bank_name?: string;
+  preview?: BankTransfer | null;
+};
+export type BankQRValues = {
+  bank_bin: string;
+  bank_name: string;
+  account_number: string;
+  account_name: string;
+  transfer_prefix: string;
+  note: string;
+  sla_message: string;
 };
 export type PaymentSetupOverview = {
   providers: PaymentSetup[];
   any_available: boolean;
+  /** Absent from older APIs. */
+  vietqr_mode?: "manual" | "payos";
+  banks?: { bin: string; name: string }[];
   encryption: { available: boolean; variable: string };
 };
 /** What a secret input sends: untouched fields are kept, never cleared by an empty string. */
 export type SecretUpdate = { action: "keep" } | { action: "replace"; value: string } | { action: "clear" };
 export type PaymentCheckStatus = "ok" | "warning" | "error" | "skipped" | "unsupported";
 export type PaymentCheck = {
-  provider: "payos" | "onepay";
+  provider: "payos" | "bank_qr" | "onepay";
   source: PaymentConfigSource;
   local: { status: PaymentCheckStatus; code?: string };
   remote: { status: PaymentCheckStatus; code?: string };
@@ -621,4 +659,48 @@ export type VerificationItem = {
   verified_at: string | null;
   verified_by: string | null;
   note: string | null;
+};
+
+/** Phase 20: one admin-managed setting; secrets only say whether they are configured. */
+export type SystemSetting = {
+  key: string;
+  section: string;
+  group: string;
+  kind: "secret" | "str" | "int" | "float" | "bool";
+  env: string | null;
+  source: "admin" | "environment" | "default" | "error";
+  minimum: number | null;
+  maximum: number | null;
+  default: string | number | boolean | null;
+  updated_at: string | null;
+  updated_by: string | null;
+  error?: string;
+  configured?: boolean;
+  value?: string | number | boolean | null;
+};
+export type SystemSection = "ai" | "social" | "storage" | "runtime" | "credits" | "notifications";
+export type SystemConfigOverview = {
+  sections: Record<SystemSection, SystemSetting[]>;
+  history: Record<SystemSection, { action: string; at: string; by: string | null;
+                                   metadata: { changed?: string[]; provider?: string; local?: string; remote?: string } }[]>;
+  redirects: Record<"youtube" | "tiktok" | "facebook", string>;
+  derived_redirects: Record<"youtube" | "tiktok" | "facebook", string>;
+  models_in_use: Record<string, number>;
+  master_key: {
+    source: "file" | "legacy_env" | "missing";
+    path: string | null;
+    problem: string | null;
+    permissions_ok: boolean | null;
+    legacy_env_set: boolean;
+    legacy_env_matches: boolean | null;
+    encryption_available: boolean;
+  };
+  storage: { root: string; source: string; files: number; disk: { free_bytes: number; total_bytes: number } | null };
+  migrated: boolean;
+};
+export type ProviderTest = {
+  provider: string;
+  local: { status: string; code?: string };
+  remote: { status: string; code?: string };
+  checked_at: string;
 };

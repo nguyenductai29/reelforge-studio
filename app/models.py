@@ -146,6 +146,10 @@ class PaymentOrder(Base):
     provider_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Migration 0019: when the buyer said a manual VietQR transfer was made (manual orders only; deferred so
+    # code running on an older schema never selects it).
+    transfer_reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True,
+                                                                  deferred=True)
 
 
 class CreditAccount(Base):
@@ -373,3 +377,41 @@ class PaymentConfigAudit(Base):
     admin_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class SystemConfig(Base):
+    """One admin-managed setting (migration 0019): ``value`` is JSON for plain settings, ``ciphertext`` for secrets."""
+
+    __tablename__ = "system_config"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class SystemConfigAudit(Base):
+    """Who changed or tested system settings; setting names and statuses only, never values."""
+
+    __tablename__ = "system_config_audit"
+    __table_args__ = (Index("ix_system_config_audit_section", "section", "created_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    section: Mapped[str] = mapped_column(String(24))
+    action: Mapped[str] = mapped_column(String(16))
+    admin_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class PaymentOrderEvent(Base):
+    """A manual VietQR order's history: the buyer reported the transfer, an admin confirmed or rejected it."""
+
+    __tablename__ = "payment_order_events"
+    __table_args__ = (Index("ix_payment_order_events_order", "order_id", "created_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("payment_orders.id"))
+    action: Mapped[str] = mapped_column(String(24))
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    amount_vnd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

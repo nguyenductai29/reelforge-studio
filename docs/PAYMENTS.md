@@ -1,10 +1,11 @@
 # Payments: VietQR (payOS) and cards (OnePAY)
 
-Phase 14 adds card payments next to the existing VietQR checkout; Phase 19 lets a system admin configure both gateways from the web UI. Both payment methods use the same order table, the same settlement code and the same subscription and credit rules. There is no second accounting system.
+Phase 14 adds card payments next to the existing VietQR checkout; Phase 19 lets a system admin configure both gateways from the web UI; Phase 20 adds manual VietQR, a bank-transfer QR confirmed by an admin, with no gateway. Both payment methods use the same order table, the same settlement code and the same subscription and credit rules. There is no second accounting system.
 
 | Method (Billing UI) | Provider | Code | Configured by |
 | --- | --- | --- | --- |
 | VietQR / Bank Transfer | payOS | `app/billing.py`, `PayOSProvider` | Admin → Cổng thanh toán (encrypted); legacy: `payos` object in `instance/bootstrap.json` |
+| VietQR / Bank Transfer (manual) | — (`bank_qr`) | `app/bank_qr.py`, `BankQRProvider` | Admin → Cổng thanh toán → VietQR → Manual (plain settings `payments.bank_qr.*`) |
 | Credit / Debit Card | OnePAY | `app/payment_providers/onepay.py`, `OnePayProvider` | Admin → Cổng thanh toán (encrypted); legacy: `ONEPAY_*` environment variables |
 
 ## Architecture
@@ -66,6 +67,65 @@ Evidence (signed webhook/IPN, or a server-to-server status query)
 - Signed failed and cancelled returns close the pending order. Payment can still be retried later.
 - A return with a bad signature is logged as `payment_return_rejected` and shown as `payment=invalid`.
 
+## VietQR modes (Phase 20)
+
+Buyers always see one method, **VietQR / Bank Transfer**. Admin → Thanh toán → Cổng thanh toán → VietQR chooses how it works; the mode is the system setting `payments.vietqr_mode`.
+
+| Mode | How a buyer pays | What makes the order paid | Cost |
+| --- | --- | --- | --- |
+| **Automatic via payOS** (default) | Redirected to payOS's hosted page | payOS's signed webhook, or a Merchant API status check (Phase 14) | payOS fees |
+| **Manual VietQR** | A QR shown inside ReelForge, paid from any banking app to the studio's own account | A system admin confirms the money arrived | No gateway |
+
+**Switching modes only changes where new checkouts go.**
+
+- **payOS orders keep settling.** Pending payOS orders still settle by webhook or Check while manual mode is on.
+- **Manual orders stay confirmable.** Pending manual orders can still be confirmed while payOS mode is on.
+- **Setting the mode.** Saving the VietQR tab sets the mode in the same request (`use_for_vietqr`).
+
+### Manual VietQR
+
+**Configuration (system admin):**
+
+- the bank, picked from a list of NAPAS BINs or typed as a 6-digit BIN;
+- the account number;
+- the account holder (upper-case, no diacritics);
+- the transfer content prefix (default `RF`, 1–8 upper-case letters or digits);
+- an optional note for buyers, and the confirmation time (SLA) to show.
+
+These are not secret: buyers see them on the QR. They are stored as plain system settings (`payments.bank_qr.*`), audited by name like every setting. A live **QR preview** (100,000 VND, content `RFTEST01`) shows what buyers will scan. A save that turns the method on with a missing field is refused (`missing`, with the field).
+
+**The QR** (`app/bank_qr.py`) is the NAPAS VietQR payload, which every Vietnamese banking app reads:
+
+- **Format:** the EMVCo merchant-presented format, with GUID `A000000727` and service `QRIBFTTA`.
+- **Contents:** the bank's BIN and the account; the **exact plan price** in VND (`54`); the transfer content (`62` → `08`); a CRC-16/CCITT-FALSE checksum (`63`).
+- **Rendering:** drawn on the server as SVG with `segno`. No image service is called, and no secret is involved.
+- **Not proof:** generating a QR is never evidence of payment.
+
+**The transfer content is unique per order.** It is the prefix plus the order's 13-digit order code, for example `RF1234567890123`, so simultaneous buyers are never confused. It is stored on the order (`provider_reference`) when the order is created, so changing the prefix later does not change existing orders.
+
+**The flow:**
+
+1. **The buyer checks out.** They choose a plan → VietQR. `POST /api/billing/checkout` creates a pending order with provider `bank_qr` and returns `{order_id, checkout_url: null, transfer}`: the QR (an SVG data URI), bank, account, holder, exact amount, content, note and SLA. Nothing is paid yet; no subscription or credit changes.
+2. **The buyer transfers** the exact amount with the exact content, then presses **Tôi đã chuyển khoản**. This calls `POST /api/billing/orders/{id}/transferred`:
+   - the owner's own studio only (other studios get 404);
+   - it records `transfer_reported_at` and a `transfer_reported` event;
+   - it notifies every system admin in real time (`payment.transfer_reported`, linking to Admin → Thanh toán filtered on **Chờ xác nhận**).
+
+   Reporting twice changes nothing. The order stays `pending` and shows **Chờ xác nhận**. **Xem QR** (`GET /api/billing/orders/{id}/transfer`) shows the QR again.
+3. **A system admin checks the bank account,** then in Admin → Thanh toán chooses **Xác nhận đã nhận tiền** on the order. The dialog states "Confirm that 199,000 ₫ has been received for order RF… (buyer)". `POST /api/admin/payments/{id}/confirm` with `{amount_vnd}`:
+   - must equal the order's amount (else 422 `amount_mismatch`);
+   - settles through the **shared** `payments.apply_paid` path (provider `bank_qr`). It extends the subscription and posts the plan's credits **once**, under the order's row lock; a second confirm answers 409;
+   - writes a `confirmed` event with the admin and the amount (`payment_order_events`, listed by `GET /api/admin/payments/{id}/events`).
+4. **Or the admin rejects it.** **Từ chối / không thấy tiền** (`POST …/reject`, optional note) fails the order and notifies the owner. If the money turns up later, the order can still be confirmed, exactly as a late payment of any provider.
+
+**Who can do what:**
+
+- Only system admins can confirm or reject. Studio owners, including the buyer, get 403.
+- A non-manual order (payOS, OnePAY) can never be confirmed by hand (409): those settle only from provider evidence.
+- **Check** on a manual order asks nobody and changes nothing.
+
+**Disabling.** Disabling manual VietQR stops new checkouts. Pending manual orders can still be confirmed.
+
 ## Configuration (Phase 19: admin-managed)
 
 A system admin configures both gateways in **Admin → Thanh toán → Cổng thanh toán**. No SSH, file edit or restart is needed: a saved change applies to the next checkout and callback in every API process.
@@ -102,7 +162,7 @@ Each provider has an **enabled** switch, on by default for legacy deployments.
 
 All of a provider's credentials are stored together as one Fernet-encrypted JSON object in `payment_provider_configs.config_ciphertext`; no secret has a column of its own. The encryption is done by `app/secret_box.py`.
 
-**Which key.** It reuses `REELFORGE_TOKEN_ENCRYPTION_KEY`, the key that already encrypts OAuth tokens:
+**Which key.** It reuses the master key (Phase 20: `/etc/reelforge/master.key`, or the legacy `REELFORGE_TOKEN_ENCRYPTION_KEY`; see [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md)), the key that already encrypts OAuth tokens:
 
 - **Why share it.** Both keys would sit in the same runtime file and be read by the same API process, so they would be lost or leaked together. A second key would add a backup burden without a security boundary.
 - **No swapping.** Each purpose gets its own key derived with HKDF-SHA256 (`reelforge:payment-config:payos`, `…:onepay`). A payment ciphertext cannot be decrypted as an OAuth token, or as the other provider's configuration.
@@ -257,7 +317,7 @@ The time of the last verified payOS webhook, OnePAY IPN, status query and succes
 | Situation | What happens | Fix |
 | --- | --- | --- |
 | Database restored with its key | Everything works | — |
-| Database restored, key lost or changed | Saved gateways show "cannot decrypt" and are unavailable; legacy credentials are **not** used instead | Restore the old `REELFORGE_TOKEN_ENCRYPTION_KEY` and restart the API, or re-enter every secret of each gateway in the admin UI. The admin UI is the only route for payment secrets; OAuth tokens need their channels reconnected |
+| Database restored, key lost or changed | Saved gateways show "cannot decrypt" and are unavailable; legacy credentials are **not** used instead | Restore the old master key file (or `REELFORGE_TOKEN_ENCRYPTION_KEY`) and restart the API, or re-enter every secret of each gateway in the admin UI. The admin UI is the only route for payment secrets; OAuth tokens need their channels reconnected |
 | Key missing on a new server | Admin-managed gateways cannot be saved (`key_missing`); legacy credentials still work | Set the key, restart the API |
 | Wrong credentials saved | Checkouts or callbacks fail; pending orders stay pending | Save the right values (blank fields keep the others), then **Check** pending orders |
 | Need to stop payments now | — | **Tắt** on the gateway: new checkouts stop at once; existing orders still settle |
@@ -314,6 +374,22 @@ The time of the last verified payOS webhook, OnePAY IPN, status query and succes
   - the read-only QueryDR check; the audit trail; readiness.
 
 `tests/test_phase19_migration.py` runs 0017 → 0018 and back, keeping orders, subscriptions, the credit ledger and `payment_activity`.
+
+`tests/test_phase20.py` covers manual VietQR:
+
+- the NAPAS payload (CRC check value, exact amount, unique content per order);
+- admin-only configuration and preview;
+- checkout returning the QR;
+- cross-studio 404s;
+- the transfer report and the admin notification;
+- confirmation refused for owners, for the wrong amount and for non-manual orders;
+- settlement exactly once;
+- rejection, then a late confirmation;
+- disabling;
+- payOS automatic mode and its webhook unchanged;
+- OnePAY unchanged.
+
+`tests/test_phase20_migration.py` runs 0018 → 0019 and back.
 
 Live payments have not been verified. See [Live verification](#live-verification).
 

@@ -253,26 +253,50 @@ cat .gitignore
 
 Never commit `instance/bootstrap.json`.
 
-### 4.1 Runtime environment file (provider keys)
+### 4.1 Master key file (the only other bootstrap)
 
-Provider keys, prices and the YouTube OAuth settings are environment variables. The API and every worker need the same values, because a worker that finishes one step also starts the next one. Keep them in one root-owned file that every unit loads:
+Since Phase 20, ReelForge needs exactly two things outside PostgreSQL: the database URL above, and one **master encryption key file**. Every secret stored in the database is encrypted with that key: OAuth tokens, payment credentials, AI provider keys and OAuth app secrets. Everything else is configured in **Quản trị → Cài đặt hệ thống** and **Quản trị → Thanh toán → Cổng thanh toán**, without SSH or restarts. See [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md).
+
+Create it once, as the account the services run as (`tai` here):
 
 ```bash
 sudo mkdir -p /etc/reelforge
-sudo cp ~/apps/reelforge-studio/.env.runtime.example /etc/reelforge/runtime.env
-sudo chown root:tai /etc/reelforge/runtime.env
-sudo chmod 640 /etc/reelforge/runtime.env
-sudo nano /etc/reelforge/runtime.env
+sudo chown root:tai /etc/reelforge
+sudo chmod 750 /etc/reelforge
+cd ~/apps/reelforge-studio
+sudo -u tai env REELFORGE_MASTER_KEY_FILE=/etc/reelforge/master.key .venv/bin/python -m app.master_key init
+ls -l /etc/reelforge/master.key   # -rw------- tai
+.venv/bin/python -m app.master_key status
 ```
 
-Fill in only the providers you use. The format is `KEY=value` per line, without `export`. Every unit below has `EnvironmentFile=/etc/reelforge/runtime.env`. Check the file without calling any provider:
+**What `init` does:**
+
+- **On a fresh installation**, it generates a key.
+- **On an installation that already has `REELFORGE_TOKEN_ENCRYPTION_KEY`** in `/etc/reelforge/runtime.env`, it copies that key into the file, so everything stays readable.
+- **If the database already holds encrypted data and no key is found**, it refuses rather than make that data unreadable.
+
+`/etc/reelforge/master.key` is the default path, so the units need no variable for it. Set `REELFORGE_MASTER_KEY_FILE` only for another path.
+
+**Back the key file up off the server**, separately from the database dumps. Never change it on a running installation.
+
+- With the database but without the key, every secret must be re-entered and every channel reconnected.
+- Without the file, the API still starts, and Admin → Kiểm định and Cài đặt hệ thống → Bảo mật say what is wrong.
+
+### 4.2 Legacy runtime environment file (optional)
+
+Installations configured before Phase 20 keep `/etc/reelforge/runtime.env`. Every setting nobody saved in the admin UI still reads its variable from it, and a saved value always wins.
+
+- **New installations do not need it.** Leave it out, or keep only the optional `REELFORGE_LOG_FORMAT` and `REELFORGE_LOG_LEVEL`.
+- **Make it optional in the units.** Every unit below uses `EnvironmentFile=-/etc/reelforge/runtime.env`; the leading `-` lets a unit start when the file does not exist.
+
+To check what a legacy file still provides without calling any provider:
 
 ```bash
 cd ~/apps/reelforge-studio
 REELFORGE_ENV_FILE=/etc/reelforge/runtime.env .venv/bin/python -m app.provider_check
 ```
 
-After editing the file, restart the API and all workers. Each logs a `process_started` line with key fingerprints (never the keys). `journalctl -u 'reelforge-*' | grep process_started` shows whether every process loaded the same keys. See `docs/LIVE_PROVIDER_SMOKE_TEST.md` for the live smoke tests.
+Each process logs a `process_started` line with the key fingerprints the environment provides, never the keys. Admin → Cài đặt hệ thống shows each setting's source (Admin, Môi trường or Mặc định).
 
 ---
 
@@ -408,7 +432,7 @@ RestartSec=5
 
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-EnvironmentFile=/etc/reelforge/runtime.env
+EnvironmentFile=-/etc/reelforge/runtime.env
 
 StandardOutput=journal
 StandardError=journal
@@ -627,7 +651,8 @@ Create the folders and point every process at the root:
 ```bash
 sudo mkdir -p /srv/data/videos/reelforge /srv/data/backups/reelforge
 sudo chown -R tai:tai /srv/data/videos/reelforge /srv/data/backups/reelforge
-echo 'REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge' | sudo tee -a /etc/reelforge/runtime.env
+# Then set the media root in Quản trị → Cài đặt hệ thống → Lưu trữ: /srv/data/videos/reelforge
+# (legacy installations: REELFORGE_STORAGE_ROOT in /etc/reelforge/runtime.env still works until a value is saved)
 ```
 
 `REELFORGE_STORAGE_ROOT` takes precedence over the stored `storage_dir` setting. Settings → Storage shows the folder in use to the system admin. Mount the HDD itself at `/srv/data` rather than linking the root: cleanup refuses to delete through symbolic links.
@@ -665,7 +690,7 @@ Group=tai
 WorkingDirectory=/home/tai/apps/reelforge-studio
 ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.media_maintenance --apply --intermediates
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/etc/reelforge/runtime.env
+EnvironmentFile=-/etc/reelforge/runtime.env
 Nice=10
 IOSchedulingClass=idle
 ```
@@ -730,7 +755,7 @@ Restart=always
 RestartSec=5
 
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/etc/reelforge/runtime.env
+EnvironmentFile=-/etc/reelforge/runtime.env
 
 StandardOutput=journal
 StandardError=journal
@@ -754,7 +779,7 @@ systemctl is-active reelforge-video-worker
 journalctl -u reelforge-video-worker -f
 ```
 
-Provider credentials such as `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, Runway credentials, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` must be supplied to the API, the video worker and the text worker alike, through the shared `/etc/reelforge/runtime.env` (section 4.1). A worker that finishes one step also starts the next one: for example, the text worker queues the video step that follows an AI Writer, and blocks it if it cannot see that video provider's key.
+Provider credentials (OpenAI, Anthropic, Gemini, Runway, fal, Runware, Replicate) are entered once in **Quản trị → Cài đặt hệ thống → Nhà cung cấp AI**. The API and every worker read them from the database, so they always agree. A changed key reaches workers within 15 seconds, with no restart. A worker that finishes one step also starts the next one: for example, the text worker queues the video step that follows an AI Writer, and blocks it if that video provider has no key. Legacy installations may still provide them through `/etc/reelforge/runtime.env` (section 4.2).
 
 Do not put private API keys into Git.
 
@@ -776,7 +801,7 @@ sudo systemctl start reelforge-text-worker
 journalctl -u reelforge-text-worker -f
 ```
 
-The text worker gets `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` and `TEXT_CREDITS_PER_GENERATION` (default 1, credits per text step) from the same `EnvironmentFile` as the API, because it copies the video worker unit.
+The text worker reads the text provider keys and the credit price per text step (Cài đặt hệ thống → Giá credits, default 1) from the database, like the API.
 
 ### Image worker
 
@@ -796,7 +821,7 @@ sudo systemctl start reelforge-image-worker
 journalctl -u reelforge-image-worker -f
 ```
 
-It needs `RUNWAYML_API_SECRET` and `RUNWAY_OUTPUT_HOSTS` (the same Runway credentials video uses), and optionally `IMAGE_CREDITS_PER_GENERATION` (default 2 credits per image) and `IMAGE_JOB_MAX_AGE_SECONDS` (default 3600), from the same `EnvironmentFile`. `deploy.sh` restarts it when the unit is enabled. It writes to the same media directory as the video worker.
+It needs the Runway secret and output hosts (Cài đặt hệ thống → Nhà cung cấp AI → Runway, the same credentials video uses). The credits per image (default 2) and the image job wait (default 3600 s) are in Giá credits and Runtime. `deploy.sh` restarts it when the unit is enabled. It writes to the same media directory as the video worker.
 
 Multi-scene video needs no new process: the video worker also runs the one-clip-per-scene jobs (see `docs/MULTI_SCENE_VIDEO.md`).
 
@@ -818,7 +843,7 @@ sudo systemctl start reelforge-voice-worker
 journalctl -u reelforge-voice-worker -f
 ```
 
-It needs `GEMINI_API_KEY` (the same key Gemini text uses), and optionally `VOICE_CREDITS_PER_GENERATION` (default 1 credit per narration) and `VOICE_JOB_MAX_AGE_SECONDS` (default 1800), from the same `EnvironmentFile`.
+It needs the Gemini key (the same key Gemini text uses). The credits per narration (default 1) and the voice job wait (default 1800 s) are in Giá credits and Runtime.
 
 ### Render worker
 
@@ -904,7 +929,7 @@ Restart=always
 RestartSec=5
 
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/etc/reelforge/runtime.env
+EnvironmentFile=-/etc/reelforge/runtime.env
 
 StandardOutput=journal
 StandardError=journal
@@ -1070,24 +1095,9 @@ Since Phase 19, a system admin configures both gateways in the web UI: **Quản 
 
 See [PAYMENTS.md](PAYMENTS.md#configuration-phase-19-admin-managed).
 
-### One-time server prerequisite: the encryption key
+### One-time server prerequisite: the master key
 
-Admin-managed credentials are encrypted with `REELFORGE_TOKEN_ENCRYPTION_KEY`, the same key that protects OAuth tokens. If YouTube, TikTok or Facebook publishing is set up, it is already in `/etc/reelforge/runtime.env`. Otherwise:
-
-1. Generate a key:
-
-   ```bash
-   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-   ```
-
-2. Add `REELFORGE_TOKEN_ENCRYPTION_KEY=<output>` to `/etc/reelforge/runtime.env`.
-3. Run `sudo systemctl restart reelforge-api`.
-
-**Back the key up off the server**, next to (but not inside) the database dumps.
-
-- With the database but without the key, saved payment credentials cannot be read. Restore the key, or re-enter every gateway secret in the admin UI.
-- Never change the key on a running installation.
-- The server never generates a key by itself; without one, the admin UI says so and refuses to save.
+Admin-managed credentials are encrypted with the master key file of section 4.1 (`/etc/reelforge/master.key`), the same key that protects OAuth tokens. Create it before configuring payments. An installation that still has only `REELFORGE_TOKEN_ENCRYPTION_KEY` keeps working; move it into the file with `python -m app.master_key init`.
 
 ### Register the callback URLs
 
@@ -1130,7 +1140,7 @@ As soon as an admin saves credentials for a gateway, those take precedence and t
 }
 ```
 
-**OnePAY** in `/etc/reelforge/runtime.env` (section 4.1):
+**OnePAY** in `/etc/reelforge/runtime.env` (section 4.2):
 
 ```text
 ONEPAY_MERCHANT_ID=...
@@ -1157,6 +1167,7 @@ Each is applied by `python -m alembic upgrade head`, as usual:
 - `0016_storage_lifecycle`: plan storage limits, asset kinds and expiry. Set up the storage root and the daily cleanup timer in section 11 when you upgrade.
 - `0017_notify_support_verify`: notifications, support tickets and messages, and the live-verification checklist. It only adds tables; no existing row changes.
 - `0018_admin_payment_config`: the encrypted payment gateway configuration and its audit trail. It only adds tables; orders, subscriptions, credits and the payment activity record are untouched, and legacy payment configuration keeps working.
+- `0019_system_configuration`: the central system settings (plain and encrypted), their audit trail, and manual VietQR order history (`payment_order_events`, `payment_orders.transfer_reported_at`). It only adds; every existing row, setting, token and gateway configuration is untouched.
 
 **After upgrading to Phase 18:**
 
@@ -1166,6 +1177,23 @@ Each is applied by `python -m alembic upgrade head`, as usual:
   - `REELFORGE_SSE_MAX_SECONDS` (300);
   - `CREDITS_LOW_THRESHOLD` (20).
 - Then open **Admin → Kiểm định**: readiness should show Migration ok. Work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+
+**After upgrading to Phase 20:**
+
+1. Run `./deploy.sh`: it applies the migration and restarts the API, frontend and workers.
+2. Create the master key file from the existing key (section 4.1):
+
+   ```bash
+   sudo -u tai env REELFORGE_MASTER_KEY_FILE=/etc/reelforge/master.key .venv/bin/python -m app.master_key init
+   ```
+
+   Back the file up.
+3. Edit the units once: change `EnvironmentFile=/etc/reelforge/runtime.env` to `EnvironmentFile=-/etc/reelforge/runtime.env`, then `sudo systemctl daemon-reload`.
+4. Nothing else changes yet: every setting reads its old variable (source *Môi trường*).
+5. Over time, enter the values in Quản trị → Cài đặt hệ thống. Once every setting shows *Admin* or *Mặc định*, `/etc/reelforge/runtime.env` can be emptied.
+6. Remove `REELFORGE_TOKEN_ENCRYPTION_KEY` last, after confirming that Cài đặt hệ thống → Bảo mật reads the key from the file.
+
+For manual VietQR (no gateway), see [PAYMENTS.md](PAYMENTS.md#vietqr-modes-phase-20).
 
 **After upgrading to Phase 19:**
 
@@ -1409,7 +1437,7 @@ Before treating the service as production-ready:
 - Enable secure cookies after HTTPS is active.
 - Keep provider, payOS, OnePAY, Google OAuth and Fernet secrets out of the repository.
 - Back up PostgreSQL and the media root (`/srv/data/videos/reelforge`) together, and keep a copy off the HDD.
-- Back up `REELFORGE_TOKEN_ENCRYPTION_KEY` separately and securely: it protects OAuth tokens and the admin-managed payment gateway credentials.
+- Back up `/etc/reelforge/master.key` (or the legacy `REELFORGE_TOKEN_ENCRYPTION_KEY`) separately and securely: it protects OAuth tokens, payment credentials, AI keys and OAuth app secrets. Keep it `chmod 600`, owned by the service account.
 - Apply Alembic migrations before restarting application services after an update.
 - Review application and Cloudflare request-body/rate limits before public use.
 

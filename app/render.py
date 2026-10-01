@@ -42,6 +42,7 @@ import subprocess
 from typing import Any, Callable, Mapping
 
 from app.subtitles import Cue, burn_in_text, to_srt
+from app import system_config
 
 SUBTITLE_NAME = "subtitles.srt"
 OUTPUT_NAME = "render.mp4"
@@ -95,7 +96,7 @@ def tools() -> tuple[str | None, str | None]:
     """The ffmpeg and ffprobe executables, or ``None`` for each one that is missing."""
     found = []
     for name, variable in (("ffmpeg", "RENDER_FFMPEG_PATH"), ("ffprobe", "RENDER_FFPROBE_PATH")):
-        configured = os.environ.get(variable, "").strip()
+        configured = system_config.env(variable).strip()
         if configured:
             found.append(configured if Path(configured).is_file() else None)
         else:
@@ -112,7 +113,7 @@ def tools_issue() -> tuple[str, str] | None:
 
 
 def subtitle_font() -> str:
-    font = os.environ.get("RENDER_SUBTITLE_FONT", "").strip() or DEFAULT_FONT
+    font = system_config.env("RENDER_SUBTITLE_FONT").strip() or DEFAULT_FONT
     if not _FONT_NAME.fullmatch(font):
         raise RenderError("font_unavailable", "RENDER_SUBTITLE_FONT must be a plain font family name",
                           "configuration_error")
@@ -140,7 +141,7 @@ def font_issue(run: Runner = subprocess.run) -> tuple[str, str] | None:
 
 def render_timeout_seconds() -> int:
     try:
-        seconds = int(os.environ.get("RENDER_TIMEOUT_SECONDS", "").strip() or "1800")
+        seconds = int(system_config.env("RENDER_TIMEOUT_SECONDS").strip() or "1800")
     except ValueError as exc:
         raise RuntimeError("RENDER_TIMEOUT_SECONDS must be an integer") from exc
     if not 60 <= seconds <= 21600:
@@ -151,7 +152,7 @@ def render_timeout_seconds() -> int:
 def render_credit_cost() -> int:
     """Credits for one render (``RENDER_CREDITS_PER_JOB``, default 0: rendering is local and free)."""
     try:
-        amount = int(os.environ.get("RENDER_CREDITS_PER_JOB", "").strip() or "0")
+        amount = int(system_config.env("RENDER_CREDITS_PER_JOB").strip() or "0")
     except ValueError as exc:
         raise RuntimeError("RENDER_CREDITS_PER_JOB must be an integer") from exc
     if not 0 <= amount <= 100000:
@@ -164,7 +165,7 @@ def render_credit_cost() -> int:
 def still_seconds() -> float:
     """How long a still image is shown when nothing else decides (``RENDER_STILL_SECONDS``, default 5)."""
     try:
-        value = float(os.environ.get("RENDER_STILL_SECONDS", "").strip() or "5")
+        value = float(system_config.env("RENDER_STILL_SECONDS").strip() or "5")
     except ValueError as exc:
         raise RenderError("invalid_config", "RENDER_STILL_SECONDS must be a number", "configuration_error") from exc
     if not 1 <= value <= 60:

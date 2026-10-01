@@ -35,6 +35,7 @@ import re
 import shutil
 import stat
 from typing import Iterable
+from app import system_config
 
 
 _UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -450,7 +451,7 @@ def configured_media_context() -> tuple[Path, list[str]]:
         if not isinstance(value, str) or not value.strip():
             raise ValueError("configured storage_dir must be a nonempty path")
         # REELFORGE_STORAGE_ROOT wins over the stored setting, as everywhere else (app/storage.py).
-        path = Path(os.environ.get("REELFORGE_STORAGE_ROOT", "").strip() or value).expanduser()
+        path = Path(system_config.env("REELFORGE_STORAGE_ROOT").strip() or value).expanduser()
         root = path if path.is_absolute() else ROOT / path
         workspace_ids = list(db.scalars(select(Workspace.id)))
     return root, workspace_ids
@@ -521,4 +522,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    from app.runtime_env import load_runtime_env
+
+    load_runtime_env()  # optional legacy file; storage settings now come from Admin → System settings
+    system_config.activate()
     raise SystemExit(main())

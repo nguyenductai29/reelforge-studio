@@ -11,6 +11,7 @@ from app.providers.text.anthropic import AnthropicTextProvider
 from app.providers.text.base import TextGenerationProvider, TextProviderError, TextResult, TextUsage
 from app.providers.text.gemini import GeminiTextProvider
 from app.providers.text.openai import OpenAITextProvider
+from app import system_config
 
 TEXT_TASK = "script"
 
@@ -32,7 +33,7 @@ def text_provider_config_issue(provider_name: str) -> tuple[str, str] | None:
     spec = TEXT_PROVIDERS.get(provider_name)
     if spec is None:
         return "unsupported_provider", "Provider văn bản này chưa được hỗ trợ."
-    if not os.environ.get(spec.key_env, "").strip():
+    if not system_config.env(spec.key_env).strip():
         return "missing_key", f"Server cần {spec.key_env}."
     return None
 
@@ -41,7 +42,7 @@ def create_text_provider(provider_name: str, *, http_client=None) -> TextGenerat
     spec = TEXT_PROVIDERS.get(provider_name)
     if spec is None:
         raise TextProviderError("unsupported_provider", f"Unsupported text provider {provider_name!r}")
-    key = os.environ.get(spec.key_env, "")
+    key = system_config.env(spec.key_env)
     if not key.strip():
         raise TextProviderError("missing_key", f"{spec.key_env} is not set")
     return spec.provider_type(key, http_client=http_client)
@@ -50,7 +51,7 @@ def create_text_provider(provider_name: str, *, http_client=None) -> TextGenerat
 def text_credit_cost() -> int:
     """Credits held for, and charged by, one text generation (``TEXT_CREDITS_PER_GENERATION``)."""
     try:
-        amount = int(os.environ.get("TEXT_CREDITS_PER_GENERATION", "").strip() or "1")
+        amount = int(system_config.env("TEXT_CREDITS_PER_GENERATION").strip() or "1")
     except ValueError as exc:
         raise RuntimeError("TEXT_CREDITS_PER_GENERATION must be a positive integer") from exc
     if not 1 <= amount <= 100000:

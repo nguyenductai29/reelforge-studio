@@ -42,6 +42,7 @@ from app.providers.transcription import TranscriptionProviderError, create_trans
 from app.runtime_env import start_process
 from app.workflow import ExecutionContext, NodeError, NodeExecutionResult, default_executor
 from app.workflow.results import COMPLETED, NEEDS_ATTENTION, QUEUED, RUNNING
+from app import system_config
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +255,7 @@ def _audio_parts(claim: Claim, folder: Path, runner) -> tuple[list[Path], float]
 def transcription_max_seconds() -> int:
     """Longest media one Transcript step accepts (``TRANSCRIPTION_MAX_SECONDS``, default 3 hours)."""
     try:
-        value = int(os.environ.get("TRANSCRIPTION_MAX_SECONDS", "").strip() or str(3 * 3600))
+        value = int(system_config.env("TRANSCRIPTION_MAX_SECONDS").strip() or str(3 * 3600))
     except ValueError as exc:
         raise RuntimeError("TRANSCRIPTION_MAX_SECONDS must be a positive integer") from exc
     if not 60 <= value <= 12 * 3600:

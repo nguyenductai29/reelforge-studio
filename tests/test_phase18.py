@@ -224,7 +224,9 @@ assert {m["id"] for m in billing.json()["methods"]} == {"vietqr", "card"} and "f
 
 setup = client.get("/api/admin/payment-config")
 clean(setup.text)
-payos, onepay_setup = setup.json()["providers"]
+by_provider = {item["provider"]: item for item in setup.json()["providers"]}
+payos, onepay_setup = by_provider["payos"], by_provider["onepay"]
+assert by_provider["bank_qr"]["source"] == "missing" and not by_provider["bank_qr"]["available"]
 assert payos["configured"] and {name: f["status"] for name, f in payos["fields"].items()} == {
     "client_id": "configured", "api_key": "configured", "checksum_key": "configured"}
 assert payos["source"] == "bootstrap" and payos["fields"]["client_id"]["legacy"] == "payos.client_id"
@@ -254,21 +256,21 @@ with patch.object(payment_providers, "http_client",
 assert down["remote"] == {"status": "error", "code": "unavailable"}
 assert client.post("/api/admin/payment-config/check", json={"provider": "payos", "remote": True}).json()["remote"] == \
        {"status": "unsupported"}
-assert "check" in client.get("/api/admin/payment-config").json()["providers"][1]["activity"]
+assert "check" in client.get("/api/admin/payment-config").json()["providers"][2]["activity"]
 os.environ["ONEPAY_HASH_KEY"] = "not-hex"
 assert client.post("/api/admin/payment-config/check", json={"provider": "onepay"}).json()["local"]["status"] == "error"
-assert client.get("/api/admin/payment-config").json()["providers"][1]["fields"]["hash_key"]["status"] == "invalid"
+assert client.get("/api/admin/payment-config").json()["providers"][2]["fields"]["hash_key"]["status"] == "invalid"
 
 # Readiness: every section, safe values only.
 report = client.get("/api/admin/readiness")
 clean(report.text)
 sections = {s["key"]: {c["key"]: c for c in s["checks"]} for s in report.json()["sections"]}
-assert set(sections) == {"database", "storage", "ffmpeg", "workers", "ai", "publishing", "payments", "realtime", "support"}
+assert set(sections) == {"database", "storage", "ffmpeg", "workers", "ai", "publishing", "payments", "realtime", "support", "security"}
 assert sections["database"]["migration"]["status"] == "ok"
 assert sections["payments"]["onepay"]["mode"] == "sandbox" and sections["payments"]["payos"]["status"] == "ok"
 assert sections["workers"]["render_worker"]["status"] == "missing"
 assert sections["ai"]["openai"]["status"] == "ok" and sections["ai"]["runway"]["status"] == "missing"
-assert sections["publishing"]["youtube"]["status"] == "ok" and sections["publishing"]["token_encryption"]["status"] == "ok"
+assert sections["publishing"]["youtube"]["status"] == "ok" and sections["security"]["master_key"]["status"] == "warning"
 
 # The checklist persists who verified what; nothing is ticked by itself.
 listed = client.get("/api/admin/verification").json()["items"]

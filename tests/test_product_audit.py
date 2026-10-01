@@ -228,7 +228,7 @@ class Phase19FrontendTest(unittest.TestCase):
         # An input only ever holds what the admin is typing now; saved values exist only as masked identifiers.
         self.assertIn('value={update.action === "replace" ? update.value : ""}', ui)
         self.assertIn('type={field.secret ? "password" : "text"}', ui)
-        self.assertIn("key={`${item.updated_at}-${item.enabled}-${item.mode}`}", ui)
+        self.assertIn("key={`${card.updated_at}-${card.enabled}-${card.mode}`}", ui)
         types = source("lib/types.ts")
         field_type = types[types.index("export type PaymentField = {"):types.index("export type PaymentIssue")]
         self.assertIn("masked?: string", field_type)
@@ -238,7 +238,7 @@ class Phase19FrontendTest(unittest.TestCase):
     def test_sandbox_and_production_are_obvious_and_production_is_confirmed(self):
         ui = source(self.GATEWAYS)
         self.assertIn("export function ModeBadge", ui)
-        self.assertIn("<ModeBadge mode={item.mode} />", ui)
+        self.assertIn("{card.mode && <ModeBadge mode={card.mode} />}", ui)
         self.assertIn("<AlertDialog open={confirming !== null}", ui)
         self.assertIn('mode === "production" && !wasLiveProduction', ui)
         for locale, phrase in (("vi", "tiền thật"), ("en", "Real customer payments can now be accepted"),
@@ -272,6 +272,55 @@ class Phase19FrontendTest(unittest.TestCase):
         admin = source("app/admin/page.tsx")
         self.assertIn("function purchasability(plan: Plan, paymentReady: boolean)", admin)
         self.assertIn("{!paymentReady && <p className=\"text-xs text-warning\">{a.noGateway}</p>}", admin)
+
+
+
+class Phase20FrontendTest(unittest.TestCase):
+    def test_admin_has_system_settings_for_every_section(self):
+        admin = source("app/admin/page.tsx")
+        self.assertIn('"verification", "system"] as const', admin)
+        self.assertIn('<TabsContent value="system" className="mt-3 flex min-h-0 flex-1 flex-col">', admin)
+        system = source("components/reelforge/admin/admin-system.tsx")
+        self.assertIn('const NAV = ["security", "general", "ai", "social", "storage", "runtime", "credits", "notifications"]',
+                      system)
+        self.assertIn("`admin/system-config/${section}`", system)
+        self.assertIn("`admin/system-config/ai/${provider}/test`", system)
+        # Secret inputs never hold a saved value; the page scrolls inside the fixed admin layout.
+        self.assertIn('value={update.action === "replace" ? update.value : ""}', system)
+        self.assertIn('type="password"', system)
+        self.assertIn("scrollbar-thin relative min-h-0 flex-1 overflow-y-auto", system)
+        self.assertNotIn("api_key:", source("lib/types.ts").split("export type SystemSetting = {")[1].split("};")[0])
+
+    def test_storage_root_change_needs_explicit_confirmation(self):
+        system = source("components/reelforge/admin/admin-system.tsx")
+        self.assertIn('"root_change_requires_confirmation"', system)
+        self.assertIn("confirm_root_change: confirmRootChange", system)
+
+    def test_vietqr_tab_offers_manual_and_payos_modes_with_a_preview(self):
+        ui = source("components/reelforge/admin/payment-gateways.tsx")
+        self.assertIn('(["manual", "payos"] as const)', ui)
+        self.assertIn('"admin/payment-config/bank_qr/preview"', ui)
+        self.assertIn("use_for_vietqr: true", ui)
+        self.assertIn("<GatewayPanel key={`${vietqr.updated_at}-${vietqr.enabled}-${savedMode}`} setup={vietqr}", ui)
+
+    def test_buyers_see_the_qr_and_report_the_transfer_but_never_confirm(self):
+        billing = source("app/billing/page.tsx")
+        self.assertIn("<TransferCard transfer={transfer.details} />", billing)
+        self.assertIn("/transferred`", billing)
+        self.assertNotIn("/confirm", billing)
+        for path in frontend_files():
+            if "admin" in path.as_posix():
+                continue
+            with self.subTest(path=str(path.relative_to(FRONTEND))):
+                self.assertNotIn("admin/payments/", path.read_text(encoding="utf-8"))
+
+    def test_admin_confirmation_states_amount_and_order(self):
+        payments = source("components/reelforge/admin/admin-payments.tsx")
+        self.assertIn("p.confirmText(formatMoney(reviewing.order.amount_vnd)", payments)
+        self.assertIn("{ amount_vnd: order.amount_vnd }", payments)
+        for locale, phrase in (("vi", "Xác nhận đã nhận"), ("en", "Confirm that"), ("ja", "入金を確認します")):
+            with self.subTest(locale=locale):
+                self.assertIn(phrase, source(f"lib/i18n/{locale}.ts"))
 
 
 if __name__ == "__main__":

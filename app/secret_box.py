@@ -1,11 +1,11 @@
-"""Encrypt small JSON secrets at rest (Phase 19: payment gateway credentials).
+"""Encrypt small JSON secrets at rest (payment gateways since Phase 19, every admin-managed secret since 20).
 
-The server already holds one Fernet key, ``REELFORGE_TOKEN_ENCRYPTION_KEY``,
-which encrypts every OAuth token and upload session. It lives in the runtime
-environment file, outside the database, and is backed up with it. This module
-reuses it rather than adding a second key next to it: both would sit in the same
-file, be read by the same processes and be lost or leaked together, so a second
-key adds an operational burden without a security boundary.
+The server holds one Fernet master key outside the database (``app/master_key.py``:
+``/etc/reelforge/master.key``, or the legacy ``REELFORGE_TOKEN_ENCRYPTION_KEY``),
+which also encrypts every OAuth token and upload session. This module reuses it
+rather than adding a second key next to it: both would sit on the same server, be
+read by the same processes and be lost or leaked together, so a second key adds an
+operational burden without a security boundary.
 
 Each purpose gets its own key derived with HKDF-SHA256 (``info`` names the
 purpose), so a ciphertext made for one purpose never decrypts as another: a
@@ -15,13 +15,15 @@ error (``key_missing``); no key is ever generated here.
 """
 import base64
 import json
-import os
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-KEY_VARIABLE = "REELFORGE_TOKEN_ENCRYPTION_KEY"
+from app import master_key
+
+# Named in messages to operators; the key itself comes from app.master_key.
+KEY_VARIABLE = "REELFORGE_MASTER_KEY_FILE (/etc/reelforge/master.key)"
 
 
 class SecretBoxError(Exception):
@@ -33,12 +35,10 @@ class SecretBoxError(Exception):
 
 
 def _master() -> bytes:
-    raw = os.environ.get(KEY_VARIABLE, "").strip()
-    try:
-        Fernet(raw.encode("ascii"))
-        return base64.urlsafe_b64decode(raw.encode("ascii"))
-    except (TypeError, ValueError, UnicodeError) as exc:
-        raise SecretBoxError("key_missing", f"{KEY_VARIABLE} is missing or invalid") from exc
+    raw = master_key.load()
+    if not raw:
+        raise SecretBoxError("key_missing", "The master encryption key is missing or invalid")
+    return base64.urlsafe_b64decode(raw.encode("ascii"))
 
 
 def _fernet(purpose: str) -> Fernet:

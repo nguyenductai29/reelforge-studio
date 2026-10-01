@@ -3,12 +3,22 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Loader2, MoreHorizontal, Search } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { api } from "@/lib/api";
+import { api, jsonRequest } from "@/lib/api";
 import { errorText, useErrorToast } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
 import type { Dictionary } from "@/lib/i18n/vi";
@@ -20,27 +30,32 @@ import { PaymentGatewaysDialog } from "./payment-gateways";
 import { Detail, FilterSelect } from "./shared";
 
 const LIMIT = 20;
-const STATUSES = ["pending", "paid", "paid_unapplied", "failed", "cancelled", "expired"] as const;
+const STATUSES = ["awaiting_confirmation", "pending", "paid", "paid_unapplied", "failed", "cancelled", "expired"] as const;
+const awaiting = (o: AdminPayment) => o.provider === "bank_qr" && o.status === "pending" && Boolean(o.transfer_reported_at);
 
 /**
  * Every studio's payment orders. An admin can ask the provider again (server to server); only what the
  * provider confirms is applied. There is deliberately no "mark as paid".
  */
-export function AdminPayments({ providers }: { providers: PaymentProviderStatus[] }) {
+export function AdminPayments({ providers, initialStatus = "" }: { providers: PaymentProviderStatus[]; initialStatus?: string }) {
   const { t, formatDateTime, formatMoney } = useI18n();
   const p = t.admin.payments;
   const client = useQueryClient();
   const showError = useErrorToast();
   const [q, setQ] = useState("");
   const [provider, setProvider] = useState("");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState(initialStatus);
+  // Manual VietQR: an explicit confirmation of the amount received, or a rejection with an optional note.
+  const [reviewing, setReviewing] = useState<{ order: AdminPayment; action: "confirm" | "reject" } | null>(null);
+  const [note, setNote] = useState("");
   const [offset, setOffset] = useState(0);
   const [viewing, setViewing] = useState<AdminPayment | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const search = useDebounced(q.trim());
   const payments = useAdminPayments({ q: search, provider, status, limit: LIMIT, offset });
-  const statusLabel = (value: string) => t.status.order[value as keyof Dictionary["status"]["order"]] ?? value;
+  const statusLabel = (value: string) =>
+    value === "awaiting_confirmation" ? p.awaitingConfirmation : t.status.order[value as keyof Dictionary["status"]["order"]] ?? value;
   const providerLabel = (value: string) => p.providers[value as keyof typeof p.providers] ?? value;
   const filtered = (setter: (value: string) => void) => (value: string) => {
     setter(value);
@@ -63,6 +78,27 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
     }
   }
 
+  async function review() {
+    if (!reviewing) return;
+    const { order, action } = reviewing;
+    setBusy(order.id);
+    try {
+      const result = await api<{ status: string }>(`admin/payments/${encodeURIComponent(order.id)}/${action}`,
+        jsonRequest("POST", action === "confirm" ? { amount_vnd: order.amount_vnd } : { note: note.trim() || null }));
+      await Promise.all([
+        client.invalidateQueries({ queryKey: keys.adminPayments }),
+        client.invalidateQueries({ queryKey: keys.admin }),
+      ]);
+      toast.success(p.refreshed(statusLabel(result.status)));
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(null);
+      setReviewing(null);
+      setNote("");
+    }
+  }
+
   const columns: Column<AdminPayment>[] = [
     { key: "order", header: p.columns.order, className: "font-mono text-xs", cell: (o) => o.reference },
     { key: "user", header: p.columns.user, className: "max-w-[200px]",
@@ -73,7 +109,9 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
     { key: "plan", header: p.columns.plan, className: "whitespace-nowrap", cell: (o) => o.plan_code.toUpperCase() },
     { key: "amount", header: p.columns.amount, className: "whitespace-nowrap text-right tabular-nums",
       cell: (o) => formatMoney(o.amount_vnd) },
-    { key: "status", header: p.columns.status, className: "whitespace-nowrap", cell: (o) => <StatusBadge status={o.status} label={statusLabel(o.status)} /> },
+    { key: "status", header: p.columns.status, className: "whitespace-nowrap", cell: (o) => awaiting(o)
+      ? <StatusBadge status="needs_attention" label={p.awaitingConfirmation} />
+      : <StatusBadge status={o.status} label={statusLabel(o.status)} /> },
     { key: "created", header: p.columns.created, className: "whitespace-nowrap text-muted-foreground",
       cell: (o) => formatDateTime(o.created_at) },
     { key: "paid", header: p.columns.paid, className: "whitespace-nowrap text-muted-foreground",
@@ -90,12 +128,25 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => setViewing(o)}>{p.view}</DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={Boolean(busy) || o.status === "paid" || o.status === "paid_unapplied"}
-              onClick={() => void refresh(o)}
-            >
-              {p.refresh}
-            </DropdownMenuItem>
+            {o.provider === "bank_qr" ? (
+              <>
+                <DropdownMenuItem disabled={Boolean(busy) || o.status === "paid" || o.status === "paid_unapplied"}
+                                  onClick={() => setReviewing({ order: o, action: "confirm" })}>
+                  {p.confirmReceived}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={Boolean(busy) || o.status !== "pending"} className="text-destructive"
+                                  onClick={() => setReviewing({ order: o, action: "reject" })}>
+                  {p.rejectTransfer}
+                </DropdownMenuItem>
+              </>
+            ) : (
+              <DropdownMenuItem
+                disabled={Boolean(busy) || o.status === "paid" || o.status === "paid_unapplied"}
+                onClick={() => void refresh(o)}
+              >
+                {p.refresh}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       ) },
@@ -131,7 +182,7 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
               />
             </div>
             <FilterSelect value={provider} onChange={filtered(setProvider)} all={p.allProviders}
-                          options={(["payos", "onepay"] as const).map((v) => [v, providerLabel(v)])} />
+                          options={(["payos", "bank_qr", "onepay"] as const).map((v) => [v, providerLabel(v)])} />
             <FilterSelect value={status} onChange={filtered(setStatus)} all={p.allStatuses}
                           options={STATUSES.map((v) => [v, statusLabel(v)])} />
             <div className="flex flex-wrap gap-1.5 text-[11px]">
@@ -173,10 +224,38 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
               <Detail label={p.columns.created}>{formatDateTime(viewing.created_at)}</Detail>
               <Detail label={p.columns.paid}>{viewing.paid_at ? formatDateTime(viewing.paid_at) : "—"}</Detail>
               <Detail label={p.columns.reference}>{viewing.provider_reference ?? "—"}</Detail>
+              {viewing.provider === "bank_qr" && (
+                <Detail label={p.reportedAt}>{viewing.transfer_reported_at ? formatDateTime(viewing.transfer_reported_at) : "—"}</Detail>
+              )}
             </dl>
           )}
         </DialogContent>
       </Dialog>
+      <AlertDialog open={reviewing !== null} onOpenChange={(open) => !open && !busy && setReviewing(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{reviewing?.action === "confirm" ? p.confirmTitle : p.rejectTitle}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {reviewing && (reviewing.action === "confirm"
+                ? p.confirmText(formatMoney(reviewing.order.amount_vnd), reviewing.order.transfer_content ?? reviewing.order.reference,
+                                reviewing.order.owner_email)
+                : p.rejectText(reviewing.order.transfer_content ?? reviewing.order.reference))}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {reviewing?.action === "reject" && (
+            <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder={p.rejectNote}
+                   aria-label={p.rejectNote} className="h-8 bg-surface" />
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(busy)}>{t.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction disabled={Boolean(busy)} onClick={(event) => { event.preventDefault(); void review(); }}
+                               className={reviewing?.action === "reject" ? "bg-destructive text-white hover:bg-destructive/90" : ""}>
+              {busy && <Loader2 className="size-3.5 animate-spin" />}
+              {reviewing?.action === "confirm" ? p.confirmReceived : p.rejectTransfer}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

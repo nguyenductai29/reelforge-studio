@@ -20,6 +20,8 @@
 
 > Phase 19 lets a system admin configure payOS (VietQR) and OnePAY (cards) from the web UI. It adds a central configuration resolver (admin first, bootstrap/env as fallback), credentials encrypted at rest and never returned, an enabled switch that never strands pending orders, OnePAY Sandbox/Production/Advanced with a production confirmation, an audit trail and a per-gateway live checklist, with migration 0018; see [Phase 19 changes](#phase-19-changes) and [PAYMENTS.md](PAYMENTS.md). Offline tests only.
 
+> Phase 20 replaces `.env.runtime` as the normal configuration: production needs only the database URL and a master key file; AI keys, OAuth apps, storage, runtime limits, credit prices and notification timing are edited in Admin → System settings, stored in PostgreSQL (secrets encrypted), and read by the API and every worker without restarts, with the environment as a fallback. It also adds manual VietQR (a NAPAS QR per order, confirmed by a system admin through the shared settlement path), with migration 0019; see [Phase 20 changes](#phase-20-changes) and [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md). Offline tests only.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -604,6 +606,40 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
   - `Phase19FrontendTest` in `test_product_audit.py`;
   - `test_phase18.py` updated for the new response shape.
 - **Not verified live:** saving real credentials, the OnePAY sandbox endpoints, and real payments.
+
+### Phase 20 changes
+
+- **Master key** (`app/master_key.py`):
+  - Resolution order: `REELFORGE_MASTER_KEY_FILE` → `/etc/reelforge/master.key` → `instance/master.key` → legacy `REELFORGE_TOKEN_ENCRYPTION_KEY`.
+  - `init` copies a legacy key, refuses over encrypted data, and generates only on a fresh database; `status`.
+  - `secret_box`, Google/TikTok/Facebook OAuth and upload sessions all use it.
+- **Central configuration** (`app/system_config.py`):
+  - A registry of 50+ settings (plain or secret, each with its legacy variable, default and range).
+  - `env(NAME)` replaces `os.environ.get(NAME)` at every call site (providers, workers, render, storage, notifications, OAuth): the admin's stored value, else the environment, else the default.
+  - A disabled AI provider resolves to no key.
+  - A 15-second per-process cache, invalidated on save.
+  - Database reads only after `activate()`: the API in its lifespan and every worker (both through `start_process`), and the maintenance CLI.
+  - `save` validates everything first; the audit records names only.
+- **OAuth redirects** are derived from `frontend_origin` unless overridden.
+- **Checks** (`app/config_checks.py`): AI "test connection" makes one free listing request (OpenAI, Anthropic, Gemini, Replicate, Runway; local only for fal and Runware); storage-root validation (absolute, existing, writable, not a link).
+- **Manual VietQR:**
+  - `app/bank_qr.py`: a NAPAS/EMVCo payload with CRC-16, drawn locally with `segno`, a bank BIN list.
+  - `BankQRProvider`; `for_method("vietqr")` follows the VietQR mode.
+  - Checkout returns the transfer; the buyer reports it; an admin confirms (exact amount, `apply_paid`, once) or rejects.
+  - A `payment.transfer_reported` notification; `payment_order_events`.
+- **Readiness:** a security section (master key), manual VietQR, and AI sources.
+- **Frontend:**
+  - Admin → **Cài đặt hệ thống** (8 sections, write-only secrets, source badges, test buttons, root-change confirmation).
+  - The VietQR tab with Manual / payOS modes and a live QR preview.
+  - Admin payments review (Chờ xác nhận, confirm and reject dialogs).
+  - The Billing QR dialog with "Tôi đã chuyển khoản".
+- **Schema:** migration `0019_system_configuration`, tested from 0018 and back.
+- **Tests:**
+  - `test_phase20.py`: master key, VietQR payload, inactive configuration, the central configuration program, the manual VietQR program.
+  - `test_phase20_migration.py`.
+  - `Phase20FrontendTest`.
+  - Earlier tests updated where shapes intentionally changed.
+- **Not verified live:** scanning the QR with real banking apps, the AI test endpoints with real keys, and moving a production key into the file.
 
 ### Configuration sources
 

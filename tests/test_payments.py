@@ -120,7 +120,7 @@ overview = client.get("/api/billing").json()
 assert overview["methods"] == [{"id": "card", "provider": "onepay"}] and overview["payos_ready"] is False, overview
 assert client.post("/api/billing/checkout", json={"plan_code": "pro"}).status_code == 503  # VietQR is the default
 providers = client.get("/api/admin/payment-providers").json()["providers"]
-assert {p["provider"]: p["configured"] for p in providers} == {"payos": False, "onepay": True}
+assert {p["provider"]: p["configured"] for p in providers} == {"payos": False, "bank_qr": False, "onepay": True}
 assert HASH not in client.get("/api/admin/payment-providers").text and "op123456" not in client.get("/api/admin").text
 
 # Card checkout: a signed OnePAY URL for the exact amount; nothing changes until OnePAY confirms.

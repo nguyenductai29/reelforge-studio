@@ -15,6 +15,7 @@ from app.providers.image.base import (ASPECT_RATIOS, QUALITIES, GeneratedImage, 
                                       ImageGenerationProvider, ImageModel, ImageProviderError, ImageRequest,
                                       ImageResult, ImageStatus, ImageSubmission, validate_image_request)
 from app.providers.image.runway import RunwayImageProvider
+from app import system_config
 
 IMAGE_TASK = "image"
 
@@ -44,11 +45,11 @@ def image_provider_config_issue(provider_name: str) -> tuple[str, str] | None:
     spec = IMAGE_PROVIDERS.get(provider_name)
     if spec is None:
         return "unsupported_provider", "Provider ảnh này chưa được hỗ trợ."
-    if not os.environ.get(spec.key_env, "").strip():
+    if not system_config.env(spec.key_env).strip():
         return "missing_key", f"Server cần {spec.key_env}."
     if provider_name == "runway":
         try:
-            runway_video.validate_output_hosts(os.environ.get("RUNWAY_OUTPUT_HOSTS"))
+            runway_video.validate_output_hosts(system_config.env("RUNWAY_OUTPUT_HOSTS"))
         except runway_video.ProviderError:
             return "invalid_config", "Server cần RUNWAY_OUTPUT_HOSTS gồm các hostname media Runway được phép tải."
     return None
@@ -58,7 +59,7 @@ def create_image_provider(provider_name: str, **kwargs) -> ImageGenerationProvid
     spec = IMAGE_PROVIDERS.get(provider_name)
     if spec is None:
         raise ImageProviderError("unsupported_provider", f"Unsupported image provider {provider_name!r}")
-    key = os.environ.get(spec.key_env, "")
+    key = system_config.env(spec.key_env)
     if not key.strip():
         raise ImageProviderError("missing_key", f"{spec.key_env} is not set")
     return spec.provider_type(key, **kwargs)
@@ -67,7 +68,7 @@ def create_image_provider(provider_name: str, **kwargs) -> ImageGenerationProvid
 def image_credit_cost() -> int:
     """Credits held for, and charged by, one generated image (``IMAGE_CREDITS_PER_GENERATION``, default 2)."""
     try:
-        amount = int(os.environ.get("IMAGE_CREDITS_PER_GENERATION", "").strip() or "2")
+        amount = int(system_config.env("IMAGE_CREDITS_PER_GENERATION").strip() or "2")
     except ValueError as exc:
         raise RuntimeError("IMAGE_CREDITS_PER_GENERATION must be a positive integer") from exc
     if not 1 <= amount <= 100000:

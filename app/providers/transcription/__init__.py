@@ -10,6 +10,7 @@ import os
 from app.providers.transcription.base import (TranscriptionModel, TranscriptionProvider, TranscriptionProviderError,
                                               TranscriptResult, TranscriptSegment)
 from app.providers.transcription.openai import OpenAITranscriptionProvider
+from app import system_config
 
 TRANSCRIPTION_TASK = "transcription"
 
@@ -36,7 +37,7 @@ def transcription_config_issue(provider_name: str) -> tuple[str, str] | None:
     spec = TRANSCRIPTION_PROVIDERS.get(provider_name)
     if spec is None:
         return "unsupported_provider", "Provider phiên âm này chưa được hỗ trợ."
-    if not os.environ.get(spec.key_env, "").strip():
+    if not system_config.env(spec.key_env).strip():
         return "missing_key", f"Server cần {spec.key_env}."
     return None
 
@@ -45,7 +46,7 @@ def create_transcription_provider(provider_name: str, **kwargs) -> Transcription
     spec = TRANSCRIPTION_PROVIDERS.get(provider_name)
     if spec is None:
         raise TranscriptionProviderError("unsupported_provider", f"Unsupported transcription provider {provider_name!r}")
-    key = os.environ.get(spec.key_env, "")
+    key = system_config.env(spec.key_env)
     if not key.strip():
         raise TranscriptionProviderError("missing_key", f"{spec.key_env} is not set")
     return spec.provider_type(key, **kwargs)
@@ -54,7 +55,7 @@ def create_transcription_provider(provider_name: str, **kwargs) -> Transcription
 def transcription_credit_cost() -> int:
     """Credits for one transcription (``TRANSCRIPTION_CREDITS_PER_JOB``, default 2)."""
     try:
-        amount = int(os.environ.get("TRANSCRIPTION_CREDITS_PER_JOB", "").strip() or "2")
+        amount = int(system_config.env("TRANSCRIPTION_CREDITS_PER_JOB").strip() or "2")
     except ValueError as exc:
         raise RuntimeError("TRANSCRIPTION_CREDITS_PER_JOB must be a positive integer") from exc
     if not 1 <= amount <= 100000:

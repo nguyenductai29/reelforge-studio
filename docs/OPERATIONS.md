@@ -107,6 +107,23 @@ Phase 18 adds two tabs. All eight tabs (Người dùng, Studio & credits, Cấu 
 
 List responses are `{items, total, limit, offset}` (`limit` 20 by default, at most 100). `q` is matched with `LIKE` after escaping `%`, `_` and `\`, so it is always a literal substring. Account creation (`POST /api/admin/accounts`), locking (`PUT /api/admin/users/{id}`; an admin cannot lock themselves or the last active admin), plan and status changes and credit adjustments (an append-only ledger entry with a reason) are unchanged. Migration 0015 adds indexes on `workspaces.owner_id` and on `payment_orders (created_at)` and `(provider, status)` for these pages.
 
+## System settings (Phase 20)
+
+**Admin → Cài đặt hệ thống** holds what the server used to read from `.env.runtime`: AI provider keys, OAuth apps, storage, runtime limits, credit prices and notification timing. Values live in PostgreSQL, with secrets encrypted by the master key. The API applies a change at once; workers pick it up within 15 seconds, with no restart.
+
+| Endpoint (system admins) | Notes |
+| --- | --- |
+| `GET /api/admin/system-config` | Every setting's source and value (secrets: configured or not), the master key status, redirect URLs, storage summary |
+| `PUT /api/admin/system-config/{section}` | `{values, secrets, reset, confirm_root_change}`; audited by setting name |
+| `POST /api/admin/system-config/ai/{provider}/test` | One free listing request with the stored key |
+| `POST /api/admin/system-config/storage/check` | Whether a proposed media root is usable |
+
+**Media root.** Changing it never moves files; the UI asks for confirmation while files exist.
+
+**Master key.** The key file is checked by readiness (Kiểm định → Bảo mật). It warns while the legacy variable is used, when the file is readable by others, and when a remaining legacy variable differs from the file. See [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md).
+
+**Manual VietQR (Phase 20).** Transfers that buyers reported appear in Admin → Thanh toán under **Chờ xác nhận**. The header counts them, and every admin gets a notification. **Xác nhận đã nhận tiền** settles the order through the shared path; **Từ chối** fails it. `GET /api/admin/payments/{id}/events` lists who reported, confirmed or rejected. See [PAYMENTS.md](PAYMENTS.md#vietqr-modes-phase-20).
+
 ## Notifications and support (Phase 18)
 
 - **Bell.** It tells users about finished, failed or blocked runs, publishing, payments, credits, storage and support replies, live over Server-Sent Events. It falls back to polling every 30 s.

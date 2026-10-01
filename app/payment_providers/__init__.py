@@ -2,7 +2,8 @@
 
 | Method shown to buyers | Provider | Evidence that an order is paid |
 | --- | --- | --- |
-| ``vietqr`` (VietQR / bank transfer) | ``payos`` | the signed payOS webhook; the payOS Merchant API |
+| ``vietqr`` (VietQR / bank transfer) | ``payos`` (automatic) | the signed payOS webhook; the payOS Merchant API |
+| ``vietqr`` (VietQR / bank transfer) | ``bank_qr`` (manual, Phase 20) | a system admin's confirmation that the money arrived |
 | ``card`` (credit / debit card) | ``onepay`` | the signed OnePAY IPN; OnePAY QueryDR (a signed browser return is confirmed with QueryDR) |
 
 Every provider turns what it learns into ``Evidence``. ``payments.settle`` then
@@ -19,7 +20,9 @@ import httpx
 
 from app.payment_providers import onepay
 
-METHODS = {"vietqr": "payos", "card": "onepay"}
+# Which method each provider serves. VietQR is payOS or the manual bank QR, by the admin's VietQR mode.
+PROVIDER_METHOD = {"payos": "vietqr", "bank_qr": "vietqr", "onepay": "card"}
+METHOD_ORDER = ("vietqr", "card")
 STATUSES = frozenset({"paid", "pending", "failed", "cancelled", "expired"})
 
 
@@ -146,17 +149,44 @@ class OnePayProvider(PaymentProvider):
             return False
 
 
+class BankQRProvider(PaymentProvider):
+    """Manual VietQR (``app/bank_qr.py``): the buyer transfers to the studio's bank account; an admin confirms."""
+
+    name, method = "bank_qr", "vietqr"
+
+    def configured(self) -> bool:
+        from app import bank_qr
+        return bank_qr.configured()
+
+    def enabled(self) -> bool:
+        from app import system_config
+        return bool(system_config.get("payments.bank_qr.enabled"))
+
+    def lookup(self, order_code, amount_vnd):
+        raise ProviderMismatch("Manual transfers are confirmed by an administrator")
+
+
+def vietqr_mode() -> str:
+    """``manual`` (bank QR confirmed by an admin) or ``payos`` (automatic, the default)."""
+    from app import system_config
+    return "manual" if system_config.get("payments.vietqr_mode") == "manual" else "payos"
+
+
 def _evidence(result: onepay.OnePayResult) -> Evidence:
     if not result.merch_txn_ref.isdigit():
         raise ProviderMismatch("Unknown order reference")
     return Evidence(int(result.merch_txn_ref), result.status, result.amount_vnd, result.transaction_no)
 
 
-PROVIDERS: dict[str, PaymentProvider] = {"payos": PayOSProvider(), "onepay": OnePayProvider()}
+PROVIDERS: dict[str, PaymentProvider] = {"payos": PayOSProvider(), "bank_qr": BankQRProvider(),
+                                         "onepay": OnePayProvider()}
 
 
 def for_method(method: str) -> PaymentProvider:
-    return PROVIDERS[METHODS[method]]
+    """The provider that takes new checkouts for ``method`` now."""
+    if method == "vietqr":
+        return PROVIDERS["bank_qr" if vietqr_mode() == "manual" else "payos"]
+    return PROVIDERS["onepay"]
 
 
 def provider(name: str) -> PaymentProvider | None:
@@ -169,11 +199,15 @@ def readiness() -> list[dict]:
     out = []
     for item in PROVIDERS.values():
         configured, enabled = item.configured(), item.enabled()
+        active = for_method(item.method) is item
+        source = payment_config.get(item.name).source if item.name in payment_config.PROVIDERS else (
+            "admin" if configured else "missing")
         out.append({"provider": item.name, "method": item.method, "configured": configured, "enabled": enabled,
-                    "available": configured and enabled, "source": payment_config.get(item.name).source})
+                    "active": active, "available": configured and enabled and active, "source": source})
     return out
 
 
 def available_methods() -> list[dict]:
     """The payment methods a buyer may choose: enabled providers with valid credentials only."""
-    return [{"id": item.method, "provider": item.name} for item in PROVIDERS.values() if item.offered()]
+    return [{"id": method, "provider": item.name} for method in METHOD_ORDER
+            if (item := for_method(method)).offered()]

@@ -35,8 +35,10 @@ import httpx
 from sqlalchemy import DateTime, ForeignKey, String, Text, delete, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from app import master_key
 from app.models import Base, Membership
 from app.publishers.facebook import GRAPH_URL, API_VERSION
+from app import system_config
 
 CHANNELS = ("tiktok", "facebook")
 STATE_LIFETIME = timedelta(minutes=10)
@@ -91,8 +93,9 @@ class ChannelConfig:
         if channel not in CHANNELS:
             raise ChannelOAuthError("unsupported_channel", "Unsupported channel")
         client_id, secret, redirect = _ENV[channel]
-        return cls(channel, os.environ.get(client_id, ""), os.environ.get(secret, ""),
-                   os.environ.get(redirect, ""), os.environ.get("REELFORGE_TOKEN_ENCRYPTION_KEY", ""))
+        # Admin values first, then the legacy variables; the redirect is derived from frontend_origin when unset.
+        return cls(channel, system_config.env(client_id), system_config.env(secret),
+                   system_config.redirect_uri(channel), master_key.load())
 
 
 def configured(channel: str) -> bool:
