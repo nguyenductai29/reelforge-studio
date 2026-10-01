@@ -84,11 +84,25 @@ class ExecutionContext:
     def step_for(self, node: Mapping[str, Any]) -> WorkflowRunStep:
         return self.steps[node["id"]]
 
+    @cached_property
+    def default_models(self) -> dict[str, str]:
+        """The workspace's preferred AI tool per task (``default_models`` setting), if any."""
+        value = self.workspace_settings.get("default_models")
+        return {task: tool_id for task, tool_id in value.items() if isinstance(tool_id, str)} \
+            if isinstance(value, dict) else {}
+
     def find_tool(self, task: str, providers, tool_id: str | None = None) -> AITool | None:
-        """The first enabled tool for ``task`` with a supported provider, or the one with ``tool_id``."""
-        return next((tool for tool in self.enabled_tools
-                     if tool.task == task and tool.provider in providers
-                     and (tool_id is None or tool.id == tool_id)), None)
+        """The enabled tool with ``tool_id``; else the workspace default for ``task``; else the first enabled one.
+
+        A step's own choice always wins. The workspace default is used only while
+        it is enabled and supported; otherwise the first compatible tool is used.
+        """
+        candidates = [tool for tool in self.enabled_tools if tool.task == task and tool.provider in providers]
+        if tool_id is not None:
+            return next((tool for tool in candidates if tool.id == tool_id), None)
+        preferred = self.default_models.get(task)
+        return next((tool for tool in candidates if tool.id == preferred), None) or \
+            (candidates[0] if candidates else None)
 
 
 @dataclass(frozen=True)

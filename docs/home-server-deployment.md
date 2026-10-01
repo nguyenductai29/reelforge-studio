@@ -778,6 +778,26 @@ Rendering is local and free by default (`RENDER_CREDITS_PER_JOB=0`). `RENDER_TIM
 
 Subtitles need no worker: the Subtitle step writes its SRT/VTT file while the run advances.
 
+The render worker also cuts Movie Recap source clips (`clips.extract` jobs, `docs/MOVIE_RECAP.md`), with the same FFmpeg and temporary folder.
+
+### Source worker
+
+The source worker fetches web pages for URL Source steps and transcribes audio and video for Transcript steps (`docs/CONTENT_SOURCES.md`). Transcription needs FFmpeg (section 1) and `OPENAI_API_KEY`. Create `/etc/systemd/system/reelforge-source-worker.service` with the same contents as the video worker, changing only:
+
+```ini
+Description=ReelForge Studio Source Worker
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.source_worker
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable reelforge-source-worker
+sudo systemctl start reelforge-source-worker
+journalctl -u reelforge-source-worker -f
+```
+
+Optional variables: `TRANSCRIPTION_CREDITS_PER_JOB` (default 2) and `TRANSCRIPTION_MAX_SECONDS` (default 10800). Transcription audio is extracted to `<media>/.source-tmp/<job_id>` and removed after each job. The worker reaches only public `https://` pages; it refuses private, local and metadata addresses (see `docs/CONTENT_SOURCES.md`), so it needs no access to the local network.
+
 ---
 
 ## 13. YouTube worker systemd service
@@ -839,6 +859,40 @@ sudo systemctl start reelforge-youtube-worker
 The API and YouTube worker need the same Google OAuth configuration and persistent `REELFORGE_TOKEN_ENCRYPTION_KEY`.
 
 Back up that encryption key securely. Losing it makes stored encrypted OAuth tokens and resumable upload sessions unreadable.
+
+### Social worker (TikTok and Facebook)
+
+The social worker uploads approved videos to TikTok (as inbox drafts) and Facebook Page Reels through their official APIs (`docs/MULTI_PLATFORM_PUBLISHING.md`). It needs, in the same runtime file as the API:
+
+- `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_REDIRECT_URI` (`https://<your frontend>/channels/callback/tiktok`);
+- `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `FACEBOOK_REDIRECT_URI` (`https://<your frontend>/channels/callback/facebook`);
+- the same `REELFORGE_TOKEN_ENCRYPTION_KEY`.
+
+Configure only the platforms you use; the Channels page shows the others as needing server configuration. Create `/etc/systemd/system/reelforge-social-worker.service` with the same contents as the YouTube worker, changing only:
+
+```ini
+Description=ReelForge Studio Social Worker
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.social_worker
+```
+
+### Scheduler worker
+
+The scheduler queues scheduled publications when their time comes (`docs/SCHEDULING.md`). It is small and safe to restart. Create `/etc/systemd/system/reelforge-scheduler-worker.service` with the same contents as the YouTube worker, changing only:
+
+```ini
+Description=ReelForge Studio Scheduler
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.scheduler_worker
+```
+
+Enable both:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable reelforge-social-worker reelforge-scheduler-worker
+sudo systemctl start reelforge-social-worker reelforge-scheduler-worker
+```
+
+Apply migration `0014_channels_scheduling_ops` with `python -m alembic upgrade head` (`deploy.sh` does this) before starting them. **Admin → Operations** shows every worker's heartbeat; a worker that has never started shows as missing.
 
 ---
 
@@ -1010,23 +1064,11 @@ echo "== Restart services =="
 sudo systemctl restart reelforge-api
 sudo systemctl restart reelforge-frontend
 
-if systemctl is-enabled --quiet reelforge-video-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-video-worker
-fi
-
-if systemctl is-enabled --quiet reelforge-text-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-text-worker
-fi
-
-for worker in image voice render; do
+for worker in text image video voice render source youtube social scheduler; do
   if systemctl is-enabled --quiet "reelforge-$worker-worker" 2>/dev/null; then
     sudo systemctl restart "reelforge-$worker-worker"
   fi
 done
-
-if systemctl is-enabled --quiet reelforge-youtube-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-youtube-worker
-fi
 
 echo "== Health checks =="
 curl -fsS http://127.0.0.1:8000/openapi.json >/dev/null
@@ -1095,6 +1137,20 @@ sudo systemctl restart reelforge-youtube-worker
 journalctl -u reelforge-youtube-worker -f
 ```
 
+Source, social and scheduler workers:
+
+```bash
+sudo systemctl restart reelforge-source-worker reelforge-social-worker reelforge-scheduler-worker
+journalctl -u reelforge-social-worker -f
+```
+
+Media cleanup (dry run first; see `docs/OPERATIONS.md`):
+
+```bash
+cd /home/tai/apps/reelforge-studio && .venv/bin/python -m app.media_maintenance
+.venv/bin/python -m app.media_maintenance --apply
+```
+
 All ReelForge services:
 
 ```bash
@@ -1133,6 +1189,14 @@ If YouTube worker is enabled:
 ```bash
 systemctl is-active reelforge-youtube-worker
 ```
+
+If the source, social or scheduler workers are enabled:
+
+```bash
+systemctl is-active reelforge-source-worker reelforge-social-worker reelforge-scheduler-worker
+```
+
+**Admin → Operations** should then show every enabled worker as running within a minute.
 
 ---
 

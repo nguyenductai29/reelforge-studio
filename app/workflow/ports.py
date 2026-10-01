@@ -23,10 +23,17 @@ SUBTITLE_ASSET = "subtitle_asset"
 PUBLICATION = "publication"
 # {"title", "description", "tags"} for publishing, from the Metadata node (Phase 9).
 PUBLISH_METADATA = "publish_metadata"
+# {"source_type", "title", "text", "language", "asset_id", "source_url", "segments", "metadata"} (Phase 10):
+# existing content to repurpose; a transcript keeps its timed segments [{"start", "end", "text"}].
+SOURCE = "source"
+# [{"scene_index", "source_asset_id", "start", "end", "confidence", "reason", "text"}] (Phase 11).
+SOURCE_CLIPS = "source_clips"
+# {"title", "characters", "plot_points", "acts", "important_moments", "themes"} (Phase 11).
+STORY = "story"
 DATA_TYPES = (BRIEF, TEXT, SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SUBTITLE_ASSET, PUBLICATION,
-              PUBLISH_METADATA)
+              PUBLISH_METADATA, SOURCE, SOURCE_CLIPS, STORY)
 TEXT_TYPES = frozenset({BRIEF, TEXT})
-LIST_TYPES = frozenset({SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS})
+LIST_TYPES = frozenset({SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SOURCE_CLIPS})
 
 # Context fallbacks an input can declare.
 PROJECT_TOPIC = "project_topic"

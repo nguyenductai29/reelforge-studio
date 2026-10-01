@@ -14,6 +14,7 @@ import uuid
 
 from sqlalchemy import select
 
+from app import heartbeat
 from app import jobs, usage
 from app.logs import log_event, payload_summary
 from app.providers.errors import ProviderError, error_category
@@ -222,6 +223,7 @@ def main():
     start_process("text_worker")
     while True:
         worked = run_one()
+        heartbeat.beat("text_worker")
         if args.once:
             return
         if not worked:

@@ -31,7 +31,10 @@ from app.workflow.results import JobRequest
 ROOT = Path(__file__).resolve().parents[1]
 TEXT_TYPES = {"ai_writer", "summarize", "rewrite", "translate", "hook", "title", "cta", "metadata"}
 KNOWN_TYPES = {"idea", "script", "scenes", "image", "video", "assets", "voice", "music", "subtitle", "render",
-               "review", "publish"} | TEXT_TYPES
+               "review", "publish"} | TEXT_TYPES | {
+    # Phase 10 sources and Phase 11 Movie Recap.
+    "source_text", "source_url", "source_media", "transcribe", "story_analysis", "recap_script", "match_scenes",
+    "extract_clips"}
 VIDEO_ENV = {"FAL_KEY": "test-key", "VIDEO_CREDITS_PER_CLIP": "10"}
 
 

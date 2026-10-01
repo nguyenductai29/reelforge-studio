@@ -9,9 +9,14 @@ durable YouTube upload (app/publications.py, app/youtube_worker.py).
 Metadata, in order: this step's own settings (values the user typed are never
 replaced), then a connected Metadata step, then connected title/description
 text, then the project title. Everything is fitted to YouTube's limits.
+
+``platforms`` (Phase 12) prepares every channel the same way: YouTube's
+values, a TikTok caption and a Facebook description, each from this step's own
+settings first, then a connected Metadata step, then YouTube's values. Nothing
+is uploaded until the owner publishes from the Publishing page.
 """
 from app.models import WorkflowRunStep
-from app.publications import final_video, fit_metadata
+from app.publications import final_video, fit_metadata, fit_social, platform_metadata
 from app.publishers.youtube import PRIVACY_STATUSES
 from app.workflow.config import SELECT, TEXT as TEXT_FIELD, ConfigField
 from app.workflow.nodes.base import NodeHandler
@@ -41,6 +46,10 @@ class PublishNodeHandler(NodeHandler):
         ConfigField("description", TEXT_FIELD, max_length=5000, multiline=True, label="publish_description",
                     code="invalid_description"),
         ConfigField("tags", TEXT_FIELD, max_length=500, label="publish_tags", code="invalid_tags"),
+        ConfigField("tiktok_caption", TEXT_FIELD, max_length=2200, multiline=True, advanced=True,
+                    code="invalid_description"),
+        ConfigField("facebook_description", TEXT_FIELD, max_length=2000, multiline=True, advanced=True,
+                    code="invalid_description"),
     )
 
     def execute(self, context, node, inputs):
@@ -67,11 +76,25 @@ class PublishNodeHandler(NodeHandler):
             values[key], sources[key] = value, source
         metadata = {**fit_metadata(values["title"], values["description"], values["tags"]),
                     "privacy_status": config["privacy_status"]}
+        suggested = prepared.get("platforms") if isinstance(prepared.get("platforms"), dict) else {}
+        platforms = platform_metadata(metadata)
+        for channel, key in (("tiktok", "tiktok_caption"), ("facebook", "facebook_description")):
+            if (config[key] or "").strip():
+                # A value the owner typed wins over anything generated.
+                platforms[channel] = fit_social(channel, metadata["title"], config[key], metadata["tags"])
+                sources[channel] = "setting"
+            elif isinstance(suggested.get(channel), dict):
+                platforms[channel] = fit_social(channel, metadata["title"], suggested[channel].get("description"),
+                                                metadata["tags"])
+                sources[channel] = "metadata"
+            else:
+                sources[channel] = "youtube"
         source_step = context.db.get(WorkflowRunStep, asset.step_id)
         video = {"asset_id": asset.id, "filename": asset.filename,
                  "final": bool(source_step and source_step.node_type == "render")}
         return NodeExecutionResult.completed(READY_DETAIL, {"channel": "youtube", "video": video,
-                                                            "metadata": metadata, "sources": sources})
+                                                            "metadata": metadata, "platforms": platforms,
+                                                            "sources": sources})
 
     def readiness(self, context, node):
         return NodeReadiness("configured", HANDOFF_DETAIL)

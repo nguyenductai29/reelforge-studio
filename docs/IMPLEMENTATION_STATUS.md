@@ -10,6 +10,8 @@
 
 > Phase 9 turns these steps into one creator workflow and completes YouTube publishing: starter templates, a Metadata step, the Publish hand-off, run summaries with credits, and publication visibility and tags (migration 0013); see [Phase 9 changes](#phase-9-changes) and [SOCIAL_VIDEO_WORKFLOW.md](SOCIAL_VIDEO_WORKFLOW.md). Offline tests only; no paid call and no real upload.
 
+> Phases 10–13 add content sources and transcription, Movie Recap with source-clip extraction, TikTok and Facebook publishing through their official APIs, scheduled publishing, and operations tooling (default models, worker heartbeats, admin job views, a stuck-work audit, storage and cleanup), with migration 0014; see [Phase 10, 11, 12 and 13 changes](#phase-10-11-12-and-13-changes), [CONTENT_SOURCES.md](CONTENT_SOURCES.md), [REPURPOSING.md](REPURPOSING.md), [MOVIE_RECAP.md](MOVIE_RECAP.md), [MULTI_PLATFORM_PUBLISHING.md](MULTI_PLATFORM_PUBLISHING.md), [SCHEDULING.md](SCHEDULING.md) and [OPERATIONS.md](OPERATIONS.md). Offline tests only: no paid call, no real TikTok, Facebook or YouTube post, no real FFmpeg run.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -25,7 +27,7 @@ Each item uses the same fields:
 
 | Component | Entry point | Role |
 | --- | --- | --- |
-| API | `app/main.py` (FastAPI, 49 `/api` routes) | Auth, workspace scoping, projects, workflows, runs, assets, AI tool catalog, settings, billing, admin reconciliation, YouTube OAuth and publications. Run endpoints delegate to the workflow executor. On import, it checks that the DB is migrated and seeds settings. |
+| API | `app/main.py` (FastAPI, 71 `/api` routes) | Auth, workspace scoping, projects, workflows, runs, assets, AI tool catalog, settings and default models, storage, billing, admin reconciliation and operations, YouTube/TikTok/Facebook OAuth, channels, publications and scheduling. Run endpoints delegate to the workflow executor. On import, it checks that the DB is migrated and seeds settings. |
 | Database bootstrap | `app/db.py`, `instance/bootstrap.json` | Builds the SQLAlchemy engine from `database_url` (PostgreSQL/psycopg in production, SQLite in tests). |
 | Durable queue | `app/jobs.py`, `workflow_jobs` table | Idempotent enqueue by `logical_key` and lease-fenced claim, complete and fail. Uses `FOR UPDATE SKIP LOCKED` on PostgreSQL and an atomic `UPDATE … RETURNING` on SQLite. |
 | Workflow engine | `app/workflow/` (`executor.py`, `registry.py`, `context.py`, `ports.py`, `config.py`, `results.py`, `graph.py`, `nodes/`) | Evaluates a run's graph in topological order. The registry maps each node type to one handler, which declares typed input and output ports and its settings. Before each handler runs, the executor checks the node's settings and resolves its inputs from edges, config and project context; the handler returns a standard result. Long work is queued as a durable job (F10, F12, F13). |
@@ -34,30 +36,36 @@ Each item uses the same fields:
 | Child-job engine | `app/media_jobs.py`, `app/workflow/nodes/media.py` | One paid job per image, scene clip or narration, each with its own credit references, and step settlement once every job has finished (Phases 4–6). Providers that answer with the file itself (text-to-speech) skip polling. |
 | Voice worker | `app/voice_worker.py` (`python -m app.voice_worker`), `app/providers/voice/`, `app/audio_files.py` | Claims `voice:*` jobs (one per narration), calls Gemini TTS and stores checked WAV assets (Phase 6). |
 | Subtitles | `app/subtitles.py`, `app/workflow/nodes/subtitle.py` | Deterministic cue timing and SRT/WebVTT files, written while the run advances; no worker (Phase 7). |
-| Render worker | `app/render_worker.py` (`python -m app.render_worker`), `app/render.py` | Claims `render:*` jobs and runs system FFmpeg without a shell in a private folder, storing the final MP4 (Phase 8). |
+| Render worker | `app/render_worker.py` (`python -m app.render_worker`), `app/render.py` | Claims `render:*` jobs and runs system FFmpeg without a shell in a private folder, storing the final MP4 (Phase 8). Also cuts Movie Recap source clips (`clips.extract`, Phase 11). |
+| Source worker | `app/source_worker.py` (`python -m app.source_worker`), `app/sources.py`, `app/providers/transcription/` | Claims `source:*` jobs: fetches public web pages with SSRF protection, and transcribes audio/video (FFmpeg audio extraction, OpenAI Whisper, timestamped segments) as a paid, reconcilable job (Phase 10). |
+| Scene matching | `app/scene_matching.py`, `app/workflow/nodes/recap.py` | Local transcript-similarity matching of recap scenes to source moments (Phase 11). |
 | Image providers | `app/providers/image/` (`base.py`, `runway.py`), `app/image_files.py` | Provider-neutral `ImageGenerationProvider`; Runway `gen4_image`; download and signature checks for image files. |
 | Video providers | `app/providers/{fal,runware,replicate,runway,dola}.py`, `app/providers/catalog.py` | One text-to-video model per adapter. Each adapter validates the request and checks provider and media URLs (SSRF guard). The catalog is the single provider map (module, client, credential) shared by the API, the video handler and the worker. |
 | Text providers | `app/providers/text/` (`base.py`, `openai.py`, `anthropic.py`, `gemini.py`) | One `TextGenerationProvider` interface; each adapter calls its vendor's HTTP API with `httpx` and returns a normalized `TextResult` (F11). |
 | Text worker | `app/text_worker.py` (`python -m app.text_worker`) | Claims `text:*` jobs, calls the provider outside any DB transaction, settles or refunds credits, and reports the step to the executor, which continues the run. |
 | YouTube worker | `app/youtube_worker.py` (`python -m app.youtube_worker`) | Claims `publish:youtube:*` jobs, refreshes OAuth tokens and runs resumable uploads (private by default; unlisted or public since Phase 9). |
-| Publishing | `app/publications.py`, `app/publishers/*` | Publication records with a channel-generic schema, plus YouTube OAuth and upload. The Facebook and TikTok adapters exist only as libraries. |
+| Social worker | `app/social_worker.py` (`python -m app.social_worker`), `app/publishers/{tiktok,facebook,channel_oauth}.py` | Claims `publish:tiktok:*` and `publish:facebook:*` jobs: TikTok inbox drafts and Facebook Page Reels, one saved step per claim (Phase 12). |
+| Scheduler worker | `app/scheduler_worker.py` (`python -m app.scheduler_worker`) | Queues scheduled publications when due, under row locks; idempotent and restart-safe (Phase 13). |
+| Worker health | `app/heartbeat.py`, `worker_heartbeats` table | Every worker reports a throttled heartbeat; admins see ok, stale, error or missing (Phase 13). |
+| Publishing | `app/publications.py`, `app/publishers/*` | One publication per run and channel (YouTube, TikTok, Facebook) with per-channel metadata validation, scheduling, cancel and reschedule, and an independent upload job per channel. |
 | Billing and credits | `app/billing.py`, `app/payments.py`, `app/usage.py` | payOS VNQR checkout, webhook and refresh reconciliation, and the credit ledger. |
-| Maintenance | `app/media_maintenance.py` | Cleans up stale `.part` downloads. Dry-run by default. |
+| Maintenance | `app/media_maintenance.py` | Cleans up stale `.part` downloads, worker temp folders and (with `--orphans`) files without an asset row; reports storage per workspace. Dry-run by default. |
 | Runtime support | `app/runtime_env.py`, `app/logs.py`, `app/provider_check.py`, `app/smoke_test.py`, `app/providers/errors.py`, `app/video_files.py` | One runtime environment file for every process, structured logs, the provider pre-flight, live smoke tests and run reports, shared error categories, and MP4 download and checks (Phase 3.6). |
 | Frontend | `frontend/` (Next.js 15, React 19, React Query, `@xyflow/react`, Radix UI, Tailwind v4) | `next.config.ts` rewrites `/api/*` to the API. UI in vi/en/ja, following the workflow-first redesign. |
 
 ### Data model
 
-Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0013.
+Stored in PostgreSQL through SQLAlchemy 2, with Alembic migrations 0001–0014.
 
 - **Tenancy:** `users`, `login_sessions`, `workspaces`, `memberships(role)`, `workspace_settings`, `system_settings`, `auth_login_attempts`.
-- **Content:** `projects`, `assets` (with lineage `project_id`, `run_id`, `step_id`, `provider`, `model`), `workflows` (graph JSON in `definition`).
+- **Content:** `projects`, `assets` (with lineage `project_id`, `run_id`, `step_id`, `provider`, `model`, and `source_asset_id` for clips cut from a source video), `workflows` (graph JSON in `definition`).
 - **Execution:** `workflow_runs` (with `graph_snapshot`), `workflow_run_steps` (per-node `status`, `detail` and JSON `output`), `workflow_jobs`.
 - **Money:** `plans`, `subscriptions`, `payment_orders`, `credit_accounts`, `credit_ledger`, `usage_events`, `credit_reconciliations`.
 - **AI configuration:** `ai_tools`.
-- **Publishing:** `youtube_oauth_states`, `youtube_connections`, `publications`.
+- **Publishing:** `youtube_oauth_states`, `youtube_connections`, `channel_oauth_states`, `channel_connections` (TikTok, Facebook), `publications` (with `scheduled_for`, `published_at`).
+- **Operations:** `worker_heartbeats`.
 
-Most models live in `app/models.py`. Three are defined elsewhere: `AuthAttempt` in `app/auth_security.py`, `YouTubeOAuthState` and `YouTubeConnection` in `app/publishers/google_oauth.py`, and `Publication` in `app/publications.py`.
+Most models live in `app/models.py`. Some are defined elsewhere: `AuthAttempt` in `app/auth_security.py`, `YouTubeOAuthState` and `YouTubeConnection` in `app/publishers/google_oauth.py`, `ChannelOAuthState` and `ChannelConnection` in `app/publishers/channel_oauth.py`, and `Publication` in `app/publications.py`.
 
 ### The end-to-end paths that work today
 
@@ -429,6 +437,67 @@ Phase 9 makes the pipeline usable as one product. It adds no new provider or wor
     - a legacy workflow.
   - `tests/test_publication_metadata_migration.py`.
   - Existing tests were updated for the Publish hand-off, the new node type and final-render-only publishing.
+
+### Phase 10, 11, 12 and 13 changes
+
+The workflow engine, durable jobs, credits, typed ports and publishing records are reused as they are. Existing workflows, runs and publications keep working: the YouTube routes, the Phase 9 hand-off shape and the Metadata output are unchanged, with new fields added beside them.
+
+- **Phase 10 — content sources:**
+  - New port type `source`; source steps `source_text`, `source_url`, `source_media` and `transcribe`.
+  - New config field type `asset`, checked on save against the workspace's own uploads (`check_assets`).
+  - Uploads accept TXT, MD, SRT and VTT (UTF-8, at most 2 MB; subtitles need cue timings).
+  - `app/sources.py` fetches pages: HTTPS only, every resolved address public, the connection pinned to the checked IP with SNI, redirects re-checked (at most 3), 2 MB and 15 s limits, no JavaScript. It also extracts HTML text and parses SRT/VTT into timed segments.
+  - The transcription provider layer (`app/providers/transcription/`, task `transcription`, OpenAI `whisper-1`, `verbose_json` segments) runs in the source worker. FFmpeg extracts audio in pieces of at most 20 minutes, and segment times are offset.
+  - Transcription is reconcilable: `transcription.generate` was added to `PAID_KINDS`, with references `transcription-*:<step>:single`.
+  - Template `repurpose`.
+- **Phase 11 — Movie Recap:**
+  - Port types `story` and `source_clips`.
+  - `story_analysis` and `recap_script` are JSON text steps on the text worker.
+  - `match_scenes` is local scene matching with a position fallback.
+  - `extract_clips` queues `clips.extract` in the render worker: stream copy, then an H.264/AAC fallback. Each clip is stored as an asset with `source_asset_id`.
+  - Render accepts the clips like generated clips.
+  - Template `movie_recap`, with the rights notice "Use only content you are authorized to use."
+- **Phase 12 — TikTok and Facebook:**
+  - `app/publishers/channel_oauth.py`: OAuth with a single-use hashed state, encrypted tokens, TikTok refresh with rotation, Facebook long-lived token and Page selection, and channel statuses.
+  - `app/social_worker.py`: TikTok inbox drafts (init, chunks, status) and Facebook Reels (start, transfer, finish, status). Progress is saved encrypted between steps. Uncertain outcomes become `needs_attention`, never a fake success.
+  - Per-channel metadata validation (`validate_channel_metadata`), `platforms` in the Metadata and Publish outputs, and an owner-typed TikTok caption or Facebook description that is never replaced.
+  - `POST /api/publications` for several channels at once.
+  - TikTok and Facebook templates `tiktok_short` and `facebook_reel`.
+- **Phase 13 — scheduling and hardening:**
+  - Publication states `scheduled` and `cancelled`, with `scheduled_for` and `published_at` (UTC).
+  - `dispatch_due` and the scheduler worker; reschedule and cancel until the upload starts.
+  - Default models per task (`ExecutionContext.find_tool`: explicit choice, then the workspace default, then the first compatible model).
+  - Worker heartbeats.
+  - `GET /api/admin/jobs` (safe fields, counts, `stuck_jobs` audit) and `job_lease_reclaimed` logs.
+  - `GET /api/storage` and `GET /api/admin/storage`.
+  - Media cleanup of worker temp folders and orphans.
+- **Schema:** migration `0014_channels_scheduling_ops` adds:
+  - `channel_connections` and `channel_oauth_states`;
+  - `worker_heartbeats`;
+  - the two publication columns and states, and the index `ix_publications_due`;
+  - `assets.source_asset_id`.
+
+  Downgrading turns `scheduled` and `cancelled` publications into `failed`. It is tested on SQLite with existing rows; a PostgreSQL run is available with `REELFORGE_TEST_DATABASE_URL`.
+- **Frontend:**
+  - The new steps in the library and on the canvas, with an asset picker in the inspector.
+  - The Channels page for three platforms, the OAuth callback page and Facebook Page selection.
+  - A multi-platform publish dialog with per-channel tabs and scheduling.
+  - The Publishing page: every channel, cancel, reschedule and retry.
+  - The Calendar by scheduled time.
+  - Default models and storage in Settings; **Admin → Operations**.
+  - The Transcription task on AI Models.
+  - vi/en/ja.
+- **Tests (offline):**
+  - `test_sources.py`: SSRF, redirects, limits, extraction, SRT/VTT.
+  - `test_transcription_and_matching.py`: provider contract and errors, scene matching and its speed, recap parsing, clip commands.
+  - `test_source_workflow.py`: uploads, sources, the URL worker, paid transcription with refund, reconciliation and crash handling.
+  - `test_movie_recap.py`: the pipeline end to end, copy and re-encode fallback, lineage, render.
+  - `test_multi_platform_publishing.py`: OAuth, statuses, three channels, both upload flows, failures and retries.
+  - `test_platform_metadata.py`.
+  - `test_scheduling.py`.
+  - `test_operations.py`.
+  - `test_channels_migration.py`.
+- **Not verified live:** TikTok and Facebook app review and real uploads, OpenAI transcription, and FFmpeg clip cutting on real media. See the final report.
 
 ### Configuration sources
 

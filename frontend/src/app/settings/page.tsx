@@ -17,6 +17,7 @@ import {
   SettingRow,
   SoonBadge,
 } from "@/components/reelforge/primitives";
+import { DefaultModelsForm, StorageUsagePanel } from "@/components/reelforge/default-models";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
@@ -232,6 +233,9 @@ export default function SettingsPage() {
                 <Switch disabled />
               </SettingRow>
             ))}
+            <div className="border-t border-border pt-4">
+              <DefaultModelsForm />
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
               <p className="text-xs text-muted-foreground">{s.ai.modelsHint}</p>
               <Button asChild variant="outline" size="sm">
@@ -258,6 +262,7 @@ export default function SettingsPage() {
         <TabsContent value="storage" className="mt-5">
           <div className="panel max-w-xl space-y-4 p-5 text-sm">
             <p>{s.storage.used(formatBytes(storedBytes), dashboard?.assets.length ?? 0)}</p>
+            <StorageUsagePanel />
             {system && (
               <div>
                 <FieldLabel>{s.storage.path}</FieldLabel>

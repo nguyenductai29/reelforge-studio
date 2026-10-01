@@ -3,10 +3,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import type {
+  AdminJobs,
   AdminOverview,
+  AdminStorage,
   AiTool,
   Billing,
+  ChannelStatus,
   Dashboard,
+  DefaultModels,
   NodeCatalog,
   Publication,
   Readiness,
@@ -14,7 +18,9 @@ import type {
   Run,
   RunSummary,
   Settings,
+  StorageUsage,
   Usage,
+  WorkerHealth,
   YouTubeConnection,
 } from "./types";
 
@@ -33,7 +39,13 @@ export const keys = {
   billing: ["billing"] as const,
   aiTools: ["ai-tools"] as const,
   youtube: ["youtube", "connection"] as const,
-  publications: ["youtube", "publications"] as const,
+  publications: ["publications"] as const,
+  channels: ["channels"] as const,
+  defaultModels: ["settings", "default-models"] as const,
+  storage: ["storage"] as const,
+  adminWorkers: ["admin", "workers"] as const,
+  adminJobs: ["admin", "jobs"] as const,
+  adminStorage: ["admin", "storage"] as const,
   settings: ["settings"] as const,
   admin: ["admin"] as const,
   reconciliation: ["admin", "reconciliation"] as const,
@@ -113,12 +125,54 @@ export function useYouTubeConnection() {
   return useQuery({ queryKey: keys.youtube, queryFn: () => api<YouTubeConnection>("youtube/connection") });
 }
 
+/** Publications of every channel (YouTube, TikTok, Facebook), newest first; polled while uploads run. */
 export function usePublications() {
   return useQuery({
     queryKey: keys.publications,
-    queryFn: () => api<Publication[]>("youtube/publications"),
+    queryFn: () => api<{ publications: Publication[] }>("publications").then((data) => data.publications),
     refetchInterval: (query) => (query.state.data?.some((p) => ACTIVE_UPLOAD.has(p.state)) ? POLL_MS : false),
   });
+}
+
+/** YouTube, TikTok and Facebook with their connection status; never a token. */
+export function useChannels() {
+  return useQuery({
+    queryKey: keys.channels,
+    queryFn: () => api<{ channels: ChannelStatus[] }>("channels").then((data) => data.channels),
+  });
+}
+
+export function useDefaultModels() {
+  return useQuery({
+    queryKey: keys.defaultModels,
+    queryFn: () => api<{ default_models: DefaultModels }>("settings/default-models").then((data) => data.default_models),
+  });
+}
+
+export function useStorage() {
+  return useQuery({ queryKey: keys.storage, queryFn: () => api<StorageUsage>("storage") });
+}
+
+export function useAdminWorkers(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.adminWorkers,
+    queryFn: () => api<{ workers: WorkerHealth[]; stale_after_seconds: number }>("admin/workers"),
+    enabled,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useAdminJobs(enabled: boolean, state: string, queue: string) {
+  const params = new URLSearchParams({ limit: "50", ...(state ? { state } : {}), ...(queue ? { queue } : {}) });
+  return useQuery({
+    queryKey: [...keys.adminJobs, state, queue],
+    queryFn: () => api<AdminJobs>(`admin/jobs?${params}`),
+    enabled,
+  });
+}
+
+export function useAdminStorage(enabled: boolean) {
+  return useQuery({ queryKey: keys.adminStorage, queryFn: () => api<AdminStorage>("admin/storage"), enabled });
 }
 
 export function useSettings() {

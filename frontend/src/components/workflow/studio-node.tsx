@@ -145,6 +145,18 @@ function Preview({ data }: { data: StudioNode["data"] }) {
     }
     case "video":
     case "render": {
+      if (data.type === "match_scenes") {
+        const matched = Array.isArray(output?.source_clips) ? output.source_clips.length : 0;
+        return (
+          <p className="rounded-lg bg-surface-2 p-2.5 text-[11px] text-muted-foreground">
+            {matched
+              ? t.editor.node.clipsMatched(typeof output?.matched === "number" ? output.matched : 0, matched)
+              : running
+                ? t.editor.node.generating
+                : t.editor.node.previewHere}
+          </p>
+        );
+      }
       const clips = outputMedia(output, "video_assets");
       const progress = outputJobs(output);
       const assetId = clips[0]?.id ?? (typeof output?.asset_id === "string" ? output.asset_id : null);
@@ -270,7 +282,8 @@ function Preview({ data }: { data: StudioNode["data"] }) {
           </div>
         );
       }
-      const text = outputText(output, portsOf(catalog, data.type));
+      const summary = data.type === "story_analysis" && typeof output?.summary === "string" ? output.summary : null;
+      const text = summary || outputText(output, portsOf(catalog, data.type));
       return (
         <div className="rounded-lg bg-surface-2 p-2.5 text-[11px] leading-relaxed">
           {text ? (
@@ -282,6 +295,33 @@ function Preview({ data }: { data: StudioNode["data"] }) {
       );
     }
     case "input": {
+      if (data.type === "source_text" || data.type === "source_url" || data.type === "source_media") {
+        const source = (output?.source ?? null) as { title?: string; text?: string; segments?: unknown[] | null } | null;
+        const lines = source
+          ? [
+              source.title || null,
+              source.segments?.length
+                ? t.editor.node.segmentsFound(source.segments.length)
+                : source.text
+                  ? t.editor.node.sourceChars(source.text.length)
+                  : null,
+            ].filter((line): line is string => Boolean(line))
+          : [];
+        return lines.length ? (
+          <ul className="space-y-1 rounded-lg bg-surface-2 p-2.5 text-[11px]">
+            {lines.map((line, i) => (
+              <li key={i} className="flex gap-1.5">
+                <span className="mt-1.5 size-1 shrink-0 rounded-full bg-primary" />
+                <span className={cn("line-clamp-2", i > 0 && "text-muted-foreground")}>{line}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="rounded-lg bg-surface-2 p-2.5 text-[11px] text-muted-foreground">
+            {running ? t.editor.node.generating : t.editor.node.sourceHere}
+          </p>
+        );
+      }
       if (data.type === "assets") {
         const listed = Array.isArray(output?.assets) ? output.assets.length : null;
         return (
@@ -313,7 +353,7 @@ function Preview({ data }: { data: StudioNode["data"] }) {
           <span className="min-w-0 truncate text-[11px]">
             {prepared
               ? `${prepared.title} · ${t.publishing.privacy[(prepared.privacy_status ?? "private") as "private"]}`
-              : t.editor.node.youtubeHandoff}
+              : t.editor.node.channelsHandoff}
           </span>
         </div>
       );

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import time
 
+from app import heartbeat
 from app import media_jobs
 from app.image_files import download_image, inspect_image
 from app.providers.image import (ImageRequest, ImageSubmission, create_image_provider, image_provider_config_issue)
@@ -73,6 +74,7 @@ def main():
     start_process("image_worker")
     while True:
         worked = run_one()
+        heartbeat.beat("image_worker")
         if args.once:
             return
         if not worked:

@@ -97,6 +97,11 @@ export const ACCEPTED_UPLOADS = [
   "audio/wav",
   "audio/ogg",
 ];
+/** Text sources (Phase 10); browsers often send no type for these, so the extension decides. */
+export const DOCUMENT_EXTENSIONS = [".txt", ".md", ".markdown", ".srt", ".vtt"];
+export const acceptedUpload = (file: File) =>
+  ACCEPTED_UPLOADS.includes(file.type) || DOCUMENT_EXTENSIONS.some((extension) => file.name.toLowerCase().endsWith(extension));
+export const UPLOAD_ACCEPT = [...ACCEPTED_UPLOADS, ...DOCUMENT_EXTENSIONS].join(",");
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 /** Approval is recorded on the review step; only approved clips may be published. */

@@ -1,16 +1,28 @@
-"""Conservative cleanup for abandoned ReelForge video-download `.part` files.
+"""Conservative cleanup of media files ReelForge left behind, plus a storage usage report.
 
 Run ``python -m app.media_maintenance`` to preview. Only ``--apply`` deletes.
-The scanner is intentionally non-recursive and accepts only the exact UUID4
-filenames written by ``app.video_worker`` in existing workspace directories.
+Everything must be at least 24 hours old, and links or junctions are never
+followed. Three kinds of leftovers are handled:
+
+* ``.part`` downloads: the exact UUID4 ``<id>.part`` names written by the media
+  workers, directly inside existing workspace directories (always checked);
+* worker temp folders: ``<media>/.render-tmp/<job>``, ``.source-tmp/<job>`` and
+  ``.publish-tmp/<job>.mp4`` left by a crashed render, transcription or upload
+  (always checked; a folder containing any link is skipped whole);
+* orphan files: UUID4-named files in a workspace directory with no asset row
+  (only with ``--orphans``, which reads the asset table).
+
+``--usage`` prints stored bytes per workspace from the asset table.
 """
 
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import stat
 from typing import Iterable
 
@@ -18,6 +30,9 @@ from typing import Iterable
 _UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 _WORKSPACE_RE = re.compile(rf"{_UUID4}\Z")
 _PART_RE = re.compile(rf"{_UUID4}\.part\Z")
+_ASSET_RE = re.compile(rf"{_UUID4}\Z")
+_TEMP_ENTRY_RE = re.compile(rf"{_UUID4}(?:\.mp4)?\Z")
+TEMP_FOLDERS = (".render-tmp", ".source-tmp", ".publish-tmp")
 
 
 @dataclass(frozen=True)
@@ -156,6 +171,152 @@ def cleanup_stale_parts(
     return CleanupReport(tuple(item.path for item in candidates), tuple(deleted), tuple(skipped))
 
 
+def _tree_is_plain(path: Path) -> bool:
+    """Whether a folder holds only regular files and folders (no link or junction anywhere)."""
+    for current, folders, files in os.walk(path, followlinks=False):
+        for name in (*folders, *files):
+            child = Path(current) / name
+            if _is_link(child) or not (child.is_dir() or child.is_file()):
+                return False
+    return True
+
+
+def _newest(path: Path) -> float:
+    newest = path.lstat().st_mtime
+    if path.is_dir():
+        for current, folders, files in os.walk(path, followlinks=False):
+            for name in (*folders, *files):
+                newest = max(newest, (Path(current) / name).lstat().st_mtime)
+    return newest
+
+
+def cleanup_temp_folders(root: Path, *, apply: bool = False, now: datetime | None = None,
+                         minimum_age_hours: int = 24) -> CleanupReport:
+    """List or delete worker temp entries (see the module docstring) untouched for ``minimum_age_hours``."""
+    if (not isinstance(minimum_age_hours, int) or isinstance(minimum_age_hours, bool)
+            or minimum_age_hours < 24):
+        raise ValueError("minimum_age_hours must be at least 24")
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("now must include a timezone")
+    root = _checked_root(root)
+    cutoff = (now.astimezone(timezone.utc) - timedelta(hours=minimum_age_hours)).timestamp()
+    candidates, deleted, skipped = [], [], []
+    for name in TEMP_FOLDERS:
+        folder = root / name
+        if not folder.is_dir() or _is_link(folder):
+            continue
+        for entry in sorted(folder.iterdir()):
+            if not _TEMP_ENTRY_RE.fullmatch(entry.name) or _is_link(entry):
+                continue
+            try:
+                if _newest(entry) >= cutoff:
+                    continue
+            except OSError:
+                continue
+            candidates.append(entry)
+            if not apply:
+                continue
+            try:
+                if entry.is_dir() and _tree_is_plain(entry) and _newest(entry) < cutoff:
+                    shutil.rmtree(entry)
+                    deleted.append(entry)
+                elif entry.is_file() and not _is_link(entry) and _newest(entry) < cutoff:
+                    entry.unlink()
+                    deleted.append(entry)
+                else:
+                    skipped.append(entry)
+            except OSError:
+                skipped.append(entry)
+    return CleanupReport(tuple(candidates), tuple(deleted), tuple(skipped))
+
+
+def cleanup_orphans(root: Path, workspace_ids: Iterable[str], asset_exists, *, apply: bool = False,
+                    now: datetime | None = None, minimum_age_hours: int = 24) -> CleanupReport:
+    """List or delete UUID4-named files in workspace folders that no asset row refers to.
+
+    ``asset_exists(workspace_id, asset_id)`` is asked when scanning and again just
+    before deleting, so a file whose row appeared in between is kept.
+    """
+    if (not isinstance(minimum_age_hours, int) or isinstance(minimum_age_hours, bool)
+            or minimum_age_hours < 24):
+        raise ValueError("minimum_age_hours must be at least 24")
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("now must include a timezone")
+    root = _checked_root(root)
+    if not root.exists():
+        return CleanupReport((), (), ())
+    cutoff = (now.astimezone(timezone.utc) - timedelta(hours=minimum_age_hours)).timestamp()
+    candidates, deleted, skipped = [], [], []
+    for workspace_id in sorted(set(workspace_ids)):
+        workspace = _workspace(root, workspace_id)
+        if workspace is None:
+            continue
+        for path in sorted(workspace.iterdir()):
+            if not _ASSET_RE.fullmatch(path.name) or _is_link(path):
+                continue
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff or asset_exists(workspace_id, path.name):
+                continue
+            candidates.append(path)
+            if not apply:
+                continue
+            try:
+                current = path.lstat()
+                if ((current.st_ino, current.st_size, current.st_mtime_ns) == (info.st_ino, info.st_size,
+                                                                               info.st_mtime_ns)
+                        and not _is_link(path) and not asset_exists(workspace_id, path.name)):
+                    path.unlink()
+                    deleted.append(path)
+                else:
+                    skipped.append(path)
+            except OSError:
+                skipped.append(path)
+    return CleanupReport(tuple(candidates), tuple(deleted), tuple(skipped))
+
+
+def configured_asset_check():
+    """``asset_exists(workspace_id, asset_id)`` against the configured database."""
+    from sqlalchemy import select
+    from app.db import Session
+    from app.models import Asset
+
+    def asset_exists(workspace_id: str, asset_id: str) -> bool:
+        with Session() as db:
+            return db.scalar(select(Asset.id).where(Asset.id == asset_id, Asset.workspace_id == workspace_id)) \
+                is not None
+    return asset_exists
+
+
+def storage_usage(db) -> list[dict]:
+    """Stored bytes and file count per workspace, from the asset table (largest first)."""
+    from sqlalchemy import func, select
+    from app.models import Asset, Workspace
+
+    rows = db.execute(select(Workspace.id, Workspace.name, func.count(Asset.id), func.coalesce(func.sum(Asset.bytes), 0))
+                      .outerjoin(Asset, Asset.workspace_id == Workspace.id).group_by(Workspace.id, Workspace.name))
+    usage = [{"workspace_id": workspace_id, "name": name, "files": files, "bytes": int(total)}
+             for workspace_id, name, files, total in rows]
+    return sorted(usage, key=lambda item: (-item["bytes"], item["name"]))
+
+
+def usage_by_type(db, workspace_id: str) -> dict[str, int]:
+    """Stored bytes of one workspace by media kind: video, audio, image, document."""
+    from sqlalchemy import func, select
+    from app.models import Asset
+
+    totals = {"video": 0, "audio": 0, "image": 0, "document": 0}
+    for content_type, total in db.execute(select(Asset.content_type, func.coalesce(func.sum(Asset.bytes), 0))
+                                          .where(Asset.workspace_id == workspace_id).group_by(Asset.content_type)):
+        kind = (content_type or "").split("/")[0]
+        totals[kind if kind in ("video", "audio", "image") else "document"] += int(total)
+    return totals
+
+
 def configured_media_context() -> tuple[Path, list[str]]:
     """Read the configured storage directory and known workspace IDs from DB."""
     from sqlalchemy import select
@@ -175,23 +336,43 @@ def configured_media_context() -> tuple[Path, list[str]]:
     return root, workspace_ids
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Preview or remove stale ReelForge video-download partials")
-    parser.add_argument("--apply", action="store_true", help="delete eligible files (default: dry-run)")
-    parser.add_argument("--older-than-hours", type=int, default=24,
-                        help="minimum age; must be at least 24 hours (default: 24)")
-    args = parser.parse_args(argv)
-    if args.older_than_hours < 24:
-        parser.error("--older-than-hours must be at least 24")
-    root, workspace_ids = configured_media_context()
-    report = cleanup_stale_parts(root, workspace_ids, apply=args.apply,
-                                 minimum_age_hours=args.older_than_hours)
-    mode = "apply" if args.apply else "dry-run"
-    print(f"{mode}: {len(report.candidates)} stale ReelForge partial(s) under {root}")
+def _print_report(label: str, mode: str, root: Path, report: CleanupReport) -> None:
+    print(f"{mode}: {len(report.candidates)} {label} under {root}")
     for path in report.candidates:
         action = "deleted" if path in report.deleted else "skipped" if path in report.skipped else "would delete"
         print(f"{action}: {path}")
     print(f"deleted: {len(report.deleted)}; skipped: {len(report.skipped)}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Preview or remove media ReelForge left behind")
+    parser.add_argument("--apply", action="store_true", help="delete eligible files (default: dry-run)")
+    parser.add_argument("--older-than-hours", type=int, default=24,
+                        help="minimum age; must be at least 24 hours (default: 24)")
+    parser.add_argument("--orphans", action="store_true",
+                        help="also remove files with no asset row (reads the asset table)")
+    parser.add_argument("--usage", action="store_true", help="print stored bytes per workspace, then exit")
+    args = parser.parse_args(argv)
+    if args.older_than_hours < 24:
+        parser.error("--older-than-hours must be at least 24")
+    if args.usage:
+        from app.db import Session
+        with Session() as db:
+            for item in storage_usage(db):
+                print(f"{item['workspace_id']}  {item['bytes']:>14,d} bytes  {item['files']:>6d} files  {item['name']}")
+        return 0
+    root, workspace_ids = configured_media_context()
+    mode = "apply" if args.apply else "dry-run"
+    report = cleanup_stale_parts(root, workspace_ids, apply=args.apply,
+                                 minimum_age_hours=args.older_than_hours)
+    _print_report("stale ReelForge partial(s)", mode, root, report)
+    if root.exists():
+        _print_report("worker temp folder(s)", mode, root,
+                      cleanup_temp_folders(root, apply=args.apply, minimum_age_hours=args.older_than_hours))
+    if args.orphans:
+        _print_report("orphan media file(s)", mode, root,
+                      cleanup_orphans(root, workspace_ids, configured_asset_check(), apply=args.apply,
+                                      minimum_age_hours=args.older_than_hours))
     return 0
 
 

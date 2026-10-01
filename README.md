@@ -32,7 +32,7 @@ Open http://localhost:3000 to create the first admin account, or run `npm run cr
 
 ### Provider keys, processes and logs
 
-Provider keys and prices are environment variables that the API and every worker must share: a worker that finishes one step also starts the next (the text worker queues the video step after an AI Writer). Copy `.env.runtime.example` to `.env.runtime` (git-ignored) and fill in only the providers you use. The API loads it at startup, and so do `python -m app.text_worker`, `app.image_worker`, `app.video_worker`, `app.voice_worker`, `app.render_worker`, `app.youtube_worker`, `app.provider_check` and `app.smoke_test`. A variable already set in the process wins, and `REELFORGE_ENV_FILE` names another file (production uses one `EnvironmentFile=` for every systemd unit). Start each process in its own terminal:
+Provider keys and prices are environment variables that the API and every worker must share: a worker that finishes one step also starts the next (the text worker queues the video step after an AI Writer). Copy `.env.runtime.example` to `.env.runtime` (git-ignored) and fill in only the providers you use. The API loads it at startup, and so do `python -m app.text_worker`, `app.image_worker`, `app.video_worker`, `app.voice_worker`, `app.render_worker`, `app.source_worker`, `app.youtube_worker`, `app.social_worker`, `app.scheduler_worker`, `app.provider_check` and `app.smoke_test`. A variable already set in the process wins, and `REELFORGE_ENV_FILE` names another file (production uses one `EnvironmentFile=` for every systemd unit). Start each process in its own terminal:
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000   # API
@@ -40,8 +40,11 @@ python -m app.text_worker                                      # AI Writer, Summ
 python -m app.image_worker                                     # image steps
 python -m app.video_worker                                     # video steps (one clip, or one per scene)
 python -m app.voice_worker                                     # voice (text-to-speech) steps
-python -m app.render_worker                                    # render steps (needs FFmpeg)
+python -m app.render_worker                                    # render steps and Movie Recap clips (needs FFmpeg)
+python -m app.source_worker                                    # URL Source and Transcript steps
 python -m app.youtube_worker                                   # only for YouTube publishing
+python -m app.social_worker                                    # only for TikTok and Facebook publishing
+python -m app.scheduler_worker                                 # only for scheduled publishing
 cd frontend && npm run dev                                     # dashboard
 ```
 
@@ -182,6 +185,37 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 
   Migration `0013_publication_metadata` adds visibility and tags. See [docs/SOCIAL_VIDEO_WORKFLOW.md](docs/SOCIAL_VIDEO_WORKFLOW.md).
 
+### Content sources, repurposing and Movie Recap (Phases 10–11)
+
+- **Sources:** Text Source, URL Source, Uploaded Media Source and Transcript steps bring existing content into a workflow.
+  - Uploads accept TXT, MD, SRT and VTT documents.
+  - URL Source reads one public `https://` page safely: it refuses private, local and metadata addresses, follows no JavaScript and bypasses no paywall.
+  - Transcript turns audio or video into timestamped text with the workspace's Transcription model (OpenAI Whisper), as a durable paid job in `python -m app.source_worker`. Subtitle files pass through for free.
+
+  See [docs/CONTENT_SOURCES.md](docs/CONTENT_SOURCES.md).
+- **Repurpose Existing Content** template: a page or document becomes a short video. See [docs/REPURPOSING.md](docs/REPURPOSING.md).
+- **Movie Recap / Review** template, for content you are authorized to use:
+  1. Transcript, then Story Analysis and Recap Script;
+  2. Match Source Scenes finds each scene's moment in the uploaded video, locally;
+  3. Extract Source Clips cuts it with FFmpeg (stream copy first, H.264/AAC otherwise) and records the source on each clip asset;
+  4. Render joins the clips with the narration.
+
+  See [docs/MOVIE_RECAP.md](docs/MOVIE_RECAP.md).
+
+### TikTok, Facebook and scheduling (Phases 12–13)
+
+- **Channels:** YouTube, TikTok (inbox drafts via the Content Posting API) and Facebook Page Reels, each through its official OAuth and upload API. Tokens are encrypted, and each channel shows connected, not connected, configuration required or authorization required.
+- **Publishing:** the publish dialog posts one approved video to several channels at once. Each channel has its own metadata, publication and independent upload job (`python -m app.social_worker` for TikTok and Facebook).
+- **Scheduling:** a publication can be scheduled (UTC), moved or cancelled until its upload starts; `python -m app.scheduler_worker` queues it on time. The Calendar shows every channel.
+- Migration `0014_channels_scheduling_ops`. See [docs/MULTI_PLATFORM_PUBLISHING.md](docs/MULTI_PLATFORM_PUBLISHING.md) and [docs/SCHEDULING.md](docs/SCHEDULING.md).
+- **Operations:**
+  - default models per task;
+  - worker heartbeats and an admin job view with a stuck-work audit;
+  - storage per workspace;
+  - cleanup of worker temp folders and orphan files.
+
+  See [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
 ### Voice, subtitles and the final render (Phases 6–8)
 
 - **Voice** reads a script as one narration, or each scene's text as its own narration, with Google Gemini TTS (AI tool task **Voice**, `GEMINI_API_KEY`). Each narration is a job with its own reservation of `VOICE_CREDITS_PER_GENERATION` credits (default 1), and is stored as a checked WAV file by `python -m app.voice_worker`. See [docs/VOICE_GENERATION.md](docs/VOICE_GENERATION.md).
@@ -202,9 +236,15 @@ Select a step on the canvas to edit its settings in the right-hand inspector: la
 
 ### Worker and storage settings
 
-Run `python -m app.video_worker`, `python -m app.text_worker`, `python -m app.image_worker`, `python -m app.voice_worker`, `python -m app.render_worker` and `python -m app.youtube_worker` continuously as separate processes. All support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and the video, image, voice and render workers; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys through `.env.runtime` or one `EnvironmentFile=` (see Provider keys, processes and logs). Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
+Run `python -m app.video_worker`, `python -m app.text_worker`, `python -m app.image_worker`, `python -m app.voice_worker`, `python -m app.render_worker`, `python -m app.source_worker`, `python -m app.youtube_worker`, `python -m app.social_worker` and `python -m app.scheduler_worker` continuously as separate processes (only the ones you use). Each reports a heartbeat that **Admin → Operations** shows. All support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and the video, image, voice and render workers; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys through `.env.runtime` or one `EnvironmentFile=` (see Provider keys, processes and logs). Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
 
-If a worker crashes during download, preview abandoned temporary files with `python -m app.media_maintenance`. Run `python -m app.media_maintenance --apply` to remove eligible `.part` files older than 24 hours. The command restricts cleanup to known workspace directories and is a dry run unless `--apply` is supplied.
+If a worker crashes, preview abandoned temporary files with `python -m app.media_maintenance`:
+
+- `.part` downloads;
+- `.render-tmp`, `.source-tmp` and `.publish-tmp` leftovers;
+- with `--orphans`, files that have no asset row.
+
+Run it with `--apply` to remove eligible files older than 24 hours. The command restricts cleanup to known workspace directories, never follows links, and is a dry run unless `--apply` is supplied. `--usage` prints the storage used per workspace. See [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Development checks
 

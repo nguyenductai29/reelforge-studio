@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ComingSoonBanner, PageHeader, PlatformIcon, platformLabel } from "@/components/reelforge/primitives";
+import { PageHeader, PlatformIcon, StatusBadge, platformLabel } from "@/components/reelforge/primitives";
+import { ScheduleDialog } from "@/components/reelforge/publication-actions";
 import { useDocumentTitle } from "@/lib/hooks";
 import { toDate, useI18n } from "@/lib/i18n";
 import { usePublications } from "@/lib/queries";
@@ -15,9 +16,12 @@ const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.
 const addDays = (date: Date, days: number) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 /** Monday-based weekday index, 0–6. */
 const weekday = (date: Date) => (date.getDay() + 6) % 7;
+/** When a publication shows on the calendar: its scheduled time, else when it went out, else when it was queued. */
+const when = (p: Publication) => p.scheduled_for ?? p.published_at ?? p.finished_at ?? p.created_at;
 
 export default function CalendarPage() {
   const { t, formatDate } = useI18n();
+  const [scheduling, setScheduling] = useState<{ publication: Publication; mode: "reschedule" | "cancel" } | null>(null);
   useDocumentTitle(t.nav.calendar);
   const publications = usePublications().data ?? [];
   const today = new Date();
@@ -26,7 +30,8 @@ export default function CalendarPage() {
   const byDay = useMemo(() => {
     const map = new Map<string, Publication[]>();
     for (const p of publications) {
-      const key = dayKey(toDate(p.finished_at ?? p.created_at));
+      if (p.state === "cancelled") continue;
+      const key = dayKey(toDate(when(p)));
       map.set(key, [...(map.get(key) ?? []), p]);
     }
     return map;
@@ -42,22 +47,24 @@ export default function CalendarPage() {
   const week = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
   const monthItems = publications
     .filter((p) => {
-      const d = toDate(p.finished_at ?? p.created_at);
+      const d = toDate(when(p));
       return d.getFullYear() === cursor.getFullYear() && d.getMonth() === cursor.getMonth();
     })
-    .sort((a, b) => (a.finished_at ?? a.created_at).localeCompare(b.finished_at ?? b.created_at));
-  const time = (p: Publication) => formatDate(p.finished_at ?? p.created_at, { hour: "2-digit", minute: "2-digit" });
+    .sort((a, b) => toDate(when(a)).getTime() - toDate(when(b)).getTime());
+  const time = (p: Publication) => formatDate(when(p), { hour: "2-digit", minute: "2-digit" });
+  const scheduledCount = monthItems.filter((p) => p.state === "scheduled").length;
 
   const Item = ({ p, compact }: { p: Publication; compact?: boolean }) => (
     <div
       className={cn(
-        "rounded-md border border-border bg-surface-2 leading-tight",
+        "rounded-md border bg-surface-2 leading-tight",
+        p.state === "scheduled" ? "border-info/50" : "border-border",
         compact ? "p-1.5 text-[10px]" : "mt-2 p-2 text-[11px]",
       )}
       title={p.title}
     >
       <div className="flex items-center gap-1">
-        <PlatformIcon platform="youtube" className="size-3" />
+        <PlatformIcon platform={p.channel} className="size-3" />
         <span className="text-muted-foreground">{time(p)}</span>
       </div>
       <p className="mt-0.5 truncate">{p.title}</p>
@@ -68,7 +75,9 @@ export default function CalendarPage() {
     <div className="space-y-6">
       <PageHeader
         title={t.calendar.title}
-        subtitle={t.calendar.subtitle(formatDate(cursor, { month: "long", year: "numeric" }))}
+        subtitle={`${t.calendar.subtitle(formatDate(cursor, { month: "long", year: "numeric" }))}${
+          scheduledCount ? ` · ${t.calendar.scheduledCount(scheduledCount)}` : ""
+        }`}
         actions={
           <div className="flex items-center gap-1">
             <Button
@@ -93,7 +102,6 @@ export default function CalendarPage() {
           </div>
         }
       />
-      <ComingSoonBanner title={t.calendar.title} description={t.calendar.soon} />
 
       <Tabs defaultValue="month">
         <TabsList>
@@ -158,18 +166,34 @@ export default function CalendarPage() {
             {monthItems.length === 0 && <p className="p-4 text-sm text-muted-foreground">{t.calendar.empty}</p>}
             {monthItems.map((p) => (
               <div key={p.id} className="flex flex-wrap items-center gap-3 p-4 text-sm">
-                <span className="w-20 text-muted-foreground">{formatDate(p.finished_at ?? p.created_at, { month: "short", day: "numeric" })}</span>
+                <span className="w-20 text-muted-foreground">{formatDate(when(p), { month: "short", day: "numeric" })}</span>
                 <span className="w-14 text-muted-foreground">{time(p)}</span>
                 <span className="min-w-0 flex-1 truncate font-medium">{p.title}</span>
                 <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <PlatformIcon platform="youtube" />
-                  {platformLabel.youtube}
+                  <PlatformIcon platform={p.channel} />
+                  {platformLabel[p.channel]}
                 </span>
+                <StatusBadge status={p.state} label={t.status.publication[p.state]} />
+                {p.can_reschedule && (
+                  <Button variant="ghost" size="sm" onClick={() => setScheduling({ publication: p, mode: "reschedule" })}>
+                    {t.calendar.reschedule}
+                  </Button>
+                )}
+                {p.can_cancel && (
+                  <Button variant="ghost" size="sm" onClick={() => setScheduling({ publication: p, mode: "cancel" })}>
+                    {t.calendar.cancel}
+                  </Button>
+                )}
               </div>
             ))}
           </div>
         </TabsContent>
       </Tabs>
+      <ScheduleDialog
+        publication={scheduling?.publication ?? null}
+        mode={scheduling?.mode ?? "reschedule"}
+        onClose={() => setScheduling(null)}
+      />
     </div>
   );
 }

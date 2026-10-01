@@ -37,6 +37,7 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
       if (step.code === "per_scene") return r.readyPerScene(step.credits ?? 0);
       if (step.task === "image") return r.readyImage(step.credits ?? 0);
       if (step.task === "voice") return r.readyVoice(step.credits ?? 0);
+      if (step.task === "transcribe") return r.readyTranscription(step.credits ?? 0);
       return step.task === "video" ? r.ready(step.credits ?? readiness.credits_required) : r.readyText;
     case "configured":
       return r.configured;
@@ -47,7 +48,9 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
           ? r.missingImageTool
           : step.task === "voice"
             ? r.missingVoiceTool
-            : r.missingTool;
+            : step.task === "transcribe"
+              ? r.missingTranscriptionTool
+              : r.missingTool;
     case "needs_connection":
       return AI_TASKS.has(step.task) ? r.needsProvider : r.needsService;
     case "unsupported_graph":

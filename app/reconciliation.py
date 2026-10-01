@@ -25,7 +25,10 @@ from app.models import (Asset, CreditAccount, CreditLedger, CreditReconciliation
 from app.workflow.results import derive_run_status
 
 logger = logging.getLogger(__name__)
-PAID_KINDS = {"video.generate": "video", "text.generate": "text", "image.generate": "image", "voice.generate": "voice"}
+PAID_KINDS = {"video.generate": "video", "text.generate": "text", "image.generate": "image", "voice.generate": "voice",
+              "transcription.generate": "transcription"}
+# The node type a paid job must belong to; text jobs name their own node type in the payload.
+PAID_NODE_TYPES = {"video": "video", "image": "image", "voice": "voice", "transcription": "transcribe"}
 
 
 class ReconciliationError(ValueError):
@@ -100,7 +103,7 @@ def paid_reservation(db, job, step, run) -> PaidReservation:
     workflow, project = db.get(Workflow, run.workflow_id), db.get(Project, run.project_id)
     if not workflow or not project or workflow.workspace_id != run.workspace_id or project.workspace_id != run.workspace_id:
         raise ReconciliationError("Run relationships do not match the workspace")
-    if (kind in ("video", "image", "voice") and step.node_type != kind) or (kind == "text" and step.node_type != payload.get("node_type")):
+    if (kind in PAID_NODE_TYPES and step.node_type != PAID_NODE_TYPES[kind]) or (kind == "text" and step.node_type != payload.get("node_type")):
         raise ReconciliationError("Paid job does not match the step type")
     reserve, usage_reference, refund = _references(kind, payload, step, run)
     ledger = db.scalar(select(CreditLedger).where(CreditLedger.reference == reserve))

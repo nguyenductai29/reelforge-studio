@@ -51,8 +51,11 @@ with Session.begin() as db:
     historical_step = db.get(WorkflowRunStep, historical_job.step_id)
     historical_step.status = 'completed'
     db.get(WorkflowRun, historical).status = 'completed'
-    db.add(Asset(id='migration-asset',workspace_id=workspace,project_id=project,run_id=historical,
-                 step_id=historical_step.id,filename='old.mp4',content_type='video/mp4',bytes=12))
+    # Raw SQL: the Asset model already has the column migration 0014 adds later.
+    db.execute(text("INSERT INTO assets (id, workspace_id, project_id, run_id, step_id, filename, content_type, bytes, "
+                    "created_at) VALUES ('migration-asset', :w, :p, :r, :s, 'old.mp4', 'video/mp4', 12, :now)"),
+               {"w": workspace, "p": project, "r": historical, "s": historical_step.id,
+                "now": datetime.now(timezone.utc)})
     db.add(UsageEvent(id='migration-usage',workspace_id=workspace,tool='fal/video',units=1,credits=10,
                       reference=f'video:{historical_step.id}',created_at=datetime.now(timezone.utc)))
     db.flush()

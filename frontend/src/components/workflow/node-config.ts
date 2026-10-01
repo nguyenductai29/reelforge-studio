@@ -47,6 +47,9 @@ export function fieldError(field: ConfigField, value: Value, tools: AiTool[] | u
       return typeof value === "string" && (field.max_length === undefined || value.length <= field.max_length)
         ? null
         : field.code;
+    case "asset":
+      // Whether the file is this workspace's own is checked by the backend on save.
+      return typeof value === "string" && value.length > 0 ? null : field.code;
     case "tool": {
       if (typeof value !== "string") return field.code;
       if (!tools) return null;

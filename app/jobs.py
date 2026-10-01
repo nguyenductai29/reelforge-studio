@@ -1,5 +1,11 @@
-"""Transactional durable queue for workflow run steps."""
+"""Transactional durable queue for workflow run steps.
+
+A lease that expires (its worker crashed or hung) makes the job claimable again;
+each such reclaim is logged as ``job_lease_reclaimed`` with the previous worker,
+so stuck work and its recovery can be audited (see ``stuck_jobs``).
+"""
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from uuid import uuid4
@@ -9,7 +15,10 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from app.logs import log_event
 from app.models import WorkflowJob, WorkflowRun, WorkflowRunStep
+
+logger = logging.getLogger(__name__)
 
 
 def enqueue_job(
@@ -91,6 +100,8 @@ def claim_due_jobs(
             .with_for_update(skip_locked=True)
         ).all()
         for job in jobs:
+            if job.state == "leased":
+                _log_reclaim(job, job.worker_id, now)
             job.state = "leased"
             job.attempt_count += 1
             job.worker_id = worker_id
@@ -102,6 +113,12 @@ def claim_due_jobs(
 
     if db.get_bind().dialect.name != "sqlite":
         raise NotImplementedError("Queue claims require PostgreSQL or SQLite")
+    # Expired leases before claiming, only to log which claims are recoveries.
+    expired_query = select(WorkflowJob.id, WorkflowJob.worker_id).where(
+        WorkflowJob.state == "leased", WorkflowJob.lease_expires_at <= now)
+    if logical_key_prefix:
+        expired_query = expired_query.where(WorkflowJob.logical_key.startswith(logical_key_prefix, autoescape=True))
+    expired = dict(db.execute(expired_query.limit(50)).all())
     jobs = []
     for _ in range(limit):
         candidate = select(WorkflowJob.id).where(due).order_by(*order).limit(1).scalar_subquery()
@@ -120,8 +137,56 @@ def claim_due_jobs(
             break
         job = db.get(WorkflowJob, claimed_id)
         db.refresh(job)
+        if claimed_id in expired:
+            _log_reclaim(job, expired[claimed_id], now)
         jobs.append(job)
     return jobs
+
+
+def _log_reclaim(job: WorkflowJob, previous_worker: str | None, now: datetime) -> None:
+    log_event(logger, "job_lease_reclaimed", level=logging.WARNING, job_id=job.id, workspace_id=job.workspace_id,
+              run_id=job.run_id, step_id=job.step_id, queue=job.logical_key.split(":", 1)[0],
+              previous_worker=previous_worker, attempt=job.attempt_count, reclaimed_at=now.isoformat())
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
+
+
+def stuck_jobs(db: Session, *, now: datetime | None = None, overdue_minutes: int = 10,
+               limit: int = 100) -> dict[str, list[dict[str, Any]]]:
+    """An audit of work that is not moving, with safe fields only (never a payload).
+
+    * ``expired_leases``: a worker claimed the job and stopped reporting; the next
+      worker for that queue reclaims it (and logs ``job_lease_reclaimed``).
+    * ``overdue``: queued for longer than ``overdue_minutes`` after it was due, which
+      usually means no worker for that queue is running.
+    * ``orphan_steps``: a step still queued or running although none of its jobs is.
+    """
+    now = now or datetime.now(timezone.utc)
+
+    def row(job: WorkflowJob) -> dict[str, Any]:
+        return {"id": job.id, "queue": job.logical_key.split(":", 1)[0], "state": job.state,
+                "attempt_count": job.attempt_count, "worker_id": job.worker_id, "workspace_id": job.workspace_id,
+                "run_id": job.run_id, "step_id": job.step_id,
+                "available_at": _aware(job.available_at).isoformat() if job.available_at else None,
+                "lease_expires_at": _aware(job.lease_expires_at).isoformat() if job.lease_expires_at else None}
+
+    expired = db.scalars(select(WorkflowJob).where(WorkflowJob.state == "leased",
+                                                   WorkflowJob.lease_expires_at <= now)
+                         .order_by(WorkflowJob.lease_expires_at).limit(limit)).all()
+    overdue = db.scalars(select(WorkflowJob).where(WorkflowJob.state == "queued",
+                                                   WorkflowJob.available_at <= now - timedelta(minutes=overdue_minutes))
+                         .order_by(WorkflowJob.available_at).limit(limit)).all()
+    active = select(WorkflowJob.step_id).where(WorkflowJob.state.in_(("queued", "leased")))
+    orphan_steps = db.execute(
+        select(WorkflowRunStep.id, WorkflowRunStep.run_id, WorkflowRunStep.node_type, WorkflowRunStep.status)
+        .join(WorkflowJob, WorkflowJob.step_id == WorkflowRunStep.id)
+        .where(WorkflowRunStep.status.in_(("queued", "running")), WorkflowRunStep.id.notin_(active))
+        .distinct().limit(limit)).all()
+    return {"expired_leases": [row(job) for job in expired], "overdue": [row(job) for job in overdue],
+            "orphan_steps": [{"step_id": step_id, "run_id": run_id, "node_type": node_type, "status": status}
+                             for step_id, run_id, node_type, status in orphan_steps]}
 
 
 def live_lease(db: Session, *, job_id: str, lease_token: str, now: datetime | None = None) -> WorkflowJob | None:

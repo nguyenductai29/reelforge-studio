@@ -19,7 +19,7 @@ from typing import Any
 from sqlalchemy import or_, select
 
 from app.models import CreditLedger, Project, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep
-from app.publications import final_video, fit_metadata
+from app.publications import final_video, fit_metadata, platform_metadata
 from app.workflow.nodes.text import TEXT_HANDLERS
 
 TEXT_TYPES = frozenset(handler.node_type for handler in TEXT_HANDLERS)
@@ -66,18 +66,26 @@ def credits(db, run: WorkflowRun, steps: list[WorkflowRunStep]) -> dict[str, int
 
 
 def publishing_defaults(db, run: WorkflowRun, steps: list[WorkflowRunStep]) -> dict[str, Any]:
-    """What the publish form starts with: the Publish step's hand-off, else Metadata output, else the project title."""
+    """What the publish form starts with: the Publish step's hand-off, else Metadata output, else the project title.
+
+    The top-level values are YouTube's; ``platforms`` holds every channel's (Phase 12).
+    """
     for step in steps:
         output = _output(step)
         if step.node_type == "publish" and step.status == "completed" and isinstance(output.get("metadata"), dict):
-            return {**output["metadata"], "source": "publish"}
+            platforms = (output["platforms"] if isinstance(output.get("platforms"), dict)
+                         else platform_metadata(output["metadata"]))
+            return {**output["metadata"], "platforms": platforms, "source": "publish"}
     for step in steps:
         output = _output(step)
         if step.node_type == "metadata" and step.status == "completed" and isinstance(output.get("metadata"), dict):
-            return {**fit_metadata(output["metadata"].get("title"), output["metadata"].get("description"),
-                                   output["metadata"].get("tags")), "privacy_status": "private", "source": "metadata"}
+            youtube = {**fit_metadata(output["metadata"].get("title"), output["metadata"].get("description"),
+                                      output["metadata"].get("tags")), "privacy_status": "private"}
+            platforms = output["platforms"] if isinstance(output.get("platforms"), dict) else platform_metadata(youtube)
+            return {**youtube, "platforms": platforms, "source": "metadata"}
     project = db.get(Project, run.project_id)
-    return {**fit_metadata(project.title if project else "", "", []), "privacy_status": "private", "source": "project"}
+    youtube = {**fit_metadata(project.title if project else "", "", []), "privacy_status": "private"}
+    return {**youtube, "platforms": platform_metadata(youtube), "source": "project"}
 
 
 def summarize(db, run: WorkflowRun) -> dict[str, Any]:

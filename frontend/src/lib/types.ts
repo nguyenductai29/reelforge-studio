@@ -18,7 +18,15 @@ export type NodeType =
   | "hook"
   | "title"
   | "cta"
-  | "metadata";
+  | "metadata"
+  | "source_text"
+  | "source_url"
+  | "source_media"
+  | "transcribe"
+  | "story_analysis"
+  | "recap_script"
+  | "match_scenes"
+  | "extract_clips";
 
 /** Per-node settings; the backend validates them for each node type. */
 export type NodeConfig = Record<string, unknown>;
@@ -43,7 +51,7 @@ export type OutputPort = { name: string; type: string };
  */
 export type ConfigField = {
   key: string;
-  type: "select" | "integer" | "number" | "text" | "tool";
+  type: "select" | "integer" | "number" | "text" | "tool" | "asset";
   label: string;
   default: string | number | null;
   required: boolean;
@@ -57,6 +65,8 @@ export type ConfigField = {
   multiline?: boolean;
   task?: AiTask;
   providers?: string[];
+  /** Asset fields: the media types the step can read. */
+  content_types?: string[];
 };
 export type NodePorts = { inputs: InputPort[]; outputs: OutputPort[]; requires: string[][]; config: ConfigField[] };
 export type NodeCatalog = { data_types: string[]; node_types: Record<string, NodePorts> };
@@ -81,6 +91,7 @@ export type Dashboard = {
   assets: Asset[];
   workflows: Workflow[];
   limits: { projects: number | null; workflows: number | null };
+  storage?: { used_bytes: number; quota_bytes: number };
 };
 
 export type RunStatus =
@@ -177,7 +188,7 @@ export type Readiness = {
   steps: ReadinessStep[];
 };
 
-export type AiTask = "script" | "image" | "video" | "voice" | "music";
+export type AiTask = "script" | "image" | "video" | "voice" | "music" | "transcription";
 export type AiTool = { id: string; task: AiTask; provider: string; model: string; is_enabled: boolean };
 
 export type Plan = {
@@ -211,28 +222,107 @@ export type Usage = {
 };
 
 export type PrivacyStatus = "private" | "unlisted" | "public";
+export type ChannelId = "youtube" | "tiktok" | "facebook";
+export type PublicationState =
+  | "scheduled"
+  | "queued"
+  | "uploading"
+  | "succeeded"
+  | "failed"
+  | "needs_attention"
+  | "cancelled";
 export type Publication = {
   id: string;
   run_id: string;
   asset_id: string;
-  channel: string;
+  channel: ChannelId;
   title: string;
   description: string;
   tags: string[];
   privacy_status: PrivacyStatus;
-  state: "queued" | "uploading" | "succeeded" | "failed" | "needs_attention";
+  state: PublicationState;
   remote_id: string | null;
-  /** What YouTube reported after the upload: "uploaded" means it is still processing. */
+  /** What the platform reported: YouTube "uploaded" (processing), TikTok "sent_to_inbox", Facebook "published"/"draft". */
   remote_status: string | null;
   remote_privacy: PrivacyStatus | null;
   youtube_url: string | null;
+  /** The public page, once there is one (YouTube, a published Facebook Reel). */
+  url?: string | null;
   last_error: string | null;
   can_retry: boolean;
+  can_cancel?: boolean;
+  can_reschedule?: boolean;
+  /** UTC. */
+  scheduled_for?: string | null;
+  published_at?: string | null;
   created_at: string;
   finished_at: string | null;
 };
 
 export type PublishMetadata = { title: string; description: string; tags: string[]; privacy_status: PrivacyStatus };
+export type PlatformMetadata = Record<ChannelId, PublishMetadata>;
+
+export type ChannelStatus = {
+  channel: ChannelId;
+  status: "connected" | "not_connected" | "configuration_required" | "authorization_required";
+  /** Why authorization is required: "expired", "missing_scope" or "page_required" (Facebook). */
+  reason: string | null;
+  account_name: string | null;
+  connected_at: string | null;
+  /** Facebook, while no Page is chosen: the Pages the account can publish to. */
+  pages?: { id: string; name: string }[];
+};
+
+export type DefaultModels = Record<"text" | "image" | "video" | "voice" | "transcription", string | null>;
+export type StorageUsage = {
+  used_bytes: number;
+  quota_bytes: number;
+  by_type: Record<"video" | "audio" | "image" | "document", number>;
+};
+
+export type WorkerHealth = {
+  worker: string;
+  status: "ok" | "stale" | "error" | "missing";
+  last_seen_at: string | null;
+  seconds_ago?: number;
+  host: string | null;
+  pid: number | null;
+  detail: string | null;
+};
+export type AdminJob = {
+  id: string;
+  queue: string;
+  channel: string | null;
+  state: "queued" | "leased" | "succeeded" | "failed";
+  attempt_count: number;
+  worker_id: string | null;
+  workspace_id: string;
+  run_id: string;
+  step_id: string;
+  last_error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  available_at: string | null;
+  lease_expires_at: string | null;
+  finished_at: string | null;
+};
+export type StuckJob = Pick<
+  AdminJob,
+  "id" | "queue" | "state" | "attempt_count" | "worker_id" | "workspace_id" | "run_id" | "step_id" | "available_at" | "lease_expires_at"
+>;
+export type AdminJobs = {
+  jobs: AdminJob[];
+  counts: Record<string, Partial<Record<AdminJob["state"], number>>>;
+  stuck: {
+    expired_leases: StuckJob[];
+    overdue: StuckJob[];
+    orphan_steps: { step_id: string; run_id: string; node_type: string; status: string }[];
+  };
+};
+export type AdminStorage = {
+  workspaces: { workspace_id: string; name: string; files: number; bytes: number }[];
+  quota_bytes: number;
+};
 export type RunStepItem = { node_id: string; node_type: NodeType; status: RunStatus; detail: string; error_code: string | null };
 /** GET /api/workflow-runs/{id}/summary: progress, results, credits and publishing of one run. */
 export type RunSummary = {
@@ -260,9 +350,12 @@ export type RunSummary = {
   credits: { reserved: number; refunded: number; consumed: number; held: number };
   publishing: {
     ready: boolean;
-    defaults: PublishMetadata & { source: "publish" | "metadata" | "project" };
+    defaults: PublishMetadata & { source: "publish" | "metadata" | "project"; platforms?: PlatformMetadata };
     publication: Publication | null;
     youtube_connected: boolean;
+    /** Every channel's publication of this run (Phase 12). */
+    publications?: Publication[];
+    channels?: ChannelStatus[];
   };
 };
 export type YouTubeConnection = { connected: boolean; expires_at: string | null; scope: string | null };

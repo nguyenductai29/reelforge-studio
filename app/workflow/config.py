@@ -24,6 +24,7 @@ INTEGER = "integer"  # whole number in [minimum, maximum]; ``presets`` are sugge
 NUMBER = "number"    # decimal in [minimum, maximum]
 TEXT = "text"        # string of at most ``max_length``; ``multiline`` for a textarea
 TOOL = "tool"        # ID of one of the workspace's AI tools for ``task``
+ASSET = "asset"      # ID of one of the workspace's media assets, of one of ``content_types``
 
 _TOOL_ID = re.compile(r"[A-Za-z0-9-]{1,64}\Z")
 
@@ -60,6 +61,8 @@ class ConfigField:
     # Tool fields: the AI tool task and the providers that can serve it.
     task: str | None = None
     providers: tuple[str, ...] = ()
+    # Asset fields: the media types the step can read.
+    content_types: tuple[str, ...] = ()
     # Error code for an invalid value, e.g. "invalid_language".
     code: str = "invalid_config"
 
@@ -88,13 +91,16 @@ class ConfigField:
         elif self.type == TOOL:
             if not isinstance(value, str) or not _TOOL_ID.fullmatch(value):
                 raise ConfigError(self.code, f"{self.key} must be the ID of an AI model", self.key)
+        elif self.type == ASSET:
+            if not isinstance(value, str) or not _TOOL_ID.fullmatch(value):
+                raise ConfigError(self.code, f"{self.key} must be the ID of a media file", self.key)
         else:
             raise ConfigError("invalid_config", f"{self.key} has an unknown field type", self.key)
 
     def describe(self) -> dict[str, Any]:
         described = {"key": self.key, "type": self.type, "label": self.label or self.key, "default": self.default,
                      "required": self.required, "advanced": self.advanced, "code": self.code}
-        for name in ("options", "presets", "providers"):
+        for name in ("options", "presets", "providers", "content_types"):
             if getattr(self, name):
                 described[name] = list(getattr(self, name))
         for name in ("minimum", "maximum", "max_length", "task"):
@@ -157,6 +163,23 @@ def check_tools(fields: Iterable[ConfigField], config: Any, tools: Mapping[str, 
         if tool is None or tool.task != field.task or tool.provider not in field.providers:
             raise ConfigError(field.code, f"{field.key} is not a supported {field.task} model in this workspace",
                               field.key)
+
+
+def check_assets(fields: Iterable[ConfigField], config: Any, assets: Mapping[str, Any]) -> None:
+    """Asset settings must name a media file of this workspace with a type the step can read.
+
+    ``assets`` maps asset IDs to the workspace's assets; a file of another
+    workspace is indistinguishable from a missing one.
+    """
+    if not isinstance(config, Mapping):
+        return
+    for field in fields:
+        asset_id = config.get(field.key)
+        if field.type != ASSET or asset_id is None:
+            continue
+        asset = assets.get(asset_id)
+        if asset is None or (field.content_types and asset.content_type not in field.content_types):
+            raise ConfigError(field.code, f"{field.key} is not a supported media file in this workspace", field.key)
 
 
 def describe_config(fields: Iterable[ConfigField]) -> list[dict[str, Any]]:

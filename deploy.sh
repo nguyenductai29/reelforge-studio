@@ -29,29 +29,12 @@ sudo systemctl restart reelforge-frontend
 
 echo "== 8. Restart workers if enabled =="
 
-if systemctl is-enabled --quiet reelforge-video-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-video-worker
-fi
-
-if systemctl is-enabled --quiet reelforge-text-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-text-worker
-fi
-
-if systemctl is-enabled --quiet reelforge-image-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-image-worker
-fi
-
-if systemctl is-enabled --quiet reelforge-voice-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-voice-worker
-fi
-
-if systemctl is-enabled --quiet reelforge-render-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-render-worker
-fi
-
-if systemctl is-enabled --quiet reelforge-youtube-worker 2>/dev/null; then
-  sudo systemctl restart reelforge-youtube-worker
-fi
+# Every worker is optional: only the ones enabled on this server are restarted.
+for worker in text image video voice render source youtube social scheduler; do
+  if systemctl is-enabled --quiet "reelforge-${worker}-worker" 2>/dev/null; then
+    sudo systemctl restart "reelforge-${worker}-worker"
+  fi
+done
 
 echo "== 9. Check service status =="
 

@@ -35,7 +35,7 @@ import { useI18n } from "@/lib/i18n";
 import { keys, useAiTools } from "@/lib/queries";
 import type { AiTask, AiTool } from "@/lib/types";
 
-const TASKS: AiTask[] = ["script", "image", "video", "voice", "music"];
+const TASKS: AiTask[] = ["script", "image", "video", "voice", "transcription", "music"];
 const VIDEO_PROVIDERS = new Set(["fal", "runware", "replicate", "runway", "dola"]);
 /** Image providers the backend can call (task "image"). */
 const IMAGE_PROVIDERS = new Set(["runway"]);
@@ -43,6 +43,8 @@ const IMAGE_PROVIDERS = new Set(["runway"]);
 const VOICE_PROVIDERS = new Set(["gemini"]);
 /** Text providers the backend can call (task "script", shown as Text). */
 const TEXT_PROVIDERS = new Set(["openai", "anthropic", "gemini"]);
+/** Speech-to-text providers the backend can call (task "transcription"). */
+const TRANSCRIPTION_PROVIDERS = new Set(["openai"]);
 const presets = [
   { task: "video", provider: "fal", model: "fal-ai/veo3.1/fast", label: "fal · Veo 3.1 Fast" },
   { task: "video", provider: "runware", model: "bytedance:seedance@2.5", label: "Runware · Seedance 2.5" },
@@ -54,13 +56,15 @@ const presets = [
   { task: "script", provider: "openai", model: "gpt-4.1-mini", label: "OpenAI · GPT-4.1 mini" },
   { task: "script", provider: "anthropic", model: "claude-opus-5-5", label: "Anthropic · Claude Opus 5.5" },
   { task: "script", provider: "gemini", model: "gemini-2.5-flash", label: "Google · Gemini 2.5 Flash" },
+  { task: "transcription", provider: "openai", model: "whisper-1", label: "OpenAI · Whisper" },
 ] as const;
 
 const isRunnable = (tool: AiTool) =>
   (tool.task === "video" && VIDEO_PROVIDERS.has(tool.provider)) ||
   (tool.task === "image" && IMAGE_PROVIDERS.has(tool.provider)) ||
   (tool.task === "voice" && VOICE_PROVIDERS.has(tool.provider)) ||
-  (tool.task === "script" && TEXT_PROVIDERS.has(tool.provider));
+  (tool.task === "script" && TEXT_PROVIDERS.has(tool.provider)) ||
+  (tool.task === "transcription" && TRANSCRIPTION_PROVIDERS.has(tool.provider));
 
 type Draft = { id?: string; task: AiTask; provider: string; model: string; is_enabled: boolean };
 

@@ -10,31 +10,53 @@ characters, a description of at most 5,000 bytes, tags of at most 500
 characters in total, no ``<`` or ``>``, and a visibility of ``private``,
 ``unlisted`` or ``public``. When a run has a completed Render step, only its
 final MP4 can be published; runs without one keep publishing their clip.
+
+Phase 12 adds TikTok and Facebook (``validate_channel_metadata``): one
+publication per run and channel, each with its own independent upload job.
+TikTok uploads go to the creator's inbox as drafts (visibility ``private``;
+the caption is kept for the creator, since the inbox API takes none). Facebook
+Reels are ``public`` (published on the Page) or ``private`` (a draft).
+
+Phase 13 adds scheduling: a publication with ``scheduled_for`` in the future is
+stored as ``scheduled`` without a job; the scheduler worker
+(``app/scheduler_worker.py``) calls ``dispatch_due`` to queue its upload when
+the time comes. Scheduled or still-queued publications can be rescheduled or
+cancelled until a worker starts uploading. All times are UTC.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import re
 from typing import Any, Mapping
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, select
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app import jobs
 from app.models import Asset, Base, WorkflowJob, WorkflowRun, WorkflowRunStep
-from app.publishers import google_oauth
+from app.publishers import channel_oauth, google_oauth
 from app.publishers.youtube import MAX_TAGS_LENGTH, PRIVACY_STATUSES, tags_length
 
 
 _CHANNEL_RE = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+CHANNELS = ("youtube", "tiktok", "facebook")
 MAX_TITLE_CHARS = 100
 MAX_DESCRIPTION_BYTES = 5000
 MAX_TAG_CHARS = 100
+MAX_TIKTOK_CAPTION = 2200
+MAX_FACEBOOK_DESCRIPTION = 5000
+MAX_SOCIAL_TAGS = 30
+MAX_SCHEDULE_AHEAD = timedelta(days=365)
+# Visibility each channel accepts: TikTok inbox drafts are private until the creator posts them;
+# Facebook "public" publishes the Reel and "private" keeps it as a draft.
+CHANNEL_PRIVACY = {"youtube": PRIVACY_STATUSES, "tiktok": ("private",), "facebook": ("public", "private")}
+CANCELLABLE_STATES = frozenset({"scheduled", "queued"})
 _ANGLES = re.compile(r"[<>]")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class MetadataError(ValueError):
@@ -84,6 +106,52 @@ def validate_metadata(title: Any, description: Any, tags: Any = None,
     return title, description, tags, privacy_status
 
 
+def _utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def validate_channel_metadata(channel: str, title: Any, description: Any, tags: Any = None,
+                              privacy_status: Any = "private") -> tuple[str, str, list[str], str]:
+    """Metadata checked against one channel's rules, or ``MetadataError``.
+
+    YouTube keeps ``validate_metadata``. TikTok: a caption (``description``) of at
+    most 2,200 characters and visibility ``private`` (an inbox draft). Facebook: a
+    description of at most 5,000 characters and visibility ``public`` or
+    ``private`` (draft). Every channel needs a one-line title of at most 100
+    characters (the YouTube title, and the label of the upload elsewhere) and at
+    most 30 tags for TikTok and Facebook, used as hashtags.
+    """
+    if channel == "youtube":
+        return validate_metadata(title, description, tags, privacy_status)
+    if channel not in CHANNELS:
+        raise MetadataError("invalid_channel", "channel", "Unsupported channel")
+    if not isinstance(title, str) or not title.strip():
+        raise MetadataError("invalid_title", "title", "A title is required")
+    title = title.strip()
+    if len(title) > MAX_TITLE_CHARS or "\n" in title or "\r" in title or _CONTROL.search(title):
+        raise MetadataError("invalid_title", "title", "The title must be one line of at most 100 characters")
+    if not isinstance(description, str) or _CONTROL.search(description) or "\r" in description:
+        raise MetadataError("invalid_description", "description", "The description must be plain text")
+    tags = normalize_tags(tags)
+    if len(tags) > MAX_SOCIAL_TAGS or any(len(tag) > MAX_TAG_CHARS or " " in tag or "," in tag for tag in tags):
+        raise MetadataError("invalid_tags", "tags", "Use at most 30 hashtags, each one word without commas")
+    limit = MAX_TIKTOK_CAPTION if channel == "tiktok" else MAX_FACEBOOK_DESCRIPTION
+    if _utf16_length(social_text(description, tags)) > limit:
+        raise MetadataError("invalid_description", "description",
+                            f"The caption with its hashtags must be at most {limit} characters")
+    if privacy_status not in CHANNEL_PRIVACY[channel]:
+        raise MetadataError("invalid_privacy", "privacy_status",
+                            "TikTok uploads are private drafts" if channel == "tiktok"
+                            else "Facebook Reels are public or private drafts")
+    return title, description, tags, privacy_status
+
+
+def social_text(description: str, tags: list[str]) -> str:
+    """The caption as posted: the description, then the tags as hashtags."""
+    hashtags = " ".join(f"#{tag}" for tag in tags)
+    return "\n\n".join(part for part in (description.strip(), hashtags) if part)
+
+
 def fit_metadata(title: Any, description: Any, tags: Any = None) -> dict[str, Any]:
     """Generated or connected text made to fit YouTube's limits, never raising: for prefilling, not validating."""
     title = " ".join(_ANGLES.sub("", title).split()) if isinstance(title, str) else ""
@@ -97,6 +165,45 @@ def fit_metadata(title: Any, description: Any, tags: Any = None) -> dict[str, An
         if tag and tags_length([*fitted, tag]) <= MAX_TAGS_LENGTH:
             fitted.append(tag)
     return {"title": title, "description": description, "tags": fitted}
+
+
+def fit_social(channel: str, title: Any, description: Any, tags: Any = None) -> dict[str, Any]:
+    """TikTok or Facebook metadata made to fit that channel, never raising: for prefilling, not validating.
+
+    Tags become one-word hashtags and keep at most half of the channel's limit
+    (the last ones are dropped); the text is then cut until the caption with
+    its hashtags fits.
+    """
+    fitted = fit_metadata(title, "", [])
+    clean = []
+    for tag in tags if isinstance(tags, (list, tuple)) else []:
+        tag = re.sub(r"[\s,#<>]+", "", tag)[:MAX_TAG_CHARS] if isinstance(tag, str) else ""
+        if tag and tag.lower() not in {item.lower() for item in clean}:
+            clean.append(tag)
+    clean = clean[:MAX_SOCIAL_TAGS]
+    text = _CONTROL.sub("", description).replace("\r", "").strip() if isinstance(description, str) else ""
+    limit = MAX_TIKTOK_CAPTION if channel == "tiktok" else MAX_FACEBOOK_DESCRIPTION
+    while clean and _utf16_length(social_text("", clean)) > limit // 2:
+        clean.pop()
+    while text and _utf16_length(social_text(text, clean)) > limit:
+        text = text[:-max(1, _utf16_length(social_text(text, clean)) - limit)].rstrip()
+    return {"title": fitted["title"], "description": text, "tags": clean, "privacy_status": "private"}
+
+
+def platform_metadata(youtube: Mapping[str, Any], *, tiktok_caption: Any = None,
+                      facebook_description: Any = None) -> dict[str, dict[str, Any]]:
+    """Prefilled metadata per channel: YouTube's as given, TikTok and Facebook derived from it.
+
+    TikTok gets a short caption (its own when given, else the title); Facebook
+    gets its own description when given, else YouTube's. Both default to
+    ``private`` (a TikTok inbox draft, a Facebook draft Reel).
+    """
+    title, tags = youtube.get("title") or "", youtube.get("tags") or []
+    caption = tiktok_caption if isinstance(tiktok_caption, str) and tiktok_caption.strip() else title
+    body = facebook_description if isinstance(facebook_description, str) and facebook_description.strip() \
+        else youtube.get("description") or ""
+    return {"youtube": dict(youtube), "tiktok": fit_social("tiktok", title, caption, tags),
+            "facebook": fit_social("facebook", title, body, tags)}
 
 
 def publication_tags(publication: "Publication") -> list[str]:
@@ -141,7 +248,7 @@ class Publication(Base):
     __tablename__ = "publications"
     __table_args__ = (
         CheckConstraint(
-            "state IN ('queued', 'uploading', 'succeeded', 'failed', 'needs_attention')",
+            "state IN ('scheduled', 'queued', 'uploading', 'succeeded', 'failed', 'needs_attention', 'cancelled')",
             name="ck_publications_state",
         ),
         CheckConstraint("privacy_status IN ('private', 'unlisted', 'public')", name="ck_publications_privacy"),
@@ -167,6 +274,9 @@ class Publication(Base):
     tags: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     remote_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     remote_privacy: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Migration 0014: when a scheduled publication should be sent, and when it went live (UTC).
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -174,6 +284,56 @@ class Publication(Base):
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def connection_generation(db: Session, channel: str, workspace_id: str) -> str:
+    """The channel connection's consent marker, or ``ValueError`` when the channel cannot publish."""
+    if channel == "youtube":
+        connection = db.get(google_oauth.YouTubeConnection, workspace_id)
+        if connection is None:
+            raise ValueError("YouTube connection is required")
+        return google_oauth.connection_generation(connection)
+    if channel in ("tiktok", "facebook"):
+        connection = db.get(channel_oauth.ChannelConnection, (workspace_id, channel))
+        if connection is None or not connection.access_token_ciphertext or (
+                channel == "facebook" and not connection.account_id):
+            raise ValueError(f"{channel.capitalize()} connection is required")
+        return channel_oauth.connection_generation(connection)
+    raise ValueError("invalid publication channel")
+
+
+def _job_payload(publication: "Publication", generation: str | None) -> dict[str, Any]:
+    payload = {"publication_id": publication.id, "channel": publication.channel, "asset_id": publication.asset_id}
+    if generation is not None:
+        payload["connection_generation"] = generation
+    return payload
+
+
+def _enqueue_upload(db: Session, publication: "Publication", review: WorkflowRunStep, generation: str) -> WorkflowJob:
+    """Queue a fresh upload job; a key already used by an earlier job of this run and channel gets a new suffix."""
+    key = f"publish:{publication.channel}:{publication.run_id}"
+    existing = db.scalar(select(WorkflowJob).where(WorkflowJob.logical_key == key))
+    payload = _job_payload(publication, generation)
+    if existing is not None and (existing.id != publication.job_id or existing.payload != payload
+                                 or existing.state not in ("queued", "leased")):
+        key = f"{key}:retry:{uuid4()}"
+    job = jobs.enqueue_job(db, workspace_id=publication.workspace_id, run_id=publication.run_id,
+                           step_id=review.id, logical_key=key, payload=payload)
+    publication.job_id = job.id
+    return job
+
+
+def schedule_time(value: datetime | None, now: datetime | None = None) -> datetime | None:
+    """A requested publishing time in UTC; ``None`` (or a time already passed) means now."""
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise MetadataError("invalid_schedule", "scheduled_for", "The schedule must be a date and time")
+    now = now or datetime.now(timezone.utc)
+    value = _utc(value)
+    if value > now + MAX_SCHEDULE_AHEAD:
+        raise MetadataError("invalid_schedule", "scheduled_for", "Schedule at most one year ahead")
+    return value if value > now + timedelta(seconds=30) else None
 
 
 def _approved_review(db: Session, *, workspace_id: str, run_id: str, asset_id: str) -> WorkflowRunStep:
@@ -218,32 +378,44 @@ def _approved_review(db: Session, *, workspace_id: str, run_id: str, asset_id: s
 def queue_publication(
     db: Session, *, workspace_id: str, run_id: str, asset_id: str,
     channel: str, title: str, description: str, tags: list[str] | None = None,
-    privacy_status: str = "private",
+    privacy_status: str = "private", scheduled_for: datetime | None = None,
 ) -> Publication:
-    """Create once per run and channel, with an immutable queued job.
+    """Create once per run and channel, with an immutable queued job, or scheduled without one.
 
     The caller commits both rows together. A repeated request must provide the
     exact same asset and metadata; it cannot mutate a queued or finished upload.
+    A cancelled publication of the run and channel is replaced by the new request.
     """
-    if not isinstance(channel, str) or not _CHANNEL_RE.fullmatch(channel):
+    if not isinstance(channel, str) or not _CHANNEL_RE.fullmatch(channel) or channel not in CHANNELS:
         raise ValueError("invalid publication channel")
     try:
-        title, description, tags, privacy_status = validate_metadata(title, description, tags, privacy_status)
+        title, description, tags, privacy_status = validate_channel_metadata(channel, title, description, tags,
+                                                                             privacy_status)
+        scheduled_for = schedule_time(scheduled_for)
     except MetadataError as exc:
         raise ValueError(f"invalid publication {exc.field}") from exc
     tags_json = json.dumps(tags, ensure_ascii=False)
     review = _approved_review(db, workspace_id=workspace_id, run_id=run_id, asset_id=asset_id)
-    connection_generation = None
-    if channel == "youtube":
-        connection = db.get(google_oauth.YouTubeConnection, workspace_id)
-        if connection is None:
-            raise ValueError("YouTube connection is required")
-        connection_generation = google_oauth.connection_generation(connection)
+    connection_generation_value = connection_generation(db, channel, workspace_id)
     now = datetime.now(timezone.utc)
+    state = "scheduled" if scheduled_for else "queued"
+    cancelled = db.scalar(select(Publication).where(Publication.workspace_id == workspace_id,
+                                                    Publication.run_id == run_id, Publication.channel == channel,
+                                                    Publication.state == "cancelled").with_for_update())
+    if cancelled is not None:
+        cancelled.asset_id, cancelled.title, cancelled.description = asset_id, title, description
+        cancelled.tags, cancelled.privacy_status, cancelled.state = tags_json, privacy_status, state
+        cancelled.scheduled_for, cancelled.last_error, cancelled.finished_at = scheduled_for, None, None
+        cancelled.remote_id = cancelled.remote_status = cancelled.remote_privacy = None
+        cancelled.upload_session_ciphertext, cancelled.updated_at = None, now
+        if state == "queued":
+            _enqueue_upload(db, cancelled, review, connection_generation_value)
+        db.flush()
+        return cancelled
     values = dict(id=str(uuid4()), workspace_id=workspace_id, run_id=run_id,
                   asset_id=asset_id, channel=channel, title=title, description=description,
-                  tags=tags_json, privacy_status=privacy_status,
-                  state="queued", created_at=now, updated_at=now)
+                  tags=tags_json, privacy_status=privacy_status, scheduled_for=scheduled_for,
+                  state=state, created_at=now, updated_at=now)
     dialect = db.get_bind().dialect.name
     if dialect == "postgresql":
         statement = postgres_insert(Publication).values(**values).on_conflict_do_nothing(
@@ -260,9 +432,12 @@ def queue_publication(
     if ((publication.asset_id, publication.title, publication.description, publication_tags(publication),
          publication.privacy_status) != (asset_id, title, description, tags, privacy_status)):
         raise ValueError("publication already exists with different input")
-    payload = {"publication_id": publication.id, "channel": channel, "asset_id": asset_id}
-    if connection_generation is not None:
-        payload["connection_generation"] = connection_generation
+    if publication.state == "scheduled":
+        return publication
+    if publication.job_id is None and publication.state != "queued":
+        raise ValueError("publication is not queued; retry it instead")
+    payload = {"publication_id": publication.id, "channel": channel, "asset_id": asset_id,
+               "connection_generation": connection_generation_value}
     if publication.job_id is not None:
         existing_job = db.get(WorkflowJob, publication.job_id)
         if existing_job is not None and existing_job.payload == payload:
@@ -288,25 +463,50 @@ def can_retry_publication(publication: Publication) -> bool:
             and not (publication.last_error or "").startswith("upload:"))
 
 
+def _apply_metadata(publication: Publication, metadata: Mapping[str, Any] | None) -> None:
+    if not metadata:
+        return
+    title, description, tags, privacy_status = validate_channel_metadata(
+        publication.channel, metadata.get("title", publication.title),
+        metadata.get("description", publication.description),
+        metadata.get("tags", publication_tags(publication)),
+        metadata.get("privacy_status", publication.privacy_status))
+    publication.title, publication.description = title, description
+    publication.tags, publication.privacy_status = json.dumps(tags, ensure_ascii=False), privacy_status
+
+
 def retry_publication(db: Session, *, workspace_id: str, publication_id: str,
-                      metadata: Mapping[str, Any] | None = None) -> Publication:
+                      metadata: Mapping[str, Any] | None = None, channel: str | None = "youtube") -> Publication:
     """Explicitly retry only a terminal publication that never uploaded media.
 
     Only a new upload job is queued: the run, its steps and its media are reused
     as they are. ``metadata`` (title, description, tags, privacy_status) may
-    correct the values that made the previous attempt fail.
+    correct the values that made the previous attempt fail. ``channel`` limits
+    the retry to one channel (the YouTube routes); ``None`` accepts any.
     """
-    publication = db.scalar(select(Publication).where(Publication.id == publication_id,
-        Publication.workspace_id == workspace_id, Publication.channel == "youtube").with_for_update())
+    query = select(Publication).where(Publication.id == publication_id, Publication.workspace_id == workspace_id)
+    if channel is not None:
+        query = query.where(Publication.channel == channel)
+    publication = db.scalar(query.with_for_update())
     if publication is None:
         raise ValueError("publication does not belong to workspace")
-    connection = db.get(google_oauth.YouTubeConnection, workspace_id)
-    if connection is None:
-        raise ValueError("YouTube connection is required")
-    generation = google_oauth.connection_generation(connection)
+    generation = connection_generation(db, publication.channel, workspace_id)
     old_job = db.get(WorkflowJob, publication.job_id) if publication.job_id else None
-    if old_job is None or old_job.workspace_id != workspace_id or old_job.run_id != publication.run_id:
+    # A scheduled publication the scheduler could not queue (disconnected channel) never had a job.
+    unqueued = (old_job is None and publication.state == "failed"
+                and (publication.last_error or "").startswith("schedule:"))
+    if not unqueued and (old_job is None or old_job.workspace_id != workspace_id
+                         or old_job.run_id != publication.run_id):
         raise ValueError("publication job is unavailable")
+    if unqueued:
+        review = _approved_review(db, workspace_id=workspace_id, run_id=publication.run_id,
+                                  asset_id=publication.asset_id)
+        _apply_metadata(publication, metadata)
+        _enqueue_upload(db, publication, review, generation)
+        publication.state, publication.last_error, publication.finished_at = "queued", None, None
+        publication.updated_at = datetime.now(timezone.utc)
+        db.flush()
+        return publication
     if (publication.state == "queued" and ":retry:" in old_job.logical_key
             and old_job.state == "queued"
             and old_job.payload.get("connection_generation") == generation):
@@ -317,17 +517,11 @@ def retry_publication(db: Session, *, workspace_id: str, publication_id: str,
         raise ValueError("publication has an uncertain upload outcome")
     review = _approved_review(db, workspace_id=workspace_id, run_id=publication.run_id,
                               asset_id=publication.asset_id)
-    if metadata:
-        title, description, tags, privacy_status = validate_metadata(
-            metadata.get("title", publication.title), metadata.get("description", publication.description),
-            metadata.get("tags", publication_tags(publication)),
-            metadata.get("privacy_status", publication.privacy_status))
-        publication.title, publication.description = title, description
-        publication.tags, publication.privacy_status = json.dumps(tags, ensure_ascii=False), privacy_status
-    payload = {"publication_id": publication.id, "channel": "youtube",
+    _apply_metadata(publication, metadata)
+    payload = {"publication_id": publication.id, "channel": publication.channel,
                "asset_id": publication.asset_id, "connection_generation": generation}
     new_job = jobs.enqueue_job(db, workspace_id=workspace_id, run_id=publication.run_id,
-        step_id=review.id, logical_key=f"publish:youtube:{publication.run_id}:retry:{old_job.id}",
+        step_id=review.id, logical_key=f"publish:{publication.channel}:{publication.run_id}:retry:{old_job.id}",
         payload=payload)
     publication.job_id = new_job.id
     publication.state = "queued"
@@ -349,7 +543,7 @@ def _leased_publication(
     expected_payload = ({"publication_id": publication.id, "channel": publication.channel,
                          "asset_id": publication.asset_id} if publication is not None else {})
     payload = job.payload
-    if publication is not None and publication.channel == "youtube" and "connection_generation" in payload:
+    if publication is not None and publication.channel in CHANNELS and "connection_generation" in payload:
         if not isinstance(payload["connection_generation"], str) or not payload["connection_generation"]:
             return None
         expected_payload["connection_generation"] = payload["connection_generation"]
@@ -421,8 +615,10 @@ def load_upload_session(publication: Publication, *, encryption_key: str) -> dic
 def finish_publication(
     db: Session, *, publication_id: str, job_id: str, lease_token: str,
     remote_id: str, now: datetime | None = None, upload_status: str | None = None,
-    privacy_status: str | None = None,
+    privacy_status: str | None = None, published: bool = True,
 ) -> bool:
+    """Record a finished upload. ``published`` is false when the platform holds it for the
+    creator (a TikTok inbox draft): ``published_at`` then stays empty."""
     if not isinstance(remote_id, str) or not remote_id or len(remote_id) > 255:
         raise ValueError("invalid remote publication ID")
     now = now or datetime.now(timezone.utc)
@@ -447,6 +643,7 @@ def finish_publication(
     if privacy_status in PRIVACY_STATUSES:
         publication.remote_privacy = privacy_status
     publication.updated_at, publication.finished_at = now, now
+    publication.published_at = now if published else None
     return True
 
 
@@ -475,3 +672,104 @@ def fail_publication(
     publication.last_error, publication.updated_at = error[:1000], now
     publication.finished_at = None if retry_delay_seconds is not None else now
     return True
+
+
+def continue_upload(db: Session, *, publication_id: str, job_id: str, lease_token: str, delay_seconds: int,
+                    now: datetime | None = None) -> bool:
+    """Hand a multi-step upload back to the queue after saving its progress (next chunk, next poll)."""
+    now = now or datetime.now(timezone.utc)
+    pair = _leased_publication(db, publication_id=publication_id, job_id=job_id, lease_token=lease_token, now=now)
+    if pair is None or pair[0].state not in {"queued", "uploading"}:
+        return False
+    return jobs.fail_job(db, job_id=job_id, lease_token=lease_token, error="upload_in_progress",
+                         retry_delay_seconds=max(0, delay_seconds), now=now)
+
+
+def dispatch_due(db: Session, *, now: datetime | None = None, limit: int = 20) -> list[tuple[str, str]]:
+    """Queue the uploads of scheduled publications whose time has come; returns ``(id, outcome)`` pairs.
+
+    Rows are locked (``SKIP LOCKED`` on PostgreSQL) so several schedulers never
+    dispatch one publication twice, and the state is checked again under the lock,
+    so a restart after a crash simply continues. A publication whose run is no
+    longer approved, or whose channel is disconnected, fails with a clear error
+    instead of uploading. The caller commits.
+    """
+    now = now or datetime.now(timezone.utc)
+    query = (select(Publication).where(Publication.state == "scheduled", Publication.scheduled_for <= now)
+             .order_by(Publication.scheduled_for, Publication.id).limit(limit))
+    if db.get_bind().dialect.name == "postgresql":
+        query = query.with_for_update(skip_locked=True)
+    outcomes = []
+    for publication in db.scalars(query).all():
+        if publication.state != "scheduled":
+            continue
+        try:
+            review = _approved_review(db, workspace_id=publication.workspace_id, run_id=publication.run_id,
+                                      asset_id=publication.asset_id)
+            generation = connection_generation(db, publication.channel, publication.workspace_id)
+        except ValueError as exc:
+            reason = "connection_required" if "connection" in str(exc) else "not_approved"
+            publication.state, publication.last_error = "failed", f"schedule:{reason}"
+            publication.updated_at = publication.finished_at = now
+            outcomes.append((publication.id, publication.last_error))
+            continue
+        _enqueue_upload(db, publication, review, generation)
+        publication.state, publication.updated_at = "queued", now
+        outcomes.append((publication.id, "queued"))
+    db.flush()
+    return outcomes
+
+
+def _unstarted_job(db: Session, publication: Publication) -> WorkflowJob | None:
+    """The publication's job, if it is still waiting in the queue (no worker has claimed it)."""
+    return db.get(WorkflowJob, publication.job_id) if publication.job_id else None
+
+
+def _withdraw_job(db: Session, publication: Publication, error: str, now: datetime) -> None:
+    """Take a queued publication's job out of the queue, or ``ValueError`` once a worker started it."""
+    if publication.state == "scheduled":
+        return
+    job = _unstarted_job(db, publication)
+    if job is None or publication.upload_session_ciphertext is not None or publication.remote_id is not None:
+        raise ValueError("upload_started")
+    changed = db.execute(update(WorkflowJob).where(WorkflowJob.id == job.id, WorkflowJob.state == "queued")
+                         .values(state="failed", last_error=error, finished_at=now, updated_at=now)
+                         .execution_options(synchronize_session="fetch"))
+    if changed.rowcount != 1:
+        raise ValueError("upload_started")
+
+
+def cancel_publication(db: Session, *, workspace_id: str, publication_id: str,
+                       now: datetime | None = None) -> Publication:
+    """Cancel a scheduled publication, or a queued one whose upload has not started; the caller commits."""
+    now = now or datetime.now(timezone.utc)
+    publication = db.scalar(select(Publication).where(Publication.id == publication_id,
+                                                      Publication.workspace_id == workspace_id).with_for_update())
+    if publication is None:
+        raise LookupError("publication not found")
+    if publication.state not in CANCELLABLE_STATES:
+        raise ValueError("upload_started")
+    _withdraw_job(db, publication, "cancelled", now)
+    publication.state, publication.last_error = "cancelled", None
+    publication.updated_at = publication.finished_at = now
+    return publication
+
+
+def reschedule_publication(db: Session, *, workspace_id: str, publication_id: str, scheduled_for: datetime | None,
+                           now: datetime | None = None) -> Publication:
+    """Move a scheduled (or still-queued) publication to another time; ``None`` or a past time means now."""
+    now = now or datetime.now(timezone.utc)
+    publication = db.scalar(select(Publication).where(Publication.id == publication_id,
+                                                      Publication.workspace_id == workspace_id).with_for_update())
+    if publication is None:
+        raise LookupError("publication not found")
+    if publication.state not in CANCELLABLE_STATES:
+        raise ValueError("upload_started")
+    when = schedule_time(scheduled_for, now)
+    if when is None and publication.state == "queued":
+        return publication
+    _withdraw_job(db, publication, "rescheduled", now)
+    # Due now: the scheduler queues it on its next pass (within seconds).
+    publication.state, publication.scheduled_for = "scheduled", when or now
+    publication.updated_at, publication.last_error = now, None
+    return publication

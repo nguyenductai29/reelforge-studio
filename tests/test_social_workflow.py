@@ -22,12 +22,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TemplateTest(unittest.TestCase):
     def test_templates_are_valid_graphs_without_tool_ids(self):
+        social = ["idea", "ai_writer", "scenes", "video", "voice", "subtitle", "render", "review", "metadata", "publish"]
+        expected = {"repurpose": ["source_url", *social[1:]],
+                    "movie_recap": ["source_media", "transcribe", "story_analysis", "recap_script", "voice",
+                                    "match_scenes", "extract_clips", "subtitle", "render", "review", "metadata",
+                                    "publish"]}
         for template_id in TEMPLATES:
             with self.subTest(template=template_id):
                 graph = template_graph(template_id)
-                self.assertEqual([node["type"] for node in graph["nodes"]],
-                                 ["idea", "ai_writer", "scenes", "video", "voice", "subtitle", "render", "review",
-                                  "metadata", "publish"])
+                self.assertEqual([node["type"] for node in graph["nodes"]], expected.get(template_id, social))
                 self.assertEqual(edge_problems(graph, default_registry), [])
                 for node in graph["nodes"]:
                     default_registry.resolve(node["type"]).validate_config(node.get("config"))
@@ -248,7 +251,9 @@ def counts():
 
 TEMPLATES_SCENARIO = r'''
 listed = client.get("/api/workflow-templates").json()["templates"]
-assert [t["id"] for t in listed] == ["youtube_short", "youtube_landscape"], listed
+assert [t["id"] for t in listed] == ["youtube_short", "youtube_landscape", "tiktok_short", "facebook_reel",
+                                    "repurpose", "movie_recap"], listed
+assert next(t for t in listed if t["id"] == "movie_recap")["notice"] == "Use only content you are authorized to use."
 created = client.post("/api/workflows", json={"name": "Short", "template": "youtube_short"})
 assert created.status_code == 201, created.text
 graph = created.json()["graph"]

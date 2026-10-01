@@ -13,7 +13,7 @@ import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { keys, useDashboard } from "@/lib/queries";
-import { ACCEPTED_UPLOADS, MAX_UPLOAD_BYTES, assetKind, formatBytes, type AssetKind } from "@/lib/studio";
+import { MAX_UPLOAD_BYTES, UPLOAD_ACCEPT, acceptedUpload, assetKind, formatBytes, type AssetKind } from "@/lib/studio";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | Exclude<AssetKind, "other">;
@@ -48,7 +48,7 @@ function MediaPage() {
     setUploading(true);
     let last: string | null = null;
     for (const file of list) {
-      if (!ACCEPTED_UPLOADS.includes(file.type)) {
+      if (!acceptedUpload(file)) {
         toast.error(t.media.unsupported(file.name));
         continue;
       }
@@ -98,7 +98,7 @@ function MediaPage() {
         type="file"
         multiple
         hidden
-        accept={ACCEPTED_UPLOADS.join(",")}
+        accept={UPLOAD_ACCEPT}
         onChange={(e) => e.target.files && void upload(e.target.files)}
       />
 

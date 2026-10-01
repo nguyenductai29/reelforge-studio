@@ -366,12 +366,39 @@ def parse_metadata(text: str) -> dict[str, Any]:
     return fit_metadata(lines[0] if lines else "", "\n".join(lines[1:]), [])
 
 
+def parse_platforms(text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Per-channel metadata (YouTube, TikTok, Facebook) from the same JSON reply (Phase 12)."""
+    from app.publications import platform_metadata
+
+    body = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text or "")
+    try:
+        value = json.loads(body)
+    except ValueError:
+        value = None
+    value = value if isinstance(value, dict) else {}
+    return platform_metadata({**metadata, "privacy_status": "private"}, tiktok_caption=value.get("tiktok_caption"),
+                             facebook_description=value.get("facebook_description"))
+
+
+def _publish_metadata(output):
+    """The Metadata port: YouTube's values, with every channel's under ``platforms`` when present."""
+    metadata = output.get("metadata")
+    if not isinstance(metadata, dict) or not metadata:
+        return None
+    platforms = output.get("platforms")
+    return {**metadata, "platforms": platforms} if isinstance(platforms, dict) else metadata
+
+
 class MetadataNodeHandler(TextNodeHandler):
-    """YouTube title, description and tags for the finished video, in one JSON generation (Phase 9)."""
+    """Title, description and tags for the finished video, per channel, in one JSON generation (Phase 9, 12).
+
+    ``metadata`` keeps YouTube's values; ``platforms`` adds a short TikTok caption
+    and a Facebook description derived from the same reply.
+    """
 
     node_type = "metadata"
     inputs = (TOPIC_IN, SOURCE)
-    outputs = (OutputPort("metadata", PUBLISH_METADATA, extract=lambda output: output.get("metadata") or None),
+    outputs = (OutputPort("metadata", PUBLISH_METADATA, extract=_publish_metadata),
                OutputPort("title", TEXT), OutputPort("description", TEXT))
     requires = (("topic", "source"),)
     response_format = "json"
@@ -383,7 +410,7 @@ class MetadataNodeHandler(TextNodeHandler):
                     code="invalid_cta"),
         MODEL, advanced(TONE), advanced(INSTRUCTIONS), TEMPERATURE, max_tokens_field(1024),
     )
-    system_prompt = "You write YouTube publishing metadata. Reply with one JSON object and nothing else."
+    system_prompt = "You write social video publishing metadata. Reply with one JSON object and nothing else."
 
     def build_prompt(self, context, config, inputs):
         topic = self.text_input(inputs, "topic")
@@ -393,10 +420,13 @@ class MetadataNodeHandler(TextNodeHandler):
         ending = " End it with one short call to action." if config["cta"] == "include" else ""
         lines = [f"Write YouTube publishing metadata in {language_name(self.language(context, config))} "
                  "for the video described below.",
-                 'Return exactly: {"title": string, "description": string, "tags": [string]}.',
+                 'Return exactly: {"title": string, "description": string, "tags": [string], '
+                 '"tiktok_caption": string, "facebook_description": string}.',
                  "title: one line of at most 90 characters, specific and clickable, without < or >.",
                  f"description: 2 to 4 short paragraphs, at most 1500 characters, without < or >.{ending}",
                  f"tags: {config['tag_count']} short search keywords or phrases, without # or commas.",
+                 "tiktok_caption: one or two short lines for TikTok, at most 150 characters, without hashtags.",
+                 "facebook_description: one short paragraph for a Facebook Reel, at most 500 characters.",
                  *self.extras(config)]
         if topic:
             lines.append(f"Topic: {topic}")
@@ -406,7 +436,8 @@ class MetadataNodeHandler(TextNodeHandler):
 
     def output_from(self, payload, result):
         metadata = parse_metadata(result.text)
-        return {"metadata": metadata, "title": metadata["title"], "description": metadata["description"],
+        return {"metadata": metadata, "platforms": parse_platforms(result.text, metadata),
+                "title": metadata["title"], "description": metadata["description"],
                 "tags": metadata["tags"], "text": result.text, "provider": result.provider, "model": result.model,
                 "usage": result.usage.as_dict(), "language": payload.get("language")}
 

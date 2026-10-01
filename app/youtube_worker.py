@@ -10,6 +10,7 @@ import time
 
 import httpx
 
+from app import heartbeat
 from app import jobs, publications
 from app.db import Session
 from app.main import media_root
@@ -164,6 +165,7 @@ def main():
     start_process("youtube_worker")
     while True:
         worked = run_one()
+        heartbeat.beat("youtube_worker")
         if args.once:
             return
         if not worked:

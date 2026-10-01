@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import time
 
+from app import heartbeat
 from app import media_jobs
 from app.audio_files import inspect_audio
 from app.providers.errors import ProviderError
@@ -68,6 +69,7 @@ def main():
     start_process("voice_worker")
     while True:
         worked = run_one()
+        heartbeat.beat("voice_worker")
         if args.once:
             return
         if not worked:

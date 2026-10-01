@@ -15,21 +15,23 @@ import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import AliasChoices, BaseModel, Field
-from sqlalchemy import func, inspect, select, update
+from sqlalchemy import case, func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import auth_security, billing, payments, publications, reconciliation, run_summary, usage
+from app import (auth_security, billing, heartbeat, jobs, media_maintenance, payments, publications, reconciliation,
+                 run_summary, sources, usage)
 from app.models import CreditReconciliation
 # Re-exported: existing callers import video_provider_config_issue from app.main.
 from app.providers.catalog import video_provider_config_issue  # noqa: F401
-from app.publishers import google_oauth
+from app.publishers import channel_oauth, google_oauth
+from app.publishers.youtube import UPLOAD_SCOPE as YOUTUBE_UPLOAD_SCOPE
 from app.runtime_env import start_process
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
                           parse_graph)
-from app.workflow.config import TOOL, ConfigError, check_tools
+from app.workflow.config import TOOL, ConfigError, check_assets, check_tools
 from app.workflow.templates import TEMPLATES, describe_templates, template_graph
 from app.workflow.nodes import ReviewNodeHandler
 from app.workflow.results import produced_asset_ids
@@ -98,10 +100,41 @@ def upload_preflight(scope):
 
 app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_UPLOAD + MULTIPART_OVERHEAD_BYTES,
                    preflight=upload_preflight)
-ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "audio/mpeg", "audio/wav", "audio/ogg"}
+ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "audio/mpeg", "audio/wav", "audio/ogg",
+                 *sources.DOCUMENT_TYPES}
+# Browsers often send no type (or a generic one) for these; the extension decides.
+DOCUMENT_EXTENSIONS = {".txt": "text/plain", ".md": "text/markdown", ".markdown": "text/markdown",
+                       ".srt": "application/x-subrip", ".vtt": "text/vtt"}
+LOOSE_DOCUMENT_TYPES = {"", "application/octet-stream", "text/plain", "text/markdown", "text/x-markdown",
+                        "application/x-subrip", "text/srt", "text/vtt", "text/x-vtt"}
+
+
+def upload_content_type(content_type: str, filename: str) -> str:
+    """The stored type of an upload: a text document by its extension, anything else as sent."""
+    extension = Path(filename or "").suffix.lower()
+    if extension in DOCUMENT_EXTENSIONS and content_type in LOOSE_DOCUMENT_TYPES:
+        return DOCUMENT_EXTENSIONS[extension]
+    return content_type
+
+
+def document_matches(content_type: str, path: Path) -> bool:
+    """UTF-8 text without NUL bytes, at most 2 MB; subtitles must have cue timings (VTT its header)."""
+    if path.stat().st_size > sources.MAX_DOCUMENT_BYTES:
+        return False
+    try:
+        text = sources.decode_text(path.read_bytes())
+    except sources.SourceError:
+        return False
+    if content_type == "text/vtt":
+        return text.lstrip().startswith("WEBVTT") and "-->" in text
+    if content_type == "application/x-subrip":
+        return "-->" in text
+    return bool(text.strip())
 
 
 def media_signature_matches(content_type: str, path: Path) -> bool:
+    if content_type in sources.DOCUMENT_TYPES:
+        return document_matches(content_type, path)
     with path.open("rb") as source:
         header = source.read(16)
     signatures = {
@@ -184,7 +217,7 @@ class ProjectPatch(BaseModel):
 
 
 class AIToolInput(BaseModel):
-    task: str = Field(pattern="^(script|image|video|voice|music)$")
+    task: str = Field(pattern="^(script|image|video|voice|music|transcription)$")
     provider: str = Field(min_length=1, max_length=60, pattern=r"^[a-zA-Z0-9._-]+$")
     model: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9._:/@-]+$")
     is_enabled: bool = True
@@ -529,7 +562,8 @@ def dashboard(request: Request):
         user = authorize(request, db)
         subscription = db.get(Subscription, ws.id)
         plan = db.get(Plan, subscription.plan_code) if subscription else None
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": workflow_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None}}
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": workflow_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None},
+                "storage": {"used_bytes": sum(a.bytes or 0 for a in assets), "quota_bytes": workspace_media_quota()}}
 
 
 @app.get("/api/settings")
@@ -554,6 +588,68 @@ def update_workspace_settings(data: WorkspaceSettingsInput, request: Request):
         for key, value in data.model_dump().items():
             db.get(WorkspaceSetting, (ws.id, key)).value = json.dumps(value)
         return {"workspace": data.model_dump()}
+
+
+# Friendly names of the tasks a workspace can choose a default model for, and the AI tool task each maps to.
+DEFAULT_MODEL_TASKS = {"text": "script", "image": "image", "video": "video", "voice": "voice",
+                       "transcription": "transcription"}
+_TOOL_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
+
+
+class DefaultModelsInput(BaseModel):
+    text: str | None = Field(default=None, pattern=_TOOL_ID_PATTERN)
+    image: str | None = Field(default=None, pattern=_TOOL_ID_PATTERN)
+    video: str | None = Field(default=None, pattern=_TOOL_ID_PATTERN)
+    voice: str | None = Field(default=None, pattern=_TOOL_ID_PATTERN)
+    transcription: str | None = Field(default=None, pattern=_TOOL_ID_PATTERN)
+
+
+def default_models(db, workspace_id):
+    row = db.get(WorkspaceSetting, (workspace_id, "default_models"))
+    stored = json.loads(row.value) if row else {}
+    stored = stored if isinstance(stored, dict) else {}
+    return {name: stored.get(task) if isinstance(stored.get(task), str) else None
+            for name, task in DEFAULT_MODEL_TASKS.items()}
+
+
+@app.get("/api/settings/default-models")
+def get_default_models(request: Request):
+    """The model each task uses when a step names none; a step's own choice always wins."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        return {"default_models": default_models(db, ws.id)}
+
+
+@app.put("/api/settings/default-models")
+def update_default_models(data: DefaultModelsInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        ws = ai_tool_owner(request, db)
+        chosen = data.model_dump()
+        stored = {}
+        for name, tool_id in chosen.items():
+            if tool_id is None:
+                continue
+            tool = db.scalar(select(AITool).where(AITool.id == tool_id, AITool.workspace_id == ws.id))
+            if tool is None or tool.task != DEFAULT_MODEL_TASKS[name] or not tool.is_enabled:
+                raise HTTPException(422, {"code": "invalid_default_model", "field": name,
+                                          "message": f"{name} must be an enabled {name} model of this workspace"})
+            stored[DEFAULT_MODEL_TASKS[name]] = tool_id
+        row = db.get(WorkspaceSetting, (ws.id, "default_models"))
+        if row is None:
+            db.add(WorkspaceSetting(workspace_id=ws.id, key="default_models", value=json.dumps(stored)))
+        else:
+            row.value = json.dumps(stored)
+        return {"default_models": chosen}
+
+
+@app.get("/api/storage")
+def storage_overview(request: Request):
+    """How much media the workspace stores, by kind, against its quota."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        by_type = media_maintenance.usage_by_type(db, ws.id)
+        return {"used_bytes": sum(by_type.values()), "quota_bytes": workspace_media_quota(), "by_type": by_type}
 
 
 @app.put("/api/settings/system")
@@ -773,6 +869,60 @@ def admin_overview(request: Request):
                                 "credits": db.get(CreditAccount, w.id).balance if db.get(CreditAccount, w.id) else 0,
                                 "ends_at": s.ends_at.isoformat() if s and s.ends_at else None}
                                for w in workspaces for s in [db.get(Subscription, w.id)]]}
+
+
+ADMIN_JOB_QUEUES = ("text", "image", "video", "voice", "render", "source", "publish")
+
+
+def public_job(job):
+    """Operator view of a queued job: identifiers, state and timing only; never its payload."""
+    error = job.last_error or None
+    if error:
+        error = re.sub(r"https?://\S+", "[URL omitted]", error)[:200]
+    return {"id": job.id, "queue": job.logical_key.split(":", 1)[0], "channel": job.logical_key.split(":")[1]
+            if job.logical_key.startswith("publish:") else None, "state": job.state,
+            "attempt_count": job.attempt_count, "worker_id": job.worker_id, "workspace_id": job.workspace_id,
+            "run_id": job.run_id, "step_id": job.step_id, "last_error": error,
+            "created_at": _iso(job.created_at), "updated_at": _iso(job.updated_at),
+            "available_at": _iso(job.available_at), "lease_expires_at": _iso(job.lease_expires_at),
+            "finished_at": _iso(job.finished_at)}
+
+
+@app.get("/api/admin/workers")
+def admin_workers(request: Request):
+    """Each worker's last heartbeat: ok, stale (stopped or stuck), error, or missing (never started)."""
+    with Session() as db:
+        admin_for(request, db)
+        return {"workers": heartbeat.worker_health(db), "stale_after_seconds": heartbeat.STALE_SECONDS}
+
+
+@app.get("/api/admin/jobs")
+def admin_jobs(request: Request, state: Literal["queued", "leased", "succeeded", "failed"] | None = None,
+               queue: Literal["text", "image", "video", "voice", "render", "source", "publish"] | None = None,
+               limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0)):
+    """Recent jobs of every workspace with safe fields, counts per queue and state, and a stuck-work audit."""
+    with Session() as db:
+        admin_for(request, db)
+        query = select(WorkflowJob)
+        if state:
+            query = query.where(WorkflowJob.state == state)
+        if queue:
+            query = query.where(WorkflowJob.logical_key.startswith(f"{queue}:"))
+        rows = db.scalars(query.order_by(WorkflowJob.updated_at.desc(), WorkflowJob.id).limit(limit).offset(offset))
+        queue_name = case(*((WorkflowJob.logical_key.startswith(f"{name}:"), name) for name in ADMIN_JOB_QUEUES),
+                          else_="other")
+        counts = {}
+        for key, job_state, count in db.execute(select(queue_name, WorkflowJob.state, func.count())
+                                                .group_by(queue_name, WorkflowJob.state)):
+            counts.setdefault(key, {})[job_state] = count
+        return {"jobs": [public_job(job) for job in rows], "counts": counts, "stuck": jobs.stuck_jobs(db)}
+
+
+@app.get("/api/admin/storage")
+def admin_storage(request: Request):
+    with Session() as db:
+        admin_for(request, db)
+        return {"workspaces": media_maintenance.storage_usage(db), "quota_bytes": workspace_media_quota()}
 
 
 @app.post("/api/admin/accounts", status_code=201)
@@ -1008,15 +1158,29 @@ def youtube_disconnect(request: Request):
     return Response(status_code=204)
 
 
+def _iso(value):
+    if value is None:
+        return None
+    return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).isoformat()
+
+
 def public_publication(row):
     succeeded = row.state == "succeeded" and bool(row.remote_id)
+    youtube_url = f"https://www.youtube.com/watch?v={row.remote_id}" if succeeded and row.channel == "youtube" else None
+    # A TikTok inbox draft has no public page until the creator posts it in the app.
+    url = youtube_url or (f"https://www.facebook.com/reel/{row.remote_id}"
+                          if succeeded and row.channel == "facebook" and row.remote_status == "published" else None)
+    open_state = row.state in publications.CANCELLABLE_STATES and row.upload_session_ciphertext is None \
+        and row.remote_id is None
     return {"id": row.id, "run_id": row.run_id, "asset_id": row.asset_id, "channel": row.channel,
             "title": row.title, "description": row.description, "tags": publications.publication_tags(row),
             "privacy_status": row.privacy_status, "state": row.state,
             "remote_id": row.remote_id, "remote_status": row.remote_status, "remote_privacy": row.remote_privacy,
-            "youtube_url": f"https://www.youtube.com/watch?v={row.remote_id}" if succeeded else None,
+            "youtube_url": youtube_url, "url": url,
             "last_error": row.last_error,
             "can_retry": publications.can_retry_publication(row),
+            "can_cancel": open_state, "can_reschedule": open_state,
+            "scheduled_for": _iso(row.scheduled_for), "published_at": _iso(row.published_at),
             "created_at": row.created_at.isoformat(),
             "finished_at": row.finished_at.isoformat() if row.finished_at else None}
 
@@ -1099,6 +1263,291 @@ def get_youtube_publication(publication_id: str, request: Request):
             publications.Publication.channel == "youtube"))
         if not row:
             raise HTTPException(404, "Publication not found")
+        return public_publication(row)
+
+
+class ChannelCallbackInput(BaseModel):
+    state: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=1, max_length=4096)
+
+
+class FacebookPageInput(BaseModel):
+    page_id: str = Field(pattern=r"^[0-9]{1,40}$")
+
+
+class PublicationTarget(BaseModel):
+    channel: Literal["youtube", "tiktok", "facebook"]
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=5000)
+    tags: list[str] = Field(default_factory=list, max_length=60)
+    privacy_status: Literal["private", "unlisted", "public"] = "private"
+
+
+class PublicationsInput(BaseModel):
+    run_id: str
+    # Omitted: the run's final render, else its clip (publications.final_video).
+    asset_id: str | None = None
+    # UTC; omitted (or already passed): upload now.
+    scheduled_for: datetime | None = None
+    targets: list[PublicationTarget] = Field(min_length=1, max_length=3)
+
+
+class RetryInput(BaseModel):
+    title: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=5000)
+    tags: list[str] | None = Field(default=None, max_length=60)
+    privacy_status: Literal["private", "unlisted", "public"] | None = None
+
+
+class ScheduleInput(BaseModel):
+    scheduled_for: datetime | None = None
+
+
+CHANNEL_NAMES = ("youtube", *channel_oauth.CHANNELS)
+
+
+def channel_oauth_error(exc: channel_oauth.ChannelOAuthError):
+    status_code = {"not_configured": 503, "forbidden": 403, "provider_unavailable": 502, "token_error": 502,
+                   "invalid_response": 502, "no_pages": 409, "unknown_page": 409, "not_connected": 409,
+                   "unsupported_channel": 404}.get(exc.code, 400)
+    raise HTTPException(status_code, {"code": exc.code, "message": str(exc)}) from exc
+
+
+def youtube_channel_status(db, workspace_id):
+    result = {"channel": "youtube", "account_name": None, "connected_at": None, "reason": None}
+    try:
+        google_oauth.GoogleOAuthConfig.from_environment()
+    except google_oauth.OAuthError:
+        return {**result, "status": "configuration_required"}
+    connection = db.get(google_oauth.YouTubeConnection, workspace_id)
+    if connection is None:
+        return {**result, "status": "not_connected"}
+    result["connected_at"] = _iso(connection.connected_at)
+    if YOUTUBE_UPLOAD_SCOPE not in (connection.scope or "").split():
+        return {**result, "status": "authorization_required", "reason": "missing_scope"}
+    return {**result, "status": "connected"}
+
+
+def channel_statuses(db, workspace_id):
+    return [youtube_channel_status(db, workspace_id),
+            *(channel_oauth.status(db, channel, workspace_id) for channel in channel_oauth.CHANNELS)]
+
+
+@app.get("/api/channels")
+def list_channels(request: Request):
+    """Every publishing channel with ``connected``, ``not_connected``, ``configuration_required`` or
+    ``authorization_required``; never a token."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        return {"channels": channel_statuses(db, ws.id)}
+
+
+@app.get("/api/channels/{channel}/authorization")
+def channel_authorization(channel: str, request: Request):
+    if channel == "youtube":
+        return youtube_authorization(request)
+    same_origin(request)
+    if channel not in channel_oauth.CHANNELS:
+        raise HTTPException(404, "Unknown channel")
+    try:
+        config = channel_oauth.ChannelConfig.from_environment(channel)
+        with Session.begin() as db:
+            ws = youtube_owner(request, db)
+            started = channel_oauth.begin_authorization(db, config, workspace_id=ws.id,
+                                                        user_id=authorize(request, db).id)
+        return {"url": started.url, "expires_at": started.expires_at.isoformat()}
+    except channel_oauth.ChannelOAuthError as exc:
+        channel_oauth_error(exc)
+
+
+@app.post("/api/channels/{channel}/callback")
+def channel_callback(channel: str, data: ChannelCallbackInput, request: Request):
+    if channel == "youtube":
+        return youtube_callback(YouTubeCallbackInput(state=data.state, code=data.code), request)
+    same_origin(request)
+    if channel not in channel_oauth.CHANNELS:
+        raise HTTPException(404, "Unknown channel")
+    try:
+        config = channel_oauth.ChannelConfig.from_environment(channel)
+        with Session() as db, google_http_client() as client:
+            user = authorize(request, db)
+            return channel_oauth.complete_authorization(db, config, state=data.state, code=data.code,
+                                                        current_user_id=user.id, client=client)
+    except channel_oauth.ChannelOAuthError as exc:
+        channel_oauth_error(exc)
+
+
+@app.put("/api/channels/facebook/page")
+def choose_facebook_page(data: FacebookPageInput, request: Request):
+    """Publish Reels to another of the Pages listed at authorization; queued uploads for the old Page stop."""
+    same_origin(request)
+    try:
+        config = channel_oauth.ChannelConfig.from_environment("facebook")
+        with Session.begin() as db:
+            ws = youtube_owner(request, db)
+            channel_oauth.select_facebook_page(db, config, workspace_id=ws.id, page_id=data.page_id)
+        with Session() as db:
+            return channel_oauth.status(db, "facebook", ws.id)
+    except channel_oauth.ChannelOAuthError as exc:
+        channel_oauth_error(exc)
+
+
+@app.delete("/api/channels/{channel}", status_code=204)
+def disconnect_channel(channel: str, request: Request):
+    if channel == "youtube":
+        return youtube_disconnect(request)
+    same_origin(request)
+    if channel not in channel_oauth.CHANNELS:
+        raise HTTPException(404, "Unknown channel")
+    with Session() as db:
+        ws = youtube_owner(request, db)
+        channel_oauth.disconnect(db, channel, workspace_id=ws.id)
+    return Response(status_code=204)
+
+
+def owned_publication(db, ws, publication_id):
+    row = db.scalar(select(publications.Publication).where(publications.Publication.id == publication_id,
+                                                           publications.Publication.workspace_id == ws.id))
+    if not row:
+        raise HTTPException(404, "Publication not found")
+    return row
+
+
+@app.get("/api/publications")
+def list_publications(request: Request, run_id: str | None = None,
+                      channel: Literal["youtube", "tiktok", "facebook"] | None = None,
+                      start: datetime | None = None, end: datetime | None = None):
+    """Publications of every channel, newest first; ``start``/``end`` (UTC) select a calendar range by the
+    scheduled time, else the publishing time, else the creation time."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        Publication = publications.Publication
+        when = func.coalesce(Publication.scheduled_for, Publication.published_at, Publication.created_at)
+        query = select(Publication).where(Publication.workspace_id == ws.id)
+        if run_id:
+            query = query.where(Publication.run_id == run_id)
+        if channel:
+            query = query.where(Publication.channel == channel)
+        if start:
+            query = query.where(when >= start)
+        if end:
+            query = query.where(when < end)
+        rows = db.scalars(query.order_by(when.desc(), Publication.id).limit(300))
+        return {"publications": [public_publication(row) for row in rows]}
+
+
+@app.post("/api/publications", status_code=201)
+def create_publications(data: PublicationsInput, request: Request, response: Response):
+    """Publish one approved run to several channels: one publication and one independent upload job each.
+
+    Every target is validated first (422 names the channel and field), then each
+    channel must be connected (409). ``scheduled_for`` stores them as scheduled;
+    the scheduler worker queues each upload when the time comes.
+    """
+    same_origin(request)
+    channels = [target.channel for target in data.targets]
+    if len(set(channels)) != len(channels):
+        raise HTTPException(422, {"code": "duplicate_channel", "message": "Each channel can be chosen once"})
+    with Session.begin() as db:
+        ws = youtube_owner(request, db)
+        active_plan(db, ws)
+        for target in data.targets:
+            try:
+                publications.validate_channel_metadata(target.channel, target.title, target.description,
+                                                       target.tags, target.privacy_status)
+            except publications.MetadataError as exc:
+                raise HTTPException(422, {"code": exc.code, "field": exc.field, "channel": target.channel,
+                                          "message": str(exc)}) from exc
+        try:
+            publications.schedule_time(data.scheduled_for)
+        except publications.MetadataError as exc:
+            metadata_error(exc)
+        for target in data.targets:
+            try:
+                publications.connection_generation(db, target.channel, ws.id)
+            except ValueError as exc:
+                raise HTTPException(409, {"code": "channel_not_connected", "channel": target.channel,
+                                          "message": str(exc)}) from exc
+        asset_id = data.asset_id
+        if asset_id is None:
+            run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == data.run_id, WorkflowRun.workspace_id == ws.id))
+            video = publications.final_video(db, run) if run else None
+            if video is None:
+                raise HTTPException(409, "The run has no finished video to publish")
+            asset_id = video.id
+        existing = db.scalar(select(func.count()).select_from(publications.Publication).where(
+            publications.Publication.workspace_id == ws.id, publications.Publication.run_id == data.run_id,
+            publications.Publication.channel.in_(channels), publications.Publication.state != "cancelled"))
+        rows = []
+        for target in data.targets:
+            try:
+                rows.append(publications.queue_publication(
+                    db, workspace_id=ws.id, run_id=data.run_id, asset_id=asset_id, channel=target.channel,
+                    title=target.title.strip(), description=target.description, tags=target.tags,
+                    privacy_status=target.privacy_status, scheduled_for=data.scheduled_for))
+            except ValueError as exc:
+                raise HTTPException(409, {"code": "publication_rejected", "channel": target.channel,
+                                          "message": str(exc)}) from exc
+        if existing == len(channels):
+            response.status_code = 200
+        return {"publications": [public_publication(row) for row in rows]}
+
+
+@app.get("/api/publications/{publication_id}")
+def get_publication(publication_id: str, request: Request):
+    with Session() as db:
+        return public_publication(owned_publication(db, workspace_for(request, db), publication_id))
+
+
+@app.post("/api/publications/{publication_id}/retry", status_code=202)
+def retry_any_publication(publication_id: str, request: Request, data: RetryInput | None = None):
+    """Queue only a new upload job for a failed publication that never sent media (any channel)."""
+    same_origin(request)
+    with Session.begin() as db:
+        ws = youtube_owner(request, db)
+        active_plan(db, ws)
+        changes = data.model_dump(exclude_none=True) if data else {}
+        try:
+            row = publications.retry_publication(db, workspace_id=ws.id, publication_id=publication_id,
+                                                 metadata=changes or None, channel=None)
+        except publications.MetadataError as exc:
+            metadata_error(exc)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return public_publication(row)
+
+
+@app.post("/api/publications/{publication_id}/cancel")
+def cancel_publication(publication_id: str, request: Request):
+    """Cancel before the upload starts; afterwards 409 ``upload_started``."""
+    same_origin(request)
+    with Session.begin() as db:
+        ws = youtube_owner(request, db)
+        try:
+            row = publications.cancel_publication(db, workspace_id=ws.id, publication_id=publication_id)
+        except LookupError as exc:
+            raise HTTPException(404, "Publication not found") from exc
+        except ValueError as exc:
+            raise HTTPException(409, {"code": "upload_started", "message": "The upload has already started"}) from exc
+        return public_publication(row)
+
+
+@app.put("/api/publications/{publication_id}/schedule")
+def reschedule_publication(publication_id: str, data: ScheduleInput, request: Request):
+    """Move a publication to another UTC time before its upload starts; ``null`` means as soon as possible."""
+    same_origin(request)
+    with Session.begin() as db:
+        ws = youtube_owner(request, db)
+        active_plan(db, ws)
+        try:
+            row = publications.reschedule_publication(db, workspace_id=ws.id, publication_id=publication_id,
+                                                      scheduled_for=data.scheduled_for)
+        except LookupError as exc:
+            raise HTTPException(404, "Publication not found") from exc
+        except publications.MetadataError as exc:
+            metadata_error(exc)
+        except ValueError as exc:
+            raise HTTPException(409, {"code": "upload_started", "message": "The upload has already started"}) from exc
         return public_publication(row)
 
 
@@ -1245,6 +1694,11 @@ def get_workflow_run_summary(run_id: str, request: Request):
             publications.Publication.channel == "youtube"))
         summary["publishing"]["publication"] = public_publication(publication) if publication else None
         summary["publishing"]["youtube_connected"] = google_oauth.connection_status(db, workspace_id=ws.id) is not None
+        rows = db.scalars(select(publications.Publication).where(
+            publications.Publication.workspace_id == ws.id, publications.Publication.run_id == run.id)
+            .order_by(publications.Publication.created_at))
+        summary["publishing"]["publications"] = [public_publication(row) for row in rows]
+        summary["publishing"]["channels"] = channel_statuses(db, ws.id)
         return summary
 
 
@@ -1369,9 +1823,18 @@ def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
             raise HTTPException(404, "Workflow not found")
         # Model settings must name one of this workspace's AI tools; keys never leave the server.
         tools = {tool.id: tool for tool in db.scalars(select(AITool).where(AITool.workspace_id == ws.id))}
+        # Source files must be this workspace's own uploads (Phase 10).
+        asset_ids = {node.config.get(field.key) for node in graph.nodes if isinstance(node.config, dict)
+                     for field in default_registry.resolve(node.type).config_fields if field.type == "asset"}
+        asset_ids = {value for value in asset_ids if isinstance(value, str)}
+        assets = {asset.id: asset for asset in db.scalars(select(Asset).where(Asset.workspace_id == ws.id,
+                                                                              Asset.id.in_(asset_ids)))} \
+            if asset_ids else {}
         for node in graph.nodes:
             try:
-                check_tools(default_registry.resolve(node.type).config_fields, node.config, tools)
+                fields = default_registry.resolve(node.type).config_fields
+                check_tools(fields, node.config, tools)
+                check_assets(fields, node.config, assets)
             except ConfigError as exc:
                 raise config_error(node.id, exc) from exc
         stored = normalize_edges(graph.model_dump(), default_registry)
@@ -1390,7 +1853,7 @@ def workflow_node_types(request: Request):
 @app.post("/api/assets", status_code=201)
 def upload_asset(request: Request, file: UploadFile = File(...)):
     same_origin(request)
-    content_type = file.content_type or ""
+    content_type = upload_content_type(file.content_type or "", file.filename or "")
     if content_type not in ALLOWED_TYPES:
         raise HTTPException(415, "Unsupported media type")
     with Session.begin() as db:
@@ -1421,7 +1884,7 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
         except Exception:
             target.unlink(missing_ok=True)
             raise
-    return {"id": asset_id, "filename": filename, "bytes": size}
+    return {"id": asset_id, "filename": filename, "bytes": size, "content_type": content_type}
 
 
 @app.get("/api/assets/{asset_id}")

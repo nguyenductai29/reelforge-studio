@@ -8,6 +8,12 @@ re-timed subtitles, run one FFmpeg command in a private folder under
 media and finish the step (``video_assets`` holds the one final video, marked
 ``final``). The folder is always removed.
 
+The same worker cuts Movie Recap source clips (``clips.extract`` jobs of the
+Extract Source Clips step, app/workflow/nodes/recap.py): each clip is cut from the
+workspace's own source video with stream copy when the source is an MP4 and the
+copy is a valid clip, otherwise re-encoded to H.264/AAC, and stored as an MP4
+asset whose ``source_asset_id`` names the video it came from.
+
 Rendering calls no paid provider, so every failure is final and clear: the step
 fails with a stable code (``ffmpeg_missing``, ``input_missing``,
 ``font_unavailable``, ``render_failed``, ``render_timeout``, ``invalid_output``,
@@ -30,6 +36,7 @@ import uuid
 
 from sqlalchemy import select, update
 
+from app import heartbeat
 from app import jobs, render, subtitles, usage
 from app.db import Session
 from app.logs import log_event
@@ -47,6 +54,10 @@ TEMP_FOLDER = ".render-tmp"
 RUNNING_DETAIL = "Đang render video."
 DONE_DETAIL = "Đã render video hoàn chỉnh."
 FAILED_DETAIL = "Render thất bại."
+CLIPS_RUNNING_DETAIL = "Đang cắt clip từ video nguồn."
+CLIPS_DONE_DETAIL = "Đã cắt clip từ video nguồn."
+CLIPS_FAILED_DETAIL = "Cắt clip thất bại."
+KINDS = ("render.generate", "clips.extract")
 _ASSET_ID = re.compile(r"[A-Za-z0-9-]{1,64}\Z")
 
 
@@ -95,6 +106,7 @@ def _counts(payload) -> dict:
 
 
 def _fail(claim: Claim, error: render.RenderError, started: float) -> None:
+    clips = claim.payload.get("kind") == "clips.extract"
     with Session.begin() as db:
         live = _live(db, claim)
         if not live or not jobs.fail_job(db, job_id=claim.job_id, lease_token=claim.token, error=error.code):
@@ -109,8 +121,9 @@ def _fail(claim: Claim, error: render.RenderError, started: float) -> None:
         output = step_output(step)
         output["render_error"] = str(error)[:300]
         default_executor.finish_step(ExecutionContext.for_run(db, run, now=_now()), step, NodeExecutionResult.failed(
-            NodeError(error.code, str(error)[:300], False, error.category), FAILED_DETAIL, output=output))
-    log_event(logger, "render_failed", level=logging.WARNING, **claim.fields, **_counts(claim.payload),
+            NodeError(error.code, str(error)[:300], False, error.category),
+            CLIPS_FAILED_DETAIL if clips else FAILED_DETAIL, output=output))
+    log_event(logger, "clips_failed" if clips else "render_failed", level=logging.WARNING, **claim.fields, **_counts(claim.payload),
               duration_ms=round((time.monotonic() - started) * 1000), error_code=error.code,
               error_category=error.category)
 
@@ -206,6 +219,89 @@ def _store(claim: Claim, output: Path, facts: dict, burned: bool, started: float
               video_seconds=facts["duration"])
 
 
+def _cut(claim: Claim, folder: Path, runner) -> list[tuple[Path, dict]]:
+    """Each requested clip as a checked MP4 in ``folder`` with its facts, in request order."""
+    ffmpeg, ffprobe = render.tools()
+    if not ffmpeg or not ffprobe:
+        raise render.RenderError("ffmpeg_missing", "FFmpeg or ffprobe is not installed", "configuration_error")
+    requested = claim.payload.get("clips") or []
+    if not requested or len(requested) > 20:
+        raise render.RenderError("input_missing", "There are no clips to cut", "invalid_request")
+    folder.mkdir(parents=True, exist_ok=True)
+    cut = []
+    for index, item in enumerate(requested, 1):
+        source = _input(claim, item.get("source_asset_id"))
+        start, end = item.get("start"), item.get("end")
+        if (not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or isinstance(start, bool)
+                or not 0 <= start < end or end - start > 120):
+            raise render.RenderError("invalid_request", "A clip has invalid bounds", "invalid_request")
+        name = f"clip-{index:02d}.mp4"
+        output = folder / name
+        attempts = ((True, False) if claim.payload.get("mode") != "reencode"
+                    and item.get("content_type") == "video/mp4" else (False,))
+        for copy in attempts:
+            output.unlink(missing_ok=True)
+            try:
+                render.run_ffmpeg(render.clip_command(ffmpeg, source, start, end, name, copy=copy), folder,
+                                  render.render_timeout_seconds(), runner)
+                if not output.is_file() or not valid_mp4(output, max_bytes=render.MAX_RENDER_BYTES):
+                    raise render.RenderError("invalid_output", "FFmpeg did not produce a valid MP4")
+                info = render.probe(ffprobe, output, runner)
+                if info["duration"] <= 0.1 or not info["width"]:
+                    raise render.RenderError("invalid_output", "The clip has no video")
+            except render.RenderError:
+                if copy:
+                    continue  # stream copy was not possible: re-encode instead
+                raise
+            cut.append((output, {"scene_index": item.get("scene_index"), "source_asset_id": item["source_asset_id"],
+                                 "source_start": round(float(start), 3), "source_end": round(float(end), 3),
+                                 "duration": round(info["duration"], 3), "width": info["width"],
+                                 "height": info["height"], "cut": "copy" if copy else "reencode"}))
+            break
+    return cut
+
+
+def _store_clips(claim: Claim, cut: list[tuple[Path, dict]], started: float) -> None:
+    targets, entries = [], []
+    total = sum(path.stat().st_size for path, _ in cut)
+    try:
+        with Session.begin() as db:
+            live = _live(db, claim)
+            if not live or not jobs.complete_job(db, job_id=claim.job_id, lease_token=claim.token):
+                return  # another worker owns the job now
+            _, run, step = live
+            if stored_bytes(db, claim.workspace_id) + total > workspace_media_quota():
+                raise render.RenderError("storage_limit_exceeded", "Workspace media quota reached", "configuration_error")
+            folder = claim.root / claim.workspace_id
+            folder.mkdir(parents=True, exist_ok=True)
+            for path, facts in cut:
+                asset_id = str(uuid.uuid4())
+                filename = f"clip-{asset_id[:8]}.mp4"
+                size = path.stat().st_size
+                target = folder / asset_id
+                os.replace(path, target)
+                targets.append(target)
+                db.add(Asset(id=asset_id, workspace_id=claim.workspace_id, project_id=run.project_id, run_id=run.id,
+                             step_id=step.id, provider="ffmpeg", model="local", filename=filename,
+                             content_type="video/mp4", bytes=size, source_asset_id=facts["source_asset_id"]))
+                entries.append({"id": asset_id, "asset_id": asset_id, "filename": filename, "content_type": "video/mp4",
+                                "provider": "ffmpeg", "model": "local", **facts})
+            entries.sort(key=lambda entry: entry["scene_index"] if isinstance(entry["scene_index"], int) else 0)
+            result = {**step_output(step), "video_assets": entries, "clip_count": len(entries)}
+            result.pop("render_error", None)
+            db.flush()
+            default_executor.finish_step(ExecutionContext.for_run(db, run, now=_now()), step,
+                                         NodeExecutionResult.completed(CLIPS_DONE_DETAIL, result,
+                                                                       asset_ids=tuple(entry["id"] for entry in entries)))
+    except Exception:
+        for target in targets:
+            target.unlink(missing_ok=True)
+        raise
+    log_event(logger, "clips_extracted", **claim.fields, clip_count=len(entries), output_bytes=total,
+              copied=sum(1 for entry in entries if entry["cut"] == "copy"),
+              duration_ms=round((time.monotonic() - started) * 1000))
+
+
 def run_one(*, runner=subprocess.run, worker_id: str | None = None) -> bool:
     """Claim and render one due job; returns False when none is due."""
     timeout = render.render_timeout_seconds()
@@ -221,21 +317,26 @@ def run_one(*, runner=subprocess.run, worker_id: str | None = None) -> bool:
         claim = Claim(job.id, job.lease_token, job.payload, job.workspace_id, job.run_id, job.step_id,
                       run.workflow_id if run else None, media_root(db))
         log_event(logger, "job_claimed", **claim.fields, worker_id=worker_id, attempt=job.attempt_count)
-        if step.status not in ("queued", "running") or job.payload.get("kind") != "render.generate":
+        kind = job.payload.get("kind")
+        if step.status not in ("queued", "running") or kind not in KINDS:
             jobs.fail_job(db, job_id=job.id, lease_token=job.lease_token, error="invalid_step_state")
             return True
         exhausted = job.attempt_count > MAX_ATTEMPTS
         if not exhausted:
-            step.status, step.detail = "running", RUNNING_DETAIL
+            step.status, step.detail = "running", CLIPS_RUNNING_DETAIL if kind == "clips.extract" else RUNNING_DETAIL
     started = time.monotonic()
     if exhausted:
         _fail(claim, render.RenderError("attempts_exhausted", "The render was interrupted too many times"), started)
         return True
-    log_event(logger, "render_started", **claim.fields, **_counts(claim.payload))
     folder = claim.root / TEMP_FOLDER / claim.job_id
     try:
-        output, facts, burned = _render(claim, folder, runner)
-        _store(claim, output, facts, burned, started)
+        if kind == "clips.extract":
+            log_event(logger, "clips_started", **claim.fields, clip_count=len(claim.payload.get("clips") or []))
+            _store_clips(claim, _cut(claim, folder, runner), started)
+        else:
+            log_event(logger, "render_started", **claim.fields, **_counts(claim.payload))
+            output, facts, burned = _render(claim, folder, runner)
+            _store(claim, output, facts, burned, started)
     except render.RenderError as exc:
         _fail(claim, exc, started)
     except Exception as exc:  # noqa: BLE001 - reported as a worker error, never retried silently
@@ -270,6 +371,7 @@ def main():
         sys.exit(check())
     while True:
         worked = run_one()
+        heartbeat.beat("render_worker")
         if args.once:
             return
         if not worked:

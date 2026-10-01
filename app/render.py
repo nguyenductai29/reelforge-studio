@@ -290,6 +290,25 @@ def build_command(ffmpeg: str, clips: list[Clip], tracks: list[Track], *, subtit
                    "-t", f"{total:.3f}", OUTPUT_NAME]
 
 
+def clip_command(ffmpeg: str, source: Path, start: float, end: float, output: str, *, copy: bool) -> list[str]:
+    """Cut ``[start, end)`` seconds of ``source`` into ``output`` (a name inside the working folder).
+
+    Stream copy keeps the original encoding and is fast, but starts on the
+    nearest earlier keyframe; the re-encode is frame-accurate H.264/AAC. Only the
+    first video and (if present) first audio stream are kept, so no subtitle,
+    data or attachment stream of the source is carried over.
+    """
+    duration = f"{max(0.1, end - start):.3f}"
+    command = [ffmpeg, "-nostdin", "-hide_banner", "-y", "-ss", f"{max(0.0, start):.3f}", "-i", str(source),
+               "-t", duration, "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn"]
+    if copy:
+        command += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
+    else:
+        command += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+    return command + ["-movflags", "+faststart", output]
+
+
 def safe_message(stderr: str | None) -> str:
     """The end of FFmpeg's error output, without file paths, for the step and the inspector."""
     lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]

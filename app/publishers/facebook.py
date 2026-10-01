@@ -34,11 +34,16 @@ class FacebookReelError(Exception):
         self.http_status = http_status
 
 
+VIDEO_STATES = ("PUBLISHED", "DRAFT")
+
+
 @dataclass(frozen=True)
 class FacebookReelRequest:
     file_path: Path
     title: str
     description: str = ""
+    # PUBLISHED goes live on the Page; DRAFT stays in the Page's content library.
+    video_state: str = "PUBLISHED"
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,7 @@ def _validate_request(request: FacebookReelRequest) -> int:
         or not isinstance(request.description, str)
         or len(request.description) > 5000
         or any(character in "\r\x00" for character in request.description)
+        or request.video_state not in VIDEO_STATES
     ):
         raise FacebookReelError("invalid_upload", "Invalid Facebook Reel metadata")
     path = request.file_path
@@ -282,7 +288,7 @@ def publish_reel(
     content = urlencode({
         "video_id": session.video_id,
         "upload_phase": "finish",
-        "video_state": "PUBLISHED",
+        "video_state": request.video_state,
         "title": request.title.strip(),
         "description": request.description,
     }).encode("utf-8")

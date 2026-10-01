@@ -85,7 +85,7 @@ import type {
   RunStep,
   Workflow,
 } from "@/lib/types";
-import { EXECUTABLE, MAX_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } from "@/lib/workflow";
+import { EXECUTABLE, MAX_NODES, SOURCE_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } from "@/lib/workflow";
 import { kindIcon } from "./kind-icon";
 import { ConfigFields, type ConfigChange, type WorkspaceDefaults } from "./config-fields";
 import { blocksSaving, configErrors, toolChoices, withValue } from "./node-config";
@@ -310,13 +310,18 @@ function Inspector({
                         ? i.renderHint
                         : null;
   // Metadata keeps its reply as JSON; its fields are shown instead.
-  const generatedText = TEXT_NODES.has(d.type) && d.type !== "metadata" ? outputText(step?.output, ports) : null;
+  const generatedText =
+    d.type === "story_analysis" && typeof step?.output?.summary === "string"
+      ? step.output.summary
+      : (TEXT_NODES.has(d.type) && d.type !== "metadata") || SOURCE_NODES.has(d.type)
+        ? outputText(step?.output, ports)
+        : null;
   const prepared = d.type === "metadata" || d.type === "publish" ? outputMetadata(step?.output) : null;
-  const scenes = d.type === "scenes" ? outputScenes(step?.output) : null;
+  const scenes = d.type === "scenes" || d.type === "recap_script" ? outputScenes(step?.output) : null;
   const media =
     d.type === "image"
       ? outputMedia(step?.output, "image_assets")
-      : d.type === "video" || d.type === "render"
+      : d.type === "video" || d.type === "render" || d.type === "extract_clips"
         ? outputMedia(step?.output, "video_assets")
         : d.type === "voice"
           ? outputMedia(step?.output, "audio_assets")

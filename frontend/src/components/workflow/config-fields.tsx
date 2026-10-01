@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { FieldLabel } from "@/components/reelforge/primitives";
 import { useI18n } from "@/lib/i18n";
 import type { Dictionary } from "@/lib/i18n/vi";
+import { useDashboard } from "@/lib/queries";
 import type { AiTool, ConfigField, NodeConfig } from "@/lib/types";
 import { fieldValue, toolChoices, WARNING_CODES } from "./node-config";
 
@@ -44,6 +45,56 @@ function Trigger({ id, label, invalid }: { id: string; label: string; invalid: b
     <SelectTrigger id={id} aria-label={label} aria-invalid={invalid} className={cn("bg-surface", invalid && "border-destructive")}>
       <SelectValue />
     </SelectTrigger>
+  );
+}
+
+/** One of the workspace's uploaded files, limited to the types the step can read (Source steps). */
+function AssetSelect({
+  id,
+  field,
+  raw,
+  invalid,
+  onChange,
+}: {
+  id: string;
+  field: ConfigField;
+  raw: unknown;
+  invalid: boolean;
+  onChange: ConfigChange;
+}) {
+  const { t } = useI18n();
+  const { data } = useDashboard();
+  const label = t.config.fields[field.label] ?? field.label;
+  const accepted = new Set(field.content_types ?? []);
+  // Uploaded files only: generated media belongs to runs and is not a source.
+  const choices = (data?.assets ?? []).filter(
+    (asset) => !asset.run_id && (!accepted.size || accepted.has(asset.content_type)),
+  );
+  const current = typeof raw === "string" ? raw : NONE;
+  const listed = current === NONE || choices.some((asset) => asset.id === current);
+  return (
+    <>
+      <Select value={current} onValueChange={(v) => onChange(field, v === NONE ? null : v)}>
+        <Trigger id={id} label={label} invalid={invalid} />
+        <SelectContent>
+          <SelectItem value={NONE}>{t.config.assetNone}</SelectItem>
+          {!listed && <SelectItem value={current}>{t.config.assetMissing}</SelectItem>}
+          {choices.map((asset) => (
+            <SelectItem key={asset.id} value={asset.id}>
+              {asset.filename}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {data && choices.length === 0 && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">
+          {t.config.noAsset}{" "}
+          <Link href="/media" className="text-primary hover:underline">
+            {t.config.uploadAsset}
+          </Link>
+        </p>
+      )}
+    </>
   );
 }
 
@@ -108,6 +159,10 @@ function FieldInput({
   const label = t.config.fields[field.label] ?? field.label;
   const raw = config?.[field.key];
   const value = fieldValue(field, config);
+
+  if (field.type === "asset") {
+    return <AssetSelect id={id} field={field} raw={raw} invalid={invalid} onChange={onChange} />;
+  }
 
   if (field.type === "tool") {
     const choices = toolChoices(field, tools ?? []);

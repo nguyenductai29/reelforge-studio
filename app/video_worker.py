@@ -18,6 +18,7 @@ import uuid
 
 from sqlalchemy import func, select, update
 
+from app import heartbeat
 from app.db import Session
 from app import jobs, media_jobs, usage
 from app.logs import log_event, payload_summary
@@ -437,6 +438,7 @@ def main():
     start_process("video_worker")
     while True:
         worked = run_one()
+        heartbeat.beat("video_worker")
         if args.once:
             return
         if not worked:

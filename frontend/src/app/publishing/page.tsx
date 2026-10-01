@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Loader2, RotateCcw, Send } from "lucide-react";
+import { CalendarClock, ExternalLink, Loader2, RotateCcw, Send, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,15 +26,21 @@ import {
   platformLabel,
   type Platform,
 } from "@/components/reelforge/primitives";
+import { ChannelBadge, ScheduleDialog } from "@/components/reelforge/publication-actions";
 import { PublishDialog, splitTags, tagsLength } from "@/components/reelforge/publish-dialog";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
-import { keys, usePublications, useYouTubeConnection } from "@/lib/queries";
+import { keys, useChannels, usePublications } from "@/lib/queries";
 import type { PrivacyStatus, Publication } from "@/lib/types";
 
-const soonPlatforms: Platform[] = ["tiktok", "facebook", "instagram"];
+const soonPlatforms: Platform[] = ["instagram"];
+const PRIVACY: Record<Publication["channel"], PrivacyStatus[]> = {
+  youtube: ["private", "unlisted", "public"],
+  tiktok: ["private"],
+  facebook: ["private", "public"],
+};
 
 /**
  * Retries a failed upload that never sent media: only a new upload job is queued, from the same video.
@@ -62,7 +68,7 @@ function RetryDialog({ publication, onClose }: { publication: Publication | null
     setBusy(true);
     try {
       await api(
-        `youtube/publications/${encodeURIComponent(publication.id)}/retry`,
+        `publications/${encodeURIComponent(publication.id)}/retry`,
         jsonRequest("POST", {
           title: current.title.trim(),
           description: current.description,
@@ -136,9 +142,11 @@ function RetryDialog({ publication, onClose }: { publication: Publication | null
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {(["private", "unlisted", "public"] as const).map((value) => (
+                {PRIVACY[publication?.channel ?? "youtube"].map((value) => (
                   <SelectItem key={value} value={value}>
-                    {t.publishing.privacy[value]}
+                    {publication?.channel === "facebook"
+                      ? d.facebookPrivacy[value as "public" | "private"]
+                      : t.publishing.privacy[value]}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -162,9 +170,11 @@ function RetryDialog({ publication, onClose }: { publication: Publication | null
 export default function PublishingPage() {
   const { t, formatDateTime } = useI18n();
   useDocumentTitle(t.publishing.title);
-  const connection = useYouTubeConnection().data;
+  const channels = useChannels().data ?? [];
+  const status = (channel: Publication["channel"]) => channels.find((c) => c.channel === channel);
   const publications = usePublications().data ?? [];
   const [retrying, setRetrying] = useState<Publication | null>(null);
+  const [scheduling, setScheduling] = useState<{ publication: Publication; mode: "reschedule" | "cancel" } | null>(null);
 
   return (
     <div className="space-y-8">
@@ -185,26 +195,32 @@ export default function PublishingPage() {
       <section>
         <h2 className="mb-4 text-base font-semibold">{t.publishing.connectedChannels}</h2>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="panel space-y-3 p-4">
-            <div className="flex items-center justify-between">
-              <span className="flex size-9 items-center justify-center rounded-lg bg-surface-2">
-                <PlatformIcon platform="youtube" />
-              </span>
-              <StatusBadge
-                status={connection?.connected ? "connected" : "not connected"}
-                label={connection?.connected ? t.status.channel.connected : t.status.channel.notConnected}
-              />
-            </div>
-            <div>
-              <p className="text-sm font-medium">{platformLabel.youtube}</p>
-              <p className="text-xs text-muted-foreground">
-                {connection?.connected ? t.channels.youtubeConnected : t.channels.notLinked}
-              </p>
-            </div>
-            <Button asChild variant="outline" size="sm" className="w-full">
-              <Link href="/channels">{connection?.connected ? t.common.manage : t.publishing.connect}</Link>
-            </Button>
-          </div>
+          {(["youtube", "tiktok", "facebook"] as const).map((channel) => {
+            const state = status(channel);
+            return (
+              <div key={channel} className="panel space-y-3 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="flex size-9 items-center justify-center rounded-lg bg-surface-2">
+                    <PlatformIcon platform={channel} />
+                  </span>
+                  <ChannelBadge status={state?.status} />
+                </div>
+                <div>
+                  <p className="text-sm font-medium">{platformLabel[channel]}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {state?.account_name
+                      ? t.channels.accountAs(state.account_name)
+                      : state?.status === "connected"
+                        ? t.status.channel.connected
+                        : t.channels.notLinked}
+                  </p>
+                </div>
+                <Button asChild variant="outline" size="sm" className="w-full">
+                  <Link href="/channels">{state?.status === "connected" ? t.common.manage : t.publishing.connect}</Link>
+                </Button>
+              </div>
+            );
+          })}
           {soonPlatforms.map((platform) => (
             <div key={platform} className="panel space-y-3 p-4">
               <div className="flex items-center justify-between">
@@ -249,7 +265,18 @@ export default function PublishingPage() {
                 {publication.state === "succeeded" && publication.remote_status === "uploaded" && (
                   <p className="mt-0.5 text-xs text-muted-foreground">{t.publishing.processing}</p>
                 )}
-                {publication.remote_privacy && publication.remote_privacy !== publication.privacy_status && (
+                {publication.remote_status === "sent_to_inbox" && (
+                  <p className="mt-0.5 text-xs text-muted-foreground">{t.publishing.sentToInbox}</p>
+                )}
+                {publication.channel === "facebook" && publication.remote_status === "draft" && (
+                  <p className="mt-0.5 text-xs text-muted-foreground">{t.publishing.facebookDraft}</p>
+                )}
+                {publication.state === "scheduled" && publication.scheduled_for && (
+                  <p className="mt-0.5 text-xs text-info">{t.publishing.scheduledFor(formatDateTime(publication.scheduled_for))}</p>
+                )}
+                {publication.channel === "youtube" &&
+                  publication.remote_privacy &&
+                  publication.remote_privacy !== publication.privacy_status && (
                   <p className="mt-0.5 text-xs text-warning">
                     {t.publishing.keptAs(t.publishing.privacy[publication.remote_privacy])}
                   </p>
@@ -270,7 +297,17 @@ export default function PublishingPage() {
                       {t.publishing.openYoutube} <ExternalLink className="size-3" />
                     </a>
                   )}
-                  {publication.remote_id && (
+                  {publication.url && publication.channel !== "youtube" && (
+                    <a
+                      href={publication.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-primary hover:underline"
+                    >
+                      {t.publishing.openPage} <ExternalLink className="size-3" />
+                    </a>
+                  )}
+                  {publication.remote_id && publication.channel === "youtube" && (
                     <a
                       href={`https://studio.youtube.com/video/${encodeURIComponent(publication.remote_id)}/edit`}
                       target="_blank"
@@ -280,7 +317,7 @@ export default function PublishingPage() {
                       {t.publishing.openStudio} <ExternalLink className="size-3" />
                     </a>
                   )}
-                  {publication.can_retry && connection?.connected && (
+                  {publication.can_retry && status(publication.channel)?.status === "connected" && (
                     <button
                       type="button"
                       onClick={() => setRetrying(publication)}
@@ -289,13 +326,37 @@ export default function PublishingPage() {
                       <RotateCcw className="size-3" /> {t.publishing.retry}
                     </button>
                   )}
+                  {publication.can_reschedule && (
+                    <button
+                      type="button"
+                      onClick={() => setScheduling({ publication, mode: "reschedule" })}
+                      className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                    >
+                      <CalendarClock className="size-3" /> {t.publishing.reschedule}
+                    </button>
+                  )}
+                  {publication.can_cancel && (
+                    <button
+                      type="button"
+                      onClick={() => setScheduling({ publication, mode: "cancel" })}
+                      className="inline-flex items-center gap-1 text-muted-foreground hover:text-destructive"
+                    >
+                      <XCircle className="size-3" /> {t.publishing.cancel}
+                    </button>
+                  )}
                 </div>
               </div>
               <span className="flex items-center gap-2 text-muted-foreground">
-                <PlatformIcon platform="youtube" />
-                {platformLabel.youtube}
+                <PlatformIcon platform={publication.channel} />
+                {platformLabel[publication.channel]}
               </span>
-              <span className="text-muted-foreground">{formatDateTime(publication.finished_at ?? publication.created_at)}</span>
+              <span className="text-muted-foreground">
+                {formatDateTime(
+                  publication.state === "scheduled" && publication.scheduled_for
+                    ? publication.scheduled_for
+                    : (publication.published_at ?? publication.finished_at ?? publication.created_at),
+                )}
+              </span>
               <StatusBadge
                 status={publication.state}
                 label={t.status.publication[publication.state]}
@@ -306,6 +367,11 @@ export default function PublishingPage() {
         </div>
       </section>
       <RetryDialog publication={retrying} onClose={() => setRetrying(null)} />
+      <ScheduleDialog
+        publication={scheduling?.publication ?? null}
+        mode={scheduling?.mode ?? "reschedule"}
+        onClose={() => setScheduling(null)}
+      />
     </div>
   );
 }

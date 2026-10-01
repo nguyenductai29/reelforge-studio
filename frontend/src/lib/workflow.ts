@@ -36,6 +36,14 @@ export const kindOf: Record<NodeType, NodeKind> = {
   title: "ai",
   metadata: "ai",
   cta: "ai",
+  source_text: "input",
+  source_url: "input",
+  source_media: "input",
+  transcribe: "ai",
+  story_analysis: "ai",
+  recap_script: "script",
+  match_scenes: "video",
+  extract_clips: "video",
 };
 
 /** Nodes that generate text with the workspace's text model. */
@@ -49,6 +57,9 @@ export const TEXT_NODES: ReadonlySet<NodeType> = new Set([
   "cta",
   "metadata",
 ]);
+
+/** Steps that bring existing content in (Phase 10). */
+export const SOURCE_NODES: ReadonlySet<NodeType> = new Set(["source_text", "source_url", "source_media", "transcribe"]);
 
 export const NODE_TYPES = Object.keys(kindOf) as NodeType[];
 export const MAX_NODES = 30;
@@ -65,16 +76,16 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
     items: [
       { id: "topic", kind: "input", type: "idea" },
       { id: "studioMedia", kind: "input", type: "assets" },
-      { id: "textInput", kind: "input" },
-      { id: "url", kind: "input" },
+      { id: "textInput", kind: "input", type: "source_text" },
+      { id: "url", kind: "input", type: "source_url" },
       { id: "youtubeUrl", kind: "input" },
-      { id: "uploadVideo", kind: "input" },
+      { id: "uploadVideo", kind: "input", type: "source_media" },
       { id: "uploadImage", kind: "input" },
-      { id: "uploadAudio", kind: "input" },
-      { id: "uploadSubtitle", kind: "input" },
-      { id: "movieSource", kind: "input" },
-      { id: "articleUrl", kind: "input" },
-      { id: "transcript", kind: "input" },
+      { id: "uploadAudio", kind: "input", type: "source_media" },
+      { id: "uploadSubtitle", kind: "input", type: "source_media" },
+      { id: "movieSource", kind: "input", type: "source_media" },
+      { id: "articleUrl", kind: "input", type: "source_url" },
+      { id: "transcript", kind: "ai", type: "transcribe" },
     ],
   },
   {
@@ -87,8 +98,8 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "translate", kind: "ai", type: "translate" },
       { id: "generateHook", kind: "ai", type: "hook" },
       { id: "generateTitle", kind: "ai", type: "title" },
-      { id: "movieAnalysis", kind: "ai" },
-      { id: "movieRecap", kind: "ai" },
+      { id: "movieAnalysis", kind: "ai", type: "story_analysis" },
+      { id: "movieRecap", kind: "script", type: "recap_script" },
       { id: "movieReview", kind: "ai" },
       { id: "endingExplained", kind: "ai" },
       { id: "keyMoments", kind: "ai" },
@@ -114,7 +125,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "thumbnailGenerator", kind: "image" },
       { id: "aiVideoGenerator", kind: "video", type: "video" },
       { id: "stockMedia", kind: "image" },
-      { id: "clipMatcher", kind: "video" },
+      { id: "clipMatcher", kind: "video", type: "match_scenes" },
       { id: "imageToVideo", kind: "video" },
       { id: "textToVideo", kind: "video" },
     ],
@@ -139,6 +150,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "transition", kind: "edit" },
       { id: "timeline", kind: "edit" },
       { id: "mergeClips", kind: "edit" },
+      { id: "extractClips", kind: "video", type: "extract_clips" },
       { id: "renderVideo", kind: "render", type: "render" },
     ],
   },
@@ -149,17 +161,34 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "review", kind: "review", type: "review" },
       { id: "download", kind: "review" },
       { id: "youtubeVideo", kind: "publish", type: "publish" },
-      { id: "youtubeShorts", kind: "publish" },
-      { id: "tiktok", kind: "publish" },
-      { id: "facebook", kind: "publish" },
-      { id: "facebookReels", kind: "publish" },
+      { id: "youtubeShorts", kind: "publish", type: "publish" },
+      { id: "tiktok", kind: "publish", type: "publish" },
+      { id: "facebook", kind: "publish", type: "publish" },
+      { id: "facebookReels", kind: "publish", type: "publish" },
       { id: "schedulePost", kind: "publish" },
     ],
   },
 ];
 
 /** Node types the backend can execute today; every other step stops a run with a reason. */
-export const EXECUTABLE: ReadonlySet<NodeType> = new Set(["idea", "assets", "scenes", "image", "video", "voice", "subtitle", "render", "review", "publish", ...TEXT_NODES]);
+export const EXECUTABLE: ReadonlySet<NodeType> = new Set([
+  "idea",
+  "assets",
+  "scenes",
+  "image",
+  "video",
+  "voice",
+  "subtitle",
+  "render",
+  "review",
+  "publish",
+  ...TEXT_NODES,
+  ...SOURCE_NODES,
+  "story_analysis",
+  "recap_script",
+  "match_scenes",
+  "extract_clips",
+]);
 
 export type TemplateId = keyof Dictionary["templates"];
 
@@ -168,7 +197,7 @@ export type WorkflowTemplate = {
   /** Present when the template can be created and run with today's backend. */
   graph?: Graph;
   /** A starter workflow the backend builds (app/workflow/templates.py), with its own node settings. */
-  backend?: "youtube_short" | "youtube_landscape";
+  backend?: "youtube_short" | "youtube_landscape" | "tiktok_short" | "facebook_reel" | "repurpose" | "movie_recap";
   /** Design preview for templates that are not available yet. */
   preview: NodeKind[];
   branches?: number;
@@ -195,10 +224,16 @@ export const workflowTemplates: WorkflowTemplate[] = [
   { id: "social-video", graph: clipGraph, preview: ["input", "video", "review"], steps: 3 },
   { id: "youtube-short", backend: "youtube_short", preview: fullPreview, steps: 10 },
   { id: "youtube-video", backend: "youtube_landscape", preview: fullPreview, steps: 10 },
-  { id: "tiktok-video", graph: clipGraph, preview: ["input", "video", "review"], steps: 3 },
-  { id: "movie-recap", preview: ["input", "ai", "script", "video", "voice", "publish"], branches: 4, steps: 17 },
+  { id: "tiktok-video", backend: "tiktok_short", preview: fullPreview, steps: 10 },
+  { id: "facebook-reel", backend: "facebook_reel", preview: fullPreview, steps: 10 },
+  {
+    id: "movie-recap",
+    backend: "movie_recap",
+    preview: ["input", "ai", "script", "voice", "video", "render", "review", "publish"],
+    steps: 12,
+  },
   { id: "movie-review", preview: ["input", "ai", "script", "image", "voice", "publish"], steps: 11 },
-  { id: "repurpose", preview: ["input", "ai", "video", "publish"], branches: 4, steps: 9 },
+  { id: "repurpose", backend: "repurpose", preview: fullPreview, steps: 10 },
   { id: "article-to-video", preview: ["input", "ai", "script", "image", "voice"], steps: 9 },
   { id: "product-video", preview: ["input", "script", "image", "video", "publish"], steps: 8 },
   {

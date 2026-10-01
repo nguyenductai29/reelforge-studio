@@ -62,6 +62,10 @@ class Asset(Base):
     step_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_run_steps.id", name="fk_assets_step_id"), index=True, nullable=True)
     provider: Mapped[str | None] = mapped_column(String(60), nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Migration 0014: the source video a clip was cut from (Movie Recap source clips).
+    # Deferred: only written (Extract Source Clips) and read on demand, so queries of
+    # assets keep working on a database that has not reached migration 0014 yet.
+    source_asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -235,3 +239,16 @@ class CreditReconciliation(Base):
     reconciled_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
     reconciled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+
+class WorkerHeartbeat(Base):
+    """The last report of each worker process kind (migration 0014), for the admin health view."""
+
+    __tablename__ = "worker_heartbeats"
+    worker: Mapped[str] = mapped_column(String(64), primary_key=True)
+    host: Mapped[str] = mapped_column(String(255))
+    pid: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24))
+    detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
