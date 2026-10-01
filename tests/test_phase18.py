@@ -13,8 +13,8 @@ from unittest.mock import patch
 from app import notifications, payments, render_worker
 from app.models import Notification, PaymentOrder, Plan, Subscription, WorkflowRun
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
-other = TestClient(app)
-assert other.post("/api/register", json={"email": "other@example.com", "password": "long-password-123",
+other = TestClient(app, headers={"Origin": "http://testserver"})
+assert other.post("/api/register", json={"accept_terms": True, "email": "other@example.com", "password": "long-password-123",
                                          "workspace_name": "Studio khác"}).status_code == 201
 other_ws = other.get("/api/dashboard").json()["workspace"]["id"]
 
@@ -113,7 +113,7 @@ assert other.get("/api/notifications/unread-count").json()["unread"] == 1
 # SSE: cookie authentication, only the user's own events, resumable ids, heartbeat-free short streams.
 os.environ["REELFORGE_SSE_POLL_SECONDS"] = "0.05"
 os.environ["REELFORGE_SSE_MAX_SECONDS"] = "0.5"
-assert TestClient(app).get("/api/notifications/stream").status_code == 401
+assert TestClient(app, headers={"Origin": "http://testserver"}).get("/api/notifications/stream").status_code == 401
 def stream(c, last=None):
     headers = {"Last-Event-ID": str(last)} if last is not None else {}
     with c.stream("GET", "/api/notifications/stream", headers=headers) as response:
@@ -265,7 +265,8 @@ assert client.get("/api/admin/payment-config").json()["providers"][2]["fields"][
 report = client.get("/api/admin/readiness")
 clean(report.text)
 sections = {s["key"]: {c["key"]: c for c in s["checks"]} for s in report.json()["sections"]}
-assert set(sections) == {"database", "storage", "ffmpeg", "workers", "ai", "publishing", "payments", "realtime", "support", "security", "configuration"}
+assert set(sections) == {"database", "storage", "ffmpeg", "workers", "ai", "publishing", "payments", "realtime", "support", "security", "configuration",
+                         "backups", "email", "accounts", "alerts"}
 assert sections["database"]["migration"]["status"] == "ok"
 assert sections["payments"]["onepay"]["mode"] == "sandbox" and sections["payments"]["payos"]["status"] == "ok"
 assert sections["workers"]["render_worker"]["status"] == "missing"

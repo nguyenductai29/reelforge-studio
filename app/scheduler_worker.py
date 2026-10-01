@@ -8,13 +8,16 @@ A crash before the commit leaves the publication scheduled for the next pass; a
 crash after it leaves a queued job that the channel's worker picks up. Nothing is
 ever queued twice, and nothing is published without the explicit request that
 scheduled it. Times are UTC.
+
+Each pass also retries transactional email that is due (``app/mailer.py``) and, every few
+minutes, evaluates the system alerts (``app/alerts.py``).
 """
 import argparse
 from datetime import datetime, timezone
 import logging
 import time
 
-from app import heartbeat, publications
+from app import alerts, heartbeat, mailer, publications
 from app.logs import log_event
 from app.runtime_env import start_process
 
@@ -52,6 +55,8 @@ def main():
     while True:
         try:
             handled = run_once()
+            mailer.deliver_pending()
+            alerts.maybe_evaluate()
             heartbeat.beat("scheduler_worker", detail=f"dispatched {handled}" if handled else None)
         except Exception:  # noqa: BLE001 - a database outage must not stop the scheduler for good
             logger.exception("scheduler pass failed")

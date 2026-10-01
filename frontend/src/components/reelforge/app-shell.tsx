@@ -10,6 +10,7 @@ import {
   Bot,
   Calendar,
   Clapperboard,
+  FileText,
   FolderKanban,
   Home,
   Languages,
@@ -31,7 +32,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { OfflineBanner } from "./query-state";
 import { StorageAlert } from "./storage";
+import { AccountBanners, WorkspaceSwitcher } from "./workspace-switcher";
 import { NotificationCenter, NotificationStream } from "./notifications";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -125,7 +128,7 @@ function NavList({ collapsed, onNavigate }: { collapsed?: boolean; onNavigate?: 
       {groups.map((group) => (
         <div key={group.heading}>
           {!collapsed && (
-            <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
+            <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
               {t.nav.groups[group.heading]}
             </p>
           )}
@@ -191,7 +194,8 @@ function CreditsFooter({ collapsed }: { collapsed?: boolean }) {
           <span className="text-muted-foreground">{t.shell.credits}</span>
           <span className="font-medium">{formatNumber(balance)}</span>
         </div>
-        <Progress value={monthly > 0 ? Math.min(100, (balance / monthly) * 100) : balance > 0 ? 100 : 0} className="mt-2 h-1.5" />
+        <Progress value={monthly > 0 ? Math.min(100, (balance / monthly) * 100) : balance > 0 ? 100 : 0} className="mt-2 h-1.5"
+                  aria-label={t.shell.credits} />
         {subscription && (
           <p className="mt-2 truncate text-[11px] text-muted-foreground">
             {subscription.ends_at ? t.shell.renews(formatDate(subscription.ends_at), planName) : t.shell.planOnly(planName)}
@@ -418,6 +422,18 @@ function AccountMenu() {
             </Link>
           </DropdownMenuItem>
         )}
+        <DropdownMenuItem asChild>
+          <Link href="/terms">
+            <FileText className="size-4" />
+            {t.legal.links.terms}
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href="/privacy">
+            <FileText className="size-4" />
+            {t.legal.links.privacy}
+          </Link>
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => void signOut()}>
           <LogOut className="size-4" />
@@ -438,6 +454,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <NotificationStream>
       <div className="min-h-screen bg-background">
+        {/* First stop of the Tab key: past the navigation, straight to the page. */}
+        <a href="#main"
+           className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:text-primary-foreground">
+          {t.shell.skipToContent}
+        </a>
         <aside
           className={cn(
             "fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar lg:flex",
@@ -499,6 +520,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <Menu className="size-4" />
             </Button>
+            <WorkspaceSwitcher />
             <SearchBox />
             <div className="ml-auto flex shrink-0 items-center gap-1">
               <GenerationCenter />
@@ -508,9 +530,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           </header>
 
           {fullBleed ? (
-            <main>{children}</main>
+            <main id="main" tabIndex={-1} className="focus:outline-none">
+              <OfflineBanner className="m-3" />
+              {children}
+            </main>
           ) : (
-            <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+            <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1400px] px-4 py-6 focus:outline-none sm:px-6 lg:px-8">
+              <OfflineBanner />
+              <AccountBanners />
               {/* Admin fits the viewport exactly and shows storage in its own tables. */}
               {!pathname.startsWith("/admin") && <StorageAlert />}
               {children}

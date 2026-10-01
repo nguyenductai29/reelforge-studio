@@ -35,7 +35,7 @@ from app.main import app
 from app.db import Session, engine
 from app.models import CreditAccount, CreditLedger, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep, User, Asset
 from app import usage, video_worker
-admin = TestClient(app)
+admin = TestClient(app, headers={"Origin": "http://testserver"})
 assert admin.post('/api/setup', json={'email':'admin@example.com','password':'long-password-123'}).status_code == 200
 workspace = admin.get('/api/dashboard').json()['workspace']['id']
 project = admin.post('/api/projects', json={'title':'Test','topic':'A forest'}).json()['id']
@@ -134,11 +134,11 @@ assert item['provider'] == 'fal' and item['reconciliation_status'] == 'pending'
 assert not item['has_asset'] and not item['submission_succeeded']
 assert 'fake-key-only' not in json.dumps(pending) and 'prompt' not in item
 assert admin.post(f'/api/workflow-runs/{run}/retry').status_code == 409
-anonymous = TestClient(app)
+anonymous = TestClient(app, headers={"Origin": "http://testserver"})
 assert anonymous.get('/api/admin/reconciliation').status_code == 401
 assert anonymous.post(f'/api/admin/reconciliation/{step}/refund', json={}).status_code == 401
-owner = TestClient(app)
-registration = owner.post('/api/register', json={'email':'owner@example.com','password':'long-password-123','workspace_name':'Owner'})
+owner = TestClient(app, headers={"Origin": "http://testserver"})
+registration = owner.post('/api/register', json={'accept_terms': True, 'email':'owner@example.com','password':'long-password-123','workspace_name':'Owner'})
 assert registration.status_code == 201, registration.text
 assert owner.get('/api/admin/reconciliation').status_code == 403
 for action in ['refund', 'confirm-charge']:

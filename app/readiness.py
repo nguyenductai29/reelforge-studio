@@ -55,6 +55,16 @@ CHECKLIST = (
     ("support_round_trip", "operations", False, "User ticket → admin reply → user sees it"),
     ("cleanup_dry_run", "operations", False, "python -m app.media_maintenance --intermediates"),
     ("maintenance_timer", "operations", False, "systemctl list-timers reelforge-media-maintenance.timer"),
+    ("email_verification", "email", False, "Register a test account; the verification email arrives and verifies"),
+    ("email_password_reset", "email", False, "Forgot password, email, reset; other sessions are signed out"),
+    ("email_support_reply", "email", False, "An admin reply to a ticket reaches the user by email"),
+    ("security_two_factor", "security", False, "Enable 2FA; sign in with a code, then with a recovery code"),
+    ("security_sessions", "security", False, "Sign out another session from Settings, Security"),
+    ("security_rate_limit", "security", False, "Repeated wrong passwords are throttled (429)"),
+    ("security_client_ip", "security", False, "Settings, Security shows your real address, not 127.0.0.1"),
+    ("backup_timer", "operations", False, "systemctl list-timers reelforge-backup.timer; a dump appears daily"),
+    ("restore_rehearsal", "operations", False, "deploy/restore-check.sh with --scratch-url and --master-key passes"),
+    ("server_reboot", "operations", False, "Reboot; every service and the tunnel come back; readiness is green"),
 )
 CHECKLIST_KEYS = tuple(item[0] for item in CHECKLIST)
 AI_KEYS = (("gemini", ("GEMINI_API_KEY",), True), ("runway", ("RUNWAYML_API_SECRET", "RUNWAY_OUTPUT_HOSTS"), True),
@@ -203,8 +213,9 @@ def _source(env_name: str) -> str:
     return system_config.source(setting.key) if setting else "environment"
 
 
-def security_checks() -> list[dict]:
-    """The master key: from a file (chmod 600) is the target; the legacy variable still works, with a warning."""
+def security_checks(db=None) -> list[dict]:
+    """The master key: from a file (chmod 600) is the target; the legacy variable still works, with a warning.
+    Phase 25: an admin confirms the key is backed up off the server (it is never copied next to the dumps)."""
     from app import master_key
 
     info = master_key.status()
@@ -218,7 +229,106 @@ def security_checks() -> list[dict]:
         status, detail = "warning", "legacy_differs"
     else:
         status, detail = "ok", None
-    return [_check("master_key", status, detail, path=info["path"], key_source=info["source"])]
+    checks = [_check("master_key", status, detail, path=info["path"], key_source=info["source"])]
+    if db is not None:
+        confirmation = master_key_backup(db)
+        fingerprint = key_fingerprint()
+        if fingerprint is None:
+            checks.append(_check("master_key_backup", "off", "no_key"))
+        elif confirmation is None:
+            checks.append(_check("master_key_backup", "warning", "not_confirmed"))
+        elif confirmation.get("fingerprint") != fingerprint:
+            checks.append(_check("master_key_backup", "warning", "key_changed",
+                                 confirmed_at=confirmation.get("confirmed_at")))
+        else:
+            checks.append(_check("master_key_backup", "ok", None, confirmed_at=confirmation.get("confirmed_at"),
+                                 confirmed_by=confirmation.get("confirmed_by")))
+    return checks
+
+
+MASTER_KEY_BACKUP = "master_key_backup"
+
+
+def key_fingerprint() -> str | None:
+    """A short, irreversible fingerprint of the key in use, to notice when it changes (never the key)."""
+    import hashlib
+
+    from app import master_key
+
+    key = master_key.load()
+    return hashlib.sha256(("reelforge-key-fingerprint:" + key).encode("ascii")).hexdigest()[:16] if key else None
+
+
+def master_key_backup(db) -> dict | None:
+    row = db.get(SystemSetting, MASTER_KEY_BACKUP)
+    try:
+        return json.loads(row.value) if row else None
+    except ValueError:
+        return None
+
+
+def backup_checks(db, now: datetime) -> list[dict]:
+    """The last database backup (python -m app.backup run, the reelforge-backup timer)."""
+    from sqlalchemy import inspect
+
+    from app import backup
+
+    if not inspect(db.connection()).has_table("backup_runs"):
+        return [_check("database_backup", "warning", "not_migrated")]
+    info = backup.status(db, now)
+    last, failure = info["last_success"], info["last_failure"]
+    values = {"directory": info["directory"], "last_success": last["at"] if last else None,
+              "age_hours": last["age_hours"] if last else None, "file": last["file"] if last else None,
+              "last_failure": failure["at"] if failure else None, "max_age_hours": info["max_age_hours"]}
+    if last is None:
+        status, detail = "error", "never"
+    elif last["age_hours"] > info["max_age_hours"]:
+        status, detail = "error", "overdue"
+    elif failure and failure["at"] > last["at"]:
+        status, detail = "warning", "last_failed"
+    else:
+        status, detail = "ok", None
+    return [_check("database_backup", status, detail, **values)]
+
+
+def email_checks(db) -> list[dict]:
+    """Transactional email (Phase 22): password reset, verification and invitations need it."""
+    from app import mailer
+
+    problem = mailer.problem()
+    cfg = mailer.config()
+    if problem is None:
+        status, detail = "ok", None
+    elif problem == "disabled":
+        status, detail = "warning", "disabled"
+    else:
+        status, detail = "error", problem
+    stats = mailer.stats(db, since=datetime.now(timezone.utc) - timedelta(days=1))
+    return [_check("email", status, detail, provider=cfg["provider"]),
+            _check("outbox", "warning" if stats["recent_failed"] else "ok",
+                   "failures" if stats["recent_failed"] else None, queued=stats["queued"],
+                   failed_24h=stats["recent_failed"], last_error=stats["last_error"])]
+
+
+def account_checks(db) -> list[dict]:
+    """System admins should use two-factor authentication."""
+    from app.models import User
+
+    admins = db.scalars(select(User).where(User.is_admin.is_(True), User.is_active.is_(True))).all()
+    without = [admin for admin in admins if not admin.totp_enabled_at]
+    return [_check("admin_two_factor", "warning" if without else "ok", "missing" if without else None,
+                   admins=len(admins), without_two_factor=len(without))]
+
+
+def alert_checks(db) -> list[dict]:
+    from app import alerts
+
+    active = alerts.active(db)
+    if not active:
+        return [_check("alerts", "ok", None, active=0)]
+    return [_check("alert", "error" if item["level"] == "critical" else "warning", item["key"], since=item["since"],
+                   **{key: value for key, value in item["details"].items() if not isinstance(value, (dict, list))})
+            for item in active]
 
 
 def payment_checks(db) -> list[dict]:
@@ -276,7 +386,11 @@ def report(db, *, streams: int, poll_seconds: float) -> dict:
         ("ai", ai_checks(db)),
         ("publishing", publishing_checks()),
         ("payments", payment_checks(db)),
-        ("security", security_checks()),
+        ("security", security_checks(db)),
+        ("backups", backup_checks(db, now)),
+        ("email", email_checks(db)),
+        ("accounts", account_checks(db)),
+        ("alerts", alert_checks(db)),
         ("configuration", configuration_checks()),
         ("realtime", [_check("stream", "ok", open_streams=streams, poll_seconds=poll_seconds)]),
         ("support", [_check("tickets", "ok", awaiting_support=int(open_tickets or 0))]),

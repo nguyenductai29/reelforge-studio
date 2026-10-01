@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Bell, CheckCheck } from "lucide-react";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import { EmptyState, FilterPills, PageHeader } from "@/components/reelforge/primitives";
 import { NotificationRow, useMarkRead, useNotificationsLive } from "@/components/reelforge/notifications";
@@ -52,7 +53,9 @@ export default function NotificationsPage() {
           { value: "unread", label: t.notifications.unreadCount(page.data?.unread ?? 0) },
         ]}
       />
-      {!items.length && !page.isPending ? (
+      {page.isError && !items.length ? (
+        <QueryError error={page.error} onRetry={() => void page.refetch()} className="max-w-3xl" />
+      ) : !items.length && !page.isPending ? (
         <EmptyState icon={Bell} title={t.notifications.empty} description={t.notifications.emptyHint} />
       ) : (
         <div className="panel max-w-3xl space-y-1 p-2">

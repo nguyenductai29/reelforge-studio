@@ -45,7 +45,7 @@ assert page("/api/admin/users", role="member")["total"] == 25
 
 # Lock and unlock with the existing protections: never yourself, and a locked user is signed out.
 assert client.put(f"/api/admin/users/{admin_id}", json={"is_active": False}).status_code == 400
-member = TestClient(app)
+member = TestClient(app, headers={"Origin": "http://testserver"})
 assert member.post("/api/login", json={"email": "user03@example.com", "password": "long-password-123"}).status_code == 200
 locked_id = next(u["id"] for u in page("/api/admin/users", q="user03")["items"])
 assert client.put(f"/api/admin/users/{locked_id}", json={"is_active": False}).status_code == 200

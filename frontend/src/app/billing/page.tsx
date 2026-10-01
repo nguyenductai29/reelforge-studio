@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { CreditCard, Loader2, QrCode, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,8 +22,9 @@ import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle, useSearchParam } from "@/lib/hooks";
 import { toDate, useI18n } from "@/lib/i18n";
+import { can } from "@/lib/permissions";
 import type { Dictionary } from "@/lib/i18n/vi";
-import { keys, useBilling, useBillingOrders, useUsage } from "@/lib/queries";
+import { keys, useBilling, useBillingOrders, useDashboard, useUsage } from "@/lib/queries";
 import { formatBytes } from "@/lib/studio";
 import type { BankTransfer, CheckoutResult, Order, PaymentMethod } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -44,13 +46,16 @@ export default function BillingPage() {
   const showError = useErrorToast();
   const billing = useBilling();
   const usage = useUsage();
+  const dashboard = useDashboard().data;
+  // Payment history: owners and admins (billing.view); buying: the owner (billing.manage).
+  const seesOrders = can(dashboard, "billing.view");
   const [busy, setBusy] = useState<string | null>(null);
   const [choosing, setChoosing] = useState<string | null>(null);
   const [method, setMethod] = useState<PaymentMethod | null>(null);
   const [orderOffset, setOrderOffset] = useState(0);
   // Manual VietQR: the QR shown in ReelForge for one order, until the buyer reports the transfer.
   const [transfer, setTransfer] = useState<{ orderId: string; details: BankTransfer; reported: boolean } | null>(null);
-  const orders = useBillingOrders(orderOffset, ORDER_PAGE);
+  const orders = useBillingOrders(orderOffset, ORDER_PAGE, seesOrders);
   const payment = useSearchParam("payment");
 
   const refreshAll = () =>
@@ -148,6 +153,7 @@ export default function BillingPage() {
   }
 
   const data = billing.data;
+  if (!data && billing.isError) return <QueryError error={billing.error} onRetry={() => void billing.refetch()} />;
   if (!data) return <Loader2 className="mx-auto mt-10 size-5 animate-spin text-muted-foreground" />;
 
   const subscription = data.subscription;
@@ -235,7 +241,7 @@ export default function BillingPage() {
                   <span className="min-w-0 truncate">{tool}</span>
                   <span className="shrink-0 text-muted-foreground">{t.common.credits(formatNumber(credits))}</span>
                 </div>
-                <Progress value={used ? (credits / used) * 100 : 0} className="mt-2 h-1.5" />
+                <Progress value={used ? (credits / used) * 100 : 0} className="mt-2 h-1.5" aria-label={tool} />
               </div>
             ))}
           </div>
@@ -290,7 +296,7 @@ export default function BillingPage() {
                   {p.storage_quota_bytes ? <p>{t.billing.storage(formatBytes(p.storage_quota_bytes))}</p> : null}
                 </div>
                 {/* Without a configured payment method there is nothing to press; the notice below explains why. */}
-                {canBuy && canPay && (
+                {canBuy && canPay && can(dashboard, "billing.manage") && (
                   <Button
                     className="mt-auto"
                     variant={current ? "outline" : "default"}
@@ -317,7 +323,7 @@ export default function BillingPage() {
         )}
       </section>
 
-      <section className="space-y-2">
+      <section className={cn("space-y-2", !seesOrders && "hidden")}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-sm font-medium">{t.billing.orders}</p>

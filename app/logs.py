@@ -71,6 +71,11 @@ class StructuredFormatter(logging.Formatter):
                                  "level": record.levelname, "logger": record.name, "event": event}
         if message != event:
             entry["message"] = message
+        # Inside an API request: its ID (also the X-Request-ID header and audit rows), app/http_security.py.
+        from app.request_context import request_id
+
+        if request_id.get():
+            entry["request_id"] = request_id.get()
         entry.update(safe_fields(getattr(record, "fields", None) or {}))
         if record.exc_info:
             entry["exception"] = self.formatException(record.exc_info)

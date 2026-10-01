@@ -7,6 +7,7 @@ import { PageHeader, SectionTitle, StatusBadge } from "@/components/reelforge/pr
 import { MiniDiagram } from "@/components/workflow/mini-diagram";
 import { useCreateFromTemplate, useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { can } from "@/lib/permissions";
 import { useDashboard, useRuns } from "@/lib/queries";
 import { previewKinds, workflowTemplates } from "@/lib/workflow";
 
@@ -18,6 +19,8 @@ export default function WorkflowsPage() {
   const { create, pending } = useCreateFromTemplate();
   const workflows = data?.workflows ?? [];
   const lastRun = (id: string) => runs.find((run) => run.workflow_id === id);
+  // Viewers browse the templates; creating needs the editor role (the API enforces it too).
+  const canCreate = can(data, "content.edit");
   const limit = data?.limits.workflows ?? null;
 
   return (
@@ -80,7 +83,7 @@ export default function WorkflowsPage() {
               <Button
                 size="sm"
                 variant={template.backend ? "default" : "outline"}
-                disabled={Boolean(pending)}
+                disabled={Boolean(pending) || !canCreate}
                 onClick={() => void create(template.id)}
               >
                 {pending === template.id && <Loader2 className="size-3.5 animate-spin" />}

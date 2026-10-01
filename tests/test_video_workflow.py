@@ -34,7 +34,7 @@ from app.main import app
 from app.db import Session
 from app.models import WorkflowJob, CreditAccount
 from app import usage
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 dashboard = client.get("/api/dashboard").json()
 workspace = dashboard["workspace"]["id"]
@@ -70,7 +70,7 @@ with Session() as db:
     selected = db.scalar(select(WorkflowJob).where(WorkflowJob.run_id == second.json()["id"]))
     assert selected.payload["provider"] == "runware"
     assert selected.payload["model_id"] == "bytedance:seedance@2.5"
-assert client.post("/api/register", json={"email":"b@example.com","password":"long-password-123","workspace_name":"B"}).status_code == 201
+assert client.post("/api/register", json={"accept_terms": True, "email":"b@example.com","password":"long-password-123","workspace_name":"B"}).status_code == 201
 assert client.get(f"/api/workflow-runs/{run['id']}").status_code == 404
 '''
             completed = subprocess.run([sys.executable, "-c", program], cwd=target,

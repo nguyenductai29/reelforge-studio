@@ -499,7 +499,7 @@ command.upgrade(Config("alembic.ini"), "head")
 from app.main import app
 from app.db import Session
 from app.models import Workflow, WorkflowRun, WorkflowRunStep
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 workspace = client.get("/api/dashboard").json()["workspace"]["id"]
 project = client.post("/api/projects", json={"title":"A", "topic":"Chủ đề"}).json()["id"]

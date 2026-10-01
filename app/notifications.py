@@ -35,6 +35,8 @@ TYPES = (
     "credits.low", "credits.adjusted",
     "storage.warning", "storage.critical", "storage.full",
     "support.new", "support.reply", "support.status",
+    "team.member_joined", "team.role_changed", "team.removed", "team.ownership_received",
+    "system.alert",
 )
 RUN_STATUSES = {"completed": "run.completed", "failed": "run.failed", "needs_attention": "run.needs_attention",
                 "awaiting_review": "run.awaiting_review"}
@@ -88,11 +90,14 @@ def notify(db, user_ids: Iterable[str], type_: str, title: str, message: str = "
     return len(users)
 
 
-def members(db, workspace_id: str, *, owners_only: bool = False) -> list[str]:
+def members(db, workspace_id: str, *, owners_only: bool = False, managers_only: bool = False) -> list[str]:
+    """Active members of a workspace; ``owners_only`` (billing) or ``managers_only`` (owners and admins: the team)."""
     query = (select(Membership.user_id).join(User, User.id == Membership.user_id)
              .where(Membership.workspace_id == workspace_id, User.is_active.is_(True)))
     if owners_only:
         query = query.where(Membership.role == "owner")
+    elif managers_only:
+        query = query.where(Membership.role.in_(("owner", "admin")))
     return list(db.scalars(query))
 
 
@@ -198,10 +203,12 @@ def payment_settled(db, order, status: str) -> None:
         notify_workspace(db, order.workspace_id, "payment.succeeded", "Payment completed",
                          f"{order.plan_code.upper()} plan is active.", owners_only=True, link="/billing",
                          params=params, dedupe=f"payment:{order.id}:paid")
+        _payment_email(db, order, "payment_succeeded")
     elif status == "failed":
         notify_workspace(db, order.workspace_id, "payment.failed", "Payment failed",
                          f"{order.plan_code.upper()} plan was not paid.", owners_only=True, link="/billing",
                          params=params, dedupe=f"payment:{order.id}:failed")
+        _payment_email(db, order, "payment_failed")
     elif status == "paid_unapplied":
         notify_admins(db, "payment.unapplied", "Payment needs review",
                       "A paid order could not be applied to its subscription.", link="/admin?tab=payments",
@@ -225,6 +232,23 @@ def payment_rejected(db, order, reason: str | None) -> None:
     notify_workspace(db, order.workspace_id, "payment.rejected", "Bank transfer not confirmed",
                      reason or "The transfer was not found.", owners_only=True, link="/billing",
                      params=params, dedupe=f"payment:{order.id}:rejected")
+    _payment_email(db, order, "payment_failed", reason=reason or "The transfer was not found.")
+
+
+def _payment_email(db, order, template: str, *, reason: str | None = None) -> None:
+    """The owners' payment email (Phase 22): what was paid or why not, never provider data."""
+    from app import mailer
+    from app.models import Plan, Subscription
+
+    plan = db.get(Plan, order.plan_code)
+    subscription = db.get(Subscription, order.workspace_id)
+    params = {"plan": plan.name if plan else order.plan_code, "amount": order.amount_vnd,
+              "reference": str(order.order_code), "link": mailer.link("/billing")}
+    if template == "payment_succeeded":
+        params.update(credits=order.credits_award, ends=subscription.ends_at if subscription else None)
+    else:
+        params["reason"] = reason or order.status
+    mailer.email_owners(db, order.workspace_id, template, params, dedupe=f"email:payment:{order.id}:{template}")
 
 
 def low_credit_threshold() -> int:

@@ -43,8 +43,11 @@ command.upgrade(config, "head")
 inspector = inspect(engine)
 for table in ("notifications", "support_tickets", "support_messages", "verification_checks"):
     assert inspector.has_table(table), table
+def same_columns(current, earlier):
+    return [{column: row[column] for column in earlier[0]} for row in current] if earlier else current
+
 for table, key in (("users", "id"), ("workspaces", "id"), ("plans", "code")):
-    assert rows(table, key) == before[table], table
+    assert same_columns(rows(table, key), before[table]) == before[table], table
 assert {"ix_notifications_user_created", "ix_notifications_user_read"} <= {
     i["name"] for i in inspector.get_indexes("notifications")}
 with engine.begin() as connection:

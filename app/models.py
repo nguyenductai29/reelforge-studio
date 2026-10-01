@@ -15,13 +15,38 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Migration 0022 (Phase 22, app/accounts.py). Accounts from before it count as verified. Deferred, like
+    # every later column, so the API keeps reading users on a database not migrated yet.
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    locale: Mapped[str | None] = mapped_column(String(8), nullable=True, deferred=True)
+    # The TOTP secret (and one being enrolled) as master-key ciphertext; never returned once enabled.
+    totp_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True, deferred=True)
+    totp_pending_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True, deferred=True)
+    totp_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    totp_last_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True, deferred=True)
+    terms_version: Mapped[str | None] = mapped_column(String(32), nullable=True, deferred=True)
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    # Migration 0023: the workspace a new session starts in.
+    last_workspace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, deferred=True)
 
 
 class LoginSession(Base):
     __tablename__ = "login_sessions"
+    __table_args__ = (Index("ix_login_sessions_id", "id", unique=True),)
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Migration 0022: a public id (sessions are listed and revoked by it, never by token), and where from.
+    id: Mapped[str | None] = mapped_column(String(36), nullable=True, deferred=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True, deferred=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True, deferred=True)
+    # Migration 0023: the workspace this session works in (checked against the memberships on every request).
+    active_workspace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, deferred=True)
 
 
 class UserProfile(Base):
@@ -46,7 +71,10 @@ class Membership(Base):
     __tablename__ = "memberships"
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    # owner, admin, editor or viewer (app/permissions.py); exactly one owner per workspace.
     role: Mapped[str] = mapped_column(String(20), default="owner")
+    # Migration 0023: when the member joined (null for members from before it).
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
 
 
 class Project(Base):
@@ -61,6 +89,8 @@ class Project(Base):
 
 class Asset(Base):
     __tablename__ = "assets"
+    # Declared as migration 0016 created it (the storage lifecycle scans by kind and age).
+    __table_args__ = (Index("ix_assets_kind_created_at", "kind", "created_at"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
     filename: Mapped[str] = mapped_column(String(255))
@@ -204,6 +234,8 @@ class WorkflowRun(Base):
 
 class WorkflowRunStep(Base):
     __tablename__ = "workflow_run_steps"
+    # Migration 0006: one step per node of a run.
+    __table_args__ = (UniqueConstraint("run_id", "node_id", name="uq_workflow_run_node"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id"), index=True)
     node_id: Mapped[str] = mapped_column(String(64))
@@ -257,7 +289,8 @@ class CreditReconciliation(Base):
         CheckConstraint("decision IN ('confirmed_charge', 'refunded')", name="ck_reconciliation_decision"),
         CheckConstraint("credits > 0", name="ck_reconciliation_credits"),
     )
-    job_id: Mapped[str] = mapped_column(ForeignKey("workflow_jobs.id"), primary_key=True)
+    # Migration 0012 made job_id the primary key and kept its unique constraint.
+    job_id: Mapped[str] = mapped_column(ForeignKey("workflow_jobs.id"), primary_key=True, unique=True)
     step_id: Mapped[str] = mapped_column(ForeignKey("workflow_run_steps.id"), index=True)
     reservation_id: Mapped[str] = mapped_column(ForeignKey("credit_ledger.id"), unique=True)
     decision: Mapped[str] = mapped_column(String(24))
@@ -310,10 +343,11 @@ class SupportTicket(Base):
     __table_args__ = (
         Index("ix_support_tickets_workspace", "workspace_id", "updated_at"),
         Index("ix_support_tickets_status", "status", "updated_at"),
+        Index("ix_support_tickets_creator", "created_by_user_id"),
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"))
-    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     subject: Mapped[str] = mapped_column(String(200))
     category: Mapped[str] = mapped_column(String(24))
     status: Mapped[str] = mapped_column(String(24))
@@ -415,3 +449,139 @@ class PaymentOrderEvent(Base):
     amount_vnd: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AccountToken(Base):
+    """A one-time token (migration 0022): verify_email, password_reset or login_challenge. Only its hash is kept."""
+
+    __tablename__ = "account_tokens"
+    __table_args__ = (Index("ix_account_tokens_user", "user_id", "purpose"),
+                      Index("ix_account_tokens_expires", "expires_at"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    purpose: Mapped[str] = mapped_column(String(24))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # The address a verification token was sent to: it verifies that address only.
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class RecoveryCode(Base):
+    """A 2FA recovery code (migration 0022), hashed; ``used_at`` once it served."""
+
+    __tablename__ = "recovery_codes"
+    __table_args__ = (UniqueConstraint("user_id", "code_hash", name="uq_recovery_codes_user_code"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EmailOutbox(Base):
+    """A transactional email (migration 0022, app/mailer.py). Its parameters are encrypted and erased once sent."""
+
+    __tablename__ = "email_outbox"
+    __table_args__ = (Index("ix_email_outbox_due", "status", "next_attempt_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    to_address: Mapped[str] = mapped_column(String(320))
+    template: Mapped[str] = mapped_column(String(40))
+    locale: Mapped[str] = mapped_column(String(8))
+    payload_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuditEvent(Base):
+    """A security or administration event (migration 0022, app/audit.py). Never a password, token or secret."""
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_action", "action", "created_at"),
+        Index("ix_audit_events_actor", "actor_user_id", "created_at"),
+        Index("ix_audit_events_workspace", "workspace_id", "created_at"),
+        Index("ix_audit_events_created", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    action: Mapped[str] = mapped_column(String(48))
+    outcome: Mapped[str] = mapped_column(String(12))
+    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    target_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class RateLimitBucket(Base):
+    """One fixed-window counter (migration 0022, app/ratelimit.py), shared by every API process."""
+
+    __tablename__ = "rate_limit_buckets"
+    __table_args__ = (Index("ix_rate_limit_buckets_expires", "expires_at"),)
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(32))
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    count: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class WorkspaceInvite(Base):
+    """An invitation to join a workspace (migration 0023, app/team.py); only the token's hash is kept."""
+
+    __tablename__ = "workspace_invites"
+    __table_args__ = (Index("ix_workspace_invites_workspace", "workspace_id", "email"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"))
+    email: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    invited_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"),
+                                                            nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackupRun(Base):
+    """One database backup run (migration 0024, app/backup.py)."""
+
+    __tablename__ = "backup_runs"
+    __table_args__ = (Index("ix_backup_runs_started", "kind", "started_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    host: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class SystemAlert(Base):
+    """One alert condition's state (migration 0024, app/alerts.py): active or resolved, and when admins were told."""
+
+    __tablename__ = "system_alerts"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    level: Mapped[str] = mapped_column(String(12))
+    active: Mapped[bool] = mapped_column(Boolean)
+    message: Mapped[str] = mapped_column(String(300))
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

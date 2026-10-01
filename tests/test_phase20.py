@@ -173,8 +173,8 @@ def put(section, c=None, **body):
 def replace(value):
     return {"action": "replace", "value": value}
 
-other = TestClient(app)
-assert other.post("/api/register", json={"email": "owner2@example.com", "password": "long-password-123",
+other = TestClient(app, headers={"Origin": "http://testserver"})
+assert other.post("/api/register", json={"accept_terms": True, "email": "owner2@example.com", "password": "long-password-123",
                                          "workspace_name": "Studio khác"}).status_code == 201
 other_ws = other.get("/api/dashboard").json()["workspace"]["id"]
 '''
@@ -193,7 +193,8 @@ clean(denied.text)
 assert other.post("/api/admin/system-config/ai/gemini/test").status_code == 403
 assert other.post("/api/admin/system-config/storage/check", json={"root": "/tmp"}).status_code == 403
 state = overview()
-assert set(state["sections"]) == {"ai", "social", "storage", "runtime", "credits", "notifications"}
+assert set(state["sections"]) == {"ai", "social", "storage", "runtime", "credits", "notifications", "email", "security",
+                                 "backups"}
 assert state["master_key"]["source"] == "legacy_env" and state["master_key"]["encryption_available"]
 
 # Environment fallback, then the admin value wins at once: no restart.

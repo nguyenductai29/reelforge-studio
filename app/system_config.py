@@ -49,7 +49,7 @@ SECRET_MAX = 4096
 @dataclass(frozen=True)
 class Setting:
     key: str
-    section: str  # ai, social, storage, runtime, credits, notifications, payments
+    section: str  # ai, social, storage, runtime, credits, notifications, payments, email, security, backups
     group: str  # the card it belongs to in the admin UI (a provider, a channel, a topic)
     kind: str  # secret, str, int, float, bool
     env: str | None = None  # the legacy environment variable it replaces
@@ -139,6 +139,31 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("payments.bank_qr.transfer_prefix", "payments", "bank_qr", "str", None, "RF", pattern=r"[A-Z0-9]{1,8}"),
     Setting("payments.bank_qr.note", "payments", "bank_qr", "str", None, "", max_length=300),
     Setting("payments.bank_qr.sla_message", "payments", "bank_qr", "str", None, "", max_length=300),
+    # Transactional email (Phase 22, app/mailer.py): off until an admin configures and enables it.
+    Setting("email.enabled", "email", "sender", "bool", None, False),
+    Setting("email.provider", "email", "sender", "str", None, "smtp", pattern=r"smtp|resend"),
+    Setting("email.from_name", "email", "sender", "str", None, "ReelForge Studio", max_length=100),
+    Setting("email.from_email", "email", "sender", "str", None, "", pattern=r"[^@\s<>\"']+@[^@\s<>\"']+\.[^@\s<>\"']+",
+            max_length=254),
+    Setting("email.reply_to", "email", "sender", "str", None, "", pattern=r"[^@\s<>\"']+@[^@\s<>\"']+\.[^@\s<>\"']+",
+            max_length=254),
+    Setting("email.smtp.host", "email", "smtp", "str", None, "", pattern=r"[A-Za-z0-9.\-]+", max_length=253),
+    Setting("email.smtp.port", "email", "smtp", "int", None, 587, 1, 65535),
+    Setting("email.smtp.security", "email", "smtp", "str", None, "starttls", pattern=r"starttls|ssl|none"),
+    Setting("email.smtp.username", "email", "smtp", "str", None, "", max_length=254),
+    Setting("email.smtp.password", "email", "smtp", "secret"),
+    Setting("email.resend.api_key", "email", "resend", "secret"),
+    # Client addresses behind the proxy (Phase 24, app/client_ip.py).
+    Setting("security.trusted_proxies", "security", "proxy", "str", None, "127.0.0.0/8,::1/128",
+            pattern=r"[0-9A-Fa-f.:/,\s]*", max_length=500),
+    Setting("security.client_ip_header", "security", "proxy", "str", None, "CF-Connecting-IP",
+            pattern=r"[A-Za-z0-9-]{0,64}"),
+    # Database backups (Phase 25, app/backup.py).
+    Setting("backups.directory", "backups", "backups", "str", None, "/srv/data/backups/reelforge", max_length=1000),
+    Setting("backups.keep_daily", "backups", "retention", "int", None, 14, 1, 365),
+    Setting("backups.keep_weekly", "backups", "retention", "int", None, 8, 0, 260),
+    Setting("backups.keep_monthly", "backups", "retention", "int", None, 6, 0, 120),
+    Setting("backups.max_age_hours", "backups", "backups", "int", None, 26, 1, 720),
 )
 BY_KEY = {setting.key: setting for setting in SETTINGS}
 BY_ENV = {setting.env: setting for setting in SETTINGS if setting.env}
@@ -170,7 +195,8 @@ ENVIRONMENT: dict[str, tuple[str, str]] = {
     "REELFORGE_LIVE_TESTS": ("dev", "Allows the paid live smoke tests in this shell"),
     "REELFORGE_TEST_DATABASE_URL": ("dev", "Runs the migration tests on an isolated PostgreSQL database"),
 }
-SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications", "payments")
+SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications", "payments", "email", "security",
+            "backups")
 # Paths the frontend serves each OAuth callback on.
 REDIRECT_PATHS = {"youtube": "/youtube/callback", "tiktok": "/channels/callback/tiktok",
                   "facebook": "/channels/callback/facebook"}

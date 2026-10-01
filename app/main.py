@@ -17,7 +17,9 @@ from urllib.parse import parse_qsl
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from sqlalchemy import case, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -26,9 +28,12 @@ from app.db import ROOT, config, engine, local_settings, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import Notification, PaymentOrderEvent, SupportMessage, SupportTicket, UserProfile, VerificationCheck
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import (auth_security, bank_qr, billing, config_checks, heartbeat, jobs, master_key, media_maintenance,
-                 notifications, payment_config, payment_providers, payments, publications, readiness, reconciliation,
-                 run_summary, secret_box, sources, storage, support, system_config, usage)
+from app.models import AccountToken, WorkspaceInvite
+from app import (accounts, audit, auth_security, bank_qr, billing, client_ip, config_checks, heartbeat, jobs, mailer,
+                 master_key, media_maintenance, notifications, payment_config, payment_providers, payments,
+                 permissions, publications, ratelimit, readiness, reconciliation, run_summary, secret_box, sources,
+                 storage, support, system_config, team, usage)
+from app import alerts, backup, email_templates, health, http_security, metrics, request_context
 from app.payment_providers import onepay
 from app.payment_providers import setup as payment_setup
 from app.models import CreditReconciliation
@@ -61,6 +66,7 @@ SYSTEM_DEFAULTS = {
     "registration_enabled": True,
 }
 WORKSPACE_DEFAULTS = {
+    "editors_can_publish": True,
     "default_language": "vi",
     "video_orientation": "vertical",
     "approval_required": True,
@@ -128,12 +134,53 @@ def upload_preflight(scope):
     request = Request(scope)
     same_origin(request)
     with Session() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "content.edit")
         active_plan(db, ws)
 
 
 app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_UPLOAD + MULTIPART_OVERHEAD_BYTES,
                    preflight=upload_preflight)
+# Outermost (added last): request IDs, client addresses, cross-site request checks, security headers, metrics.
+app.add_middleware(http_security.SecurityMiddleware, allowed_origins=lambda: frontend_origins(),
+                   https=lambda: public_origin_is_https())
+
+# Stable error bodies (Phase 24): {"detail", "code", "request_id"}. ``detail`` is unchanged for the frontend; ``code``
+# is a stable name; a server error never carries a stack trace, a secret or the input that was sent.
+ERROR_CODES = {400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found",
+               405: "method_not_allowed", 409: "conflict", 410: "gone", 413: "payload_too_large",
+               415: "unsupported_media_type", 422: "validation_error", 429: "rate_limited", 500: "internal_error",
+               502: "bad_gateway", 503: "unavailable", 504: "timeout"}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException):
+    detail = exc.detail
+    code = detail.get("code") if isinstance(detail, dict) and isinstance(detail.get("code"), str) \
+        else ERROR_CODES.get(exc.status_code, "error")
+    return JSONResponse({"detail": detail, "code": code, "request_id": request_context.request_id.get()},
+                        status_code=exc.status_code, headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    # Field locations and messages only: never the submitted value (it may be a password or a key).
+    errors = [{"loc": [str(part) for part in error.get("loc", ())], "msg": str(error.get("msg", ""))[:200],
+               "type": str(error.get("type", ""))} for error in exc.errors()]
+    return JSONResponse({"detail": errors, "code": "validation_error", "request_id": request_context.request_id.get()},
+                        status_code=422)
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    # Starlette runs this outside every middleware: the request ID comes from the request state, and the
+    # response carries the essential headers itself.
+    rid = getattr(request.state, "request_id", None) or request_context.request_id.get()
+    log_event(logger, "unhandled_error", level=logging.ERROR, request_id=rid, error=type(exc).__name__,
+              route=http_security.route_template(request.scope))
+    return JSONResponse({"detail": "Internal server error", "code": "internal_error", "request_id": rid},
+                        status_code=500, headers={"X-Request-ID": rid or "", "X-Content-Type-Options": "nosniff",
+                                                  "Content-Security-Policy": http_security.API_CSP,
+                                                  "Cache-Control": "no-store"})
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "audio/mpeg", "audio/wav", "audio/ogg",
                  *sources.DOCUMENT_TYPES}
 # Browsers often send no type (or a generic one) for these; the extension decides.
@@ -195,7 +242,77 @@ class NewAccount(Credentials):
 
 
 class RegisterInput(Credentials):
-    workspace_name: str = Field(min_length=1, max_length=100)
+    # Optional with an invitation: the new account joins the inviting workspace instead of creating one.
+    workspace_name: str = Field(default="", max_length=100)
+    accept_terms: bool = False
+    invite_token: str | None = Field(default=None, max_length=200)
+    locale: str | None = Field(default=None, max_length=8)
+
+
+class SetupInput(Credentials):
+    accept_terms: bool = False
+    locale: str | None = Field(default=None, max_length=8)
+
+
+class TokenInput(BaseModel):
+    token: str = Field(min_length=10, max_length=200)
+
+
+class EmailInput(BaseModel):
+    email: str = Field(max_length=320)
+
+
+class CodeInput(BaseModel):
+    code: str = Field(min_length=6, max_length=20)
+
+
+class PasswordInput(BaseModel):
+    password: str = Field(max_length=1024)
+
+
+class PasswordCodeInput(BaseModel):
+    password: str = Field(max_length=1024)
+    code: str = Field(min_length=6, max_length=20)
+
+
+class PasswordChangeInput(BaseModel):
+    current_password: str = Field(max_length=1024)
+    new_password: str = Field(max_length=1024)
+    confirm_password: str = Field(max_length=1024)
+
+
+class PasswordResetInput(BaseModel):
+    token: str = Field(min_length=10, max_length=200)
+    password: str = Field(max_length=1024)
+    confirm_password: str | None = Field(default=None, max_length=1024)
+
+
+class LocaleInput(BaseModel):
+    locale: Literal["vi", "en", "ja"]
+
+
+class ClosureInput(BaseModel):
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class InviteInput(BaseModel):
+    email: str = Field(max_length=320)
+    role: Literal["admin", "editor", "viewer"]
+
+
+class RoleInput(BaseModel):
+    role: Literal["admin", "editor", "viewer"]
+
+
+class TransferInput(BaseModel):
+    user_id: str = Field(max_length=36)
+    password: str = Field(max_length=1024)
+    code: str | None = Field(default=None, max_length=20)
+    confirm: str = Field(max_length=100)
+
+
+class WorkspaceNameInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
 
 
 class PlanInput(BaseModel):
@@ -379,6 +496,8 @@ def validate_graph(graph: WorkflowGraph, *, editing: bool = True):
 
 
 class WorkspaceSettingsInput(BaseModel):
+    # Phase 23: whether editors may publish (owners and admins always can).
+    editors_can_publish: bool = True
     default_language: str = Field(pattern="^(vi|en|ja)$")
     video_orientation: str = Field(pattern="^(vertical|horizontal|square)$")
     approval_required: bool
@@ -406,14 +525,23 @@ def ident():
 
 def provision_workspace(db, user, name, plan_code):
     """Insert parents first so PostgreSQL foreign keys are valid at each flush."""
-    db.add(user)
-    db.flush()
+    if accounts.ready(db):
+        db.add(user)
+        db.flush()
+    else:
+        # Before migration 0022 (an upgrade in progress): the ORM would name the new columns, so only the old ones.
+        db.execute(User.__table__.insert().values(id=user.id, email=user.email, password_hash=user.password_hash,
+                                                  is_admin=bool(user.is_admin), is_active=user.is_active is not False))
     ws = Workspace(id=ident(), name=name, owner_id=user.id, plan=plan_code)
     db.add(ws)
     db.flush()
     db.add(CreditAccount(workspace_id=ws.id, balance=0))
     db.add(Subscription(workspace_id=ws.id, plan_code=plan_code, status="active", starts_at=datetime.now(timezone.utc)))
-    db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner"))
+    if team.ready(db):
+        db.add(Membership(user_id=user.id, workspace_id=ws.id, role="owner", created_at=datetime.now(timezone.utc)))
+    else:
+        db.flush()
+        db.execute(Membership.__table__.insert().values(user_id=user.id, workspace_id=ws.id, role="owner"))
     db.add_all(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)) for key, value in WORKSPACE_DEFAULTS.items())
     return ws
 
@@ -433,24 +561,109 @@ def check_password(password: str, stored: str) -> bool:
         return False
 
 
+SESSION_COOKIE = "rf_session"
+# The second sign-in step: a 5-minute one-time token, sent only to the 2FA endpoint (app/accounts.py).
+CHALLENGE_COOKIE = "rf_challenge"
+LOCALE_CODES = ("vi", "en", "ja")
+EMAIL_RE = r"[^@\s]+@[^@\s]+\.[^@\s]+"
+# What a member whose role lacks a permission is told (app/permissions.py).
+PERMISSION_MESSAGES = {
+    "content.edit": "Your role cannot change this workspace",
+    "runs.execute": "Your role cannot change this workspace",
+    "publish": "Your role cannot publish in this workspace",
+    "billing.manage": "Workspace owner required",
+    "ownership.transfer": "Workspace owner required",
+}
+
+
+def new_user(db, email: str, password: str, *, is_admin: bool = False, locale: str | None = None,
+             accepted_terms: bool = False) -> User:
+    user = User(id=ident(), email=email, password_hash=hashed_password(password), is_admin=is_admin, is_active=True)
+    if accounts.ready(db):  # an upgrade in progress creates the account without the Phase 22 details
+        moment = datetime.now(timezone.utc)
+        user.created_at, user.password_changed_at = moment, moment
+        user.locale = locale if locale in LOCALE_CODES else None
+        if accepted_terms:
+            user.terms_version, user.terms_accepted_at = accounts.TERMS_VERSION, moment
+    return user
+
+
+def current_session(request: Request, db) -> LoginSession | None:
+    return accounts.session_for(db, request.cookies.get(SESSION_COOKIE))
+
+
 def authorize(request: Request, db):
-    raw = request.cookies.get("rf_session", "")
-    token = hashlib.sha256(raw.encode()).hexdigest()
-    row = db.get(LoginSession, token)
-    if not raw or not row or row.expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
+    row = current_session(request, db)
+    if row is None:
         raise HTTPException(401, "Please sign in")
     user = db.get(User, row.user_id)
     if not user or not user.is_active:
         raise HTTPException(401, "Please sign in")
+    if accounts.ready(db):
+        accounts.touch(Session, row)
     return user
 
 
-def workspace_for(request: Request, db):
+def member_context(request: Request, db) -> tuple[User, Membership, Workspace]:
+    """The signed-in user, their membership in the session's active workspace and that workspace (app/team.py).
+    The membership is checked on every request: a removed member loses access at once."""
     user = authorize(request, db)
-    membership = db.scalar(select(Membership).where(Membership.user_id == user.id).limit(1))
-    if not membership:
+    found = team.active(db, user, current_session(request, db))
+    if found is None:
         raise HTTPException(403, "No workspace")
-    return db.get(Workspace, membership.workspace_id)
+    membership, ws = found
+    return user, membership, ws
+
+
+def require_permission(db, membership: Membership, permission: str) -> None:
+    publishing = team.editors_can_publish(db, membership.workspace_id) if permission == "publish" else True
+    if not permissions.allowed(membership.role, permission, editors_can_publish=publishing):
+        raise HTTPException(403, PERMISSION_MESSAGES.get(permission, "Workspace owner or admin required"))
+
+
+def workspace_for(request: Request, db, permission: str = "workspace.view"):
+    """The active workspace, once the member's role grants ``permission`` (app/permissions.py)."""
+    _, membership, ws = member_context(request, db)
+    require_permission(db, membership, permission)
+    return ws
+
+
+def limit_rate(scope: str, subject: str) -> None:
+    """Count one attempt against a durable limit (app/ratelimit.py); 429 with Retry-After when over it."""
+    try:
+        ratelimit.hit(scope, subject)
+    except ratelimit.RateLimited as exc:
+        raise HTTPException(429, "Too many requests; try again later",
+                            headers={"Retry-After": str(exc.retry_after)}) from None
+
+
+def public_link(path: str, token: str | None = None) -> str:
+    """A link into the frontend for an email; a token goes in the fragment, so it never reaches a server log."""
+    with Session() as db:
+        origin = effective(db, "frontend_origin").rstrip("/")
+    return f"{origin}{path}" + (f"#token={token}" if token else "")
+
+
+def queue_email(db, user: User, template: str, params: dict, *, dedupe: str | None = None) -> bool:
+    """Queue a transactional email in this transaction (app/mailer.py); call mailer.kick() after the commit."""
+    return mailer.enqueue(db, to=user.email, template=template, locale=user.locale, params=params, user_id=user.id,
+                          dedupe=dedupe) is not None
+
+
+def send_verification(db, user: User, request: Request | None = None) -> bool:
+    if not mailer.enabled():
+        return False
+    raw = accounts.issue_token(db, user, "verify_email", lifetime=accounts.VERIFY_LIFETIME, email=user.email,
+                               ip=client_ip.resolve(request) if request is not None else None)
+    return queue_email(db, user, "verify_email", {"link": public_link("/verify-email", raw),
+                                                  "hours": int(accounts.VERIFY_LIFETIME.total_seconds() // 3600)})
+
+
+def set_session_cookie(response: Response, raw: str) -> None:
+    with Session() as db:
+        secure = effective(db, "secure_cookies")
+    response.set_cookie(SESSION_COOKIE, raw, httponly=True, samesite="strict", secure=secure,
+                        max_age=int(accounts.SESSION_LIFETIME.total_seconds()))
 
 
 def admin_for(request: Request, db):
@@ -477,17 +690,32 @@ def effective_status(subscription):
 
 
 def enforce_limit(db, ws, table, limit_name):
+    # The workspace's subscription row is locked first (PostgreSQL row lock; SQLite serializes writers): the count
+    # and the caller's insert happen under it, so concurrent requests can never go past the plan's limit.
+    db.scalar(select(Subscription).where(Subscription.workspace_id == ws.id).with_for_update())
     limit = getattr(active_plan(db, ws), limit_name)
     if limit is not None and db.scalar(select(func.count()).select_from(table).where(table.workspace_id == ws.id)) >= limit:
         raise HTTPException(403, f"{limit_name.replace('_', ' ').capitalize()} reached")
 
 
+_ORIGIN_CACHE: dict = {"at": 0.0, "value": None}
+
+
+def frontend_origins() -> set[str]:
+    """The public frontend origin (this machine's override first), re-read every few seconds."""
+    if _ORIGIN_CACHE["value"] is None or time.monotonic() - _ORIGIN_CACHE["at"] > 5:
+        with Session() as db:
+            _ORIGIN_CACHE.update(value=str(effective(db, "frontend_origin")).rstrip("/"), at=time.monotonic())
+    return {_ORIGIN_CACHE["value"]}
+
+
+def public_origin_is_https() -> bool:
+    return next(iter(frontend_origins()), "").startswith("https://")
+
+
 def same_origin(request: Request):
-    origin = request.headers.get("origin")
-    with Session() as db:
-        frontend_origin = effective(db, "frontend_origin")
-    allowed = {str(request.base_url).rstrip("/"), frontend_origin.rstrip("/")}
-    if origin and origin.rstrip("/") not in allowed:
+    """A state-changing request must come from the frontend (or the API's own) origin (app/http_security.py)."""
+    if not http_security.origin_ok(request.scope, frontend_origins(), require=False):
         raise HTTPException(403, "Invalid origin")
 
 
@@ -501,100 +729,829 @@ def index():
     return {"app": "ReelForge Studio API", "ui": "Run the Next.js frontend on port 3000", "docs": "/docs"}
 
 
+# Phase 24: liveness and readiness for systemd, deploy.sh and monitoring. Not under /api/: the Next.js proxy never
+# exposes them; the API listens on 127.0.0.1 only.
+@app.get("/health/live")
+def health_live():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Database reachable, migrations at head, master key usable. Paid providers are never contacted."""
+    report = health.readiness()
+    return JSONResponse(report, status_code=200 if report["status"] == "ok" else 503)
+
+
+@app.get("/internal/metrics")
+def internal_metrics(request: Request):
+    """Prometheus metrics (app/metrics.py): for a scraper on this server (loopback) or a signed-in system admin."""
+    peer = request.client.host if request.client else None
+    if not client_ip.is_trusted(peer) or request.headers.get("cf-connecting-ip"):
+        with Session() as db:
+            admin_for(request, db)
+    metrics.set_gauge("sse_connections", _open_streams)
+    with Session() as db:
+        body = metrics.render(db)
+    return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
+
+
 @app.get("/api/status")
 def status():
     with Session() as db:
         return {"setup_required": db.scalar(select(func.count()).select_from(User)) == 0,
-                "registration_enabled": setting(db, "registration_enabled")}
+                "registration_enabled": setting(db, "registration_enabled"),
+                # Phase 22/26: whether "Forgot password" can work, and the Terms version a new account accepts.
+                "email_delivery": mailer.enabled(), "terms_version": accounts.TERMS_VERSION}
 
 
 @app.post("/api/setup")
-def setup(data: Credentials, request: Request, response: Response):
+def setup(data: SetupInput, request: Request, response: Response):
     same_origin(request)
+    limit_rate("setup_ip", client_ip.resolve(request))
     email = data.email.strip().lower()
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(data.password) < 12:
+    if not re.fullmatch(EMAIL_RE, email) or accounts.password_problem(data.password, email):
         raise HTTPException(400, "Use a valid email and a password of at least 12 characters")
     with Session.begin() as db:
         auth_security.lock_initial_setup(db)
         if db.scalar(select(func.count()).select_from(User)):
             raise HTTPException(409, "Setup already completed")
-        user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=True)
-        provision_workspace(db, user, "My Studio", "trial")
+        user = new_user(db, email, data.password, is_admin=True, locale=data.locale, accepted_terms=data.accept_terms)
+        ws = provision_workspace(db, user, "My Studio", "trial")
+        audit.record(db, "account.registered", actor_id=user.id, workspace_id=ws.id, details={"setup": True})
+        send_verification(db, user, request)
+    mailer.kick()
     return login(data, request, response)
 
 
 @app.post("/api/register", status_code=201)
 def register(data: RegisterInput, request: Request, response: Response):
+    """A new account: with its own Trial studio, or, with an invitation, as a member of the inviting studio."""
     same_origin(request)
+    limit_rate("register_ip", client_ip.resolve(request))
     email, name = data.email.strip().lower(), data.workspace_name.strip()
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(data.password) < 12 or not name:
+    invited = bool(data.invite_token)
+    if not re.fullmatch(EMAIL_RE, email) or accounts.password_problem(data.password, email) \
+            or (not invited and not name):
         raise HTTPException(400, "Valid email, workspace name and password of at least 12 characters required")
+    if not data.accept_terms:
+        raise HTTPException(400, "Accept the Terms of Service and Privacy Policy")
     try:
         with Session.begin() as db:
             if not db.scalar(select(func.count()).select_from(User)):
                 raise HTTPException(403, "Create the first studio as administrator")
-            if not setting(db, "registration_enabled"):
+            invitation = None
+            if invited:
+                invitation = team.find(db, data.invite_token, lock=True)
+                if team.status(invitation) != "pending":
+                    raise HTTPException(410, "This invitation is no longer valid")
+                if invitation.email.lower() != email:
+                    raise HTTPException(403, "This invitation is for another email address")
+            elif not setting(db, "registration_enabled"):
                 raise HTTPException(403, "Registration is closed")
             if db.scalar(select(User.id).where(User.email == email)):
                 raise HTTPException(409, "Email already exists")
-            plan = db.get(Plan, "trial")
-            if not plan or not plan.is_active:
-                raise HTTPException(403, "Trial plan unavailable")
-            user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=False, is_active=True)
-            provision_workspace(db, user, name, "trial")
+            user = new_user(db, email, data.password, locale=data.locale, accepted_terms=True)
+            if invitation is not None:
+                db.add(user)
+                db.flush()
+                ws, _ = team.accept(db, data.invite_token, user)
+                user.last_workspace_id = ws.id
+                audit.record(db, "workspace.invite_accepted", actor_id=user.id, workspace_id=ws.id,
+                             target_type="invite", target_id=invitation.id, details={"role": invitation.role})
+                notifications.notify(db, notifications.members(db, ws.id, managers_only=True), "team.member_joined",
+                                     "New member", f"{email} joined {ws.name}.", workspace_id=ws.id,
+                                     link="/settings?tab=members", params={"email": email, "role": invitation.role},
+                                     dedupe=f"team:{ws.id}:joined:{user.id}")
+            else:
+                plan = db.get(Plan, "trial")
+                if not plan or not plan.is_active:
+                    raise HTTPException(403, "Trial plan unavailable")
+                ws = provision_workspace(db, user, name, "trial")
+                send_verification(db, user, request)
+            audit.record(db, "account.registered", actor_id=user.id, workspace_id=ws.id, details={"invited": invited})
     except IntegrityError as exc:
         raise HTTPException(409, "Email already exists") from exc
+    mailer.kick()
     return login(data, request, response)
 
 
 @app.post("/api/login")
 def login(data: Credentials, request: Request, response: Response):
+    """Password sign-in. With 2FA on, the answer is ``two_factor_required`` and the session comes from /login/2fa."""
     same_origin(request)
-    identifier = f"{data.email.strip().lower()}|{request.client.host if request.client else 'unknown'}"
-    blocked = False
-    invalid = False
-    token = None
-    user = None
+    ip = client_ip.resolve(request)
+    email = data.email.strip().lower()
+    limit_rate("login_ip", ip)
+    limit_rate("login_account", email)
+    identifier = f"{email}|{ip}"
+    outcome, token, challenge = None, None, None
     with Session.begin() as db:
         if not auth_security.check_login_allowed(db, identifier):
-            blocked = True
+            outcome = "blocked"
+            audit.record(db, "auth.login", outcome="denied", details={"reason": "throttled"})
         else:
-            user = db.scalar(select(User).where(User.email == data.email.strip().lower()))
+            user = db.scalar(select(User).where(User.email == email))
             if not user or not user.is_active or not check_password(data.password, user.password_hash):
-                auth_security.record_login_failure(db, identifier)
-                invalid = True
+                failures = auth_security.record_login_failure(db, identifier)
+                outcome = "invalid"
+                audit.record(db, "auth.login", outcome="failure", actor_id=user.id if user else None,
+                             details={"reason": "invalid_credentials" if user else "unknown_account"})
+                if user is not None and failures == auth_security.FAILURE_LIMIT:
+                    audit.record(db, "auth.login_blocked", outcome="denied", actor_id=user.id)
+                    queue_email(db, user, "security_locked", {"ip": ip, "time": datetime.now(timezone.utc)})
             else:
                 auth_security.clear_login_failures(db, identifier)
-                token = secrets.token_urlsafe(48)
-                db.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=7)))
-    if blocked:
+                if accounts.ready(db) and accounts.two_factor_enabled(user):
+                    challenge = accounts.issue_token(db, user, "login_challenge", lifetime=accounts.CHALLENGE_LIFETIME,
+                                                     ip=ip)
+                    outcome = "two_factor"
+                else:
+                    token = accounts.create_session(db, user, user_agent=request.headers.get("user-agent"), ip=ip)
+                    audit.record(db, "auth.login", actor_id=user.id)
+                    outcome = "ok"
+    mailer.kick()
+    if outcome in ("blocked", "invalid"):
+        metrics.inc("login_failures", reason=outcome)
+    if outcome == "blocked":
         raise HTTPException(429, "Too many login attempts; try again later")
-    if invalid:
+    if outcome == "invalid":
         raise HTTPException(401, "Invalid credentials")
     with Session() as db:
-        secure_cookies = effective(db, "secure_cookies")
-    response.set_cookie("rf_session", token, httponly=True, samesite="strict", secure=secure_cookies, max_age=604800)
-    return {"email": user.email}
+        secure = effective(db, "secure_cookies")
+    if outcome == "two_factor":
+        response.set_cookie(CHALLENGE_COOKIE, challenge, httponly=True, samesite="strict", secure=secure,
+                            path="/api/login", max_age=int(accounts.CHALLENGE_LIFETIME.total_seconds()))
+        return {"email": email, "two_factor_required": True}
+    set_session_cookie(response, token)
+    return {"email": email, "two_factor_required": False}
+
+
+@app.post("/api/login/2fa")
+def login_two_factor(data: CodeInput, request: Request, response: Response):
+    """The second sign-in step: an authenticator code or a recovery code; five tries per challenge."""
+    same_origin(request)
+    ip = client_ip.resolve(request)
+    limit_rate("two_factor_ip", ip)
+    outcome, token, email = "expired", None, None
+    with Session.begin() as db:
+        challenge = accounts.live_token(db, request.cookies.get(CHALLENGE_COOKIE), "login_challenge", lock=True)
+        user = db.get(User, challenge.user_id) if challenge is not None else None
+        if user is not None and user.is_active:
+            email = user.email
+            try:
+                limit_rate("two_factor_account", user.id)
+            except HTTPException:
+                challenge.used_at = datetime.now(timezone.utc)
+                audit.record(db, "auth.two_factor", outcome="denied", actor_id=user.id, details={"reason": "rate"})
+                outcome = "limited"
+            else:
+                method = accounts.check_second_factor(db, user, data.code)
+                if method is None:
+                    challenge.attempts += 1
+                    if challenge.attempts >= accounts.CHALLENGE_ATTEMPTS:
+                        challenge.used_at = datetime.now(timezone.utc)
+                    audit.record(db, "auth.two_factor", outcome="failure", actor_id=user.id)
+                    outcome = "invalid"
+                else:
+                    challenge.used_at = datetime.now(timezone.utc)
+                    token = accounts.create_session(db, user, user_agent=request.headers.get("user-agent"), ip=ip)
+                    audit.record(db, "auth.login", actor_id=user.id, details={"second_factor": method})
+                    if method == "recovery":
+                        remaining = accounts.recovery_remaining(db, user.id)
+                        audit.record(db, "account.recovery_code_used", actor_id=user.id,
+                                     details={"remaining": remaining})
+                        queue_email(db, user, "security_recovery_used",
+                                    {"ip": ip, "time": datetime.now(timezone.utc), "remaining": remaining})
+                    outcome = "ok"
+    mailer.kick()
+    if outcome == "limited":
+        raise HTTPException(429, "Too many requests; try again later")
+    if outcome == "expired":
+        raise HTTPException(401, "Sign-in expired; enter your password again")
+    if outcome == "invalid":
+        raise HTTPException(401, "Invalid verification code")
+    set_session_cookie(response, token)
+    response.delete_cookie(CHALLENGE_COOKIE, path="/api/login", httponly=True, samesite="strict")
+    return {"email": email, "two_factor_required": False}
 
 
 @app.post("/api/logout")
 def logout(request: Request, response: Response):
     same_origin(request)
     with Session.begin() as db:
-        raw = request.cookies.get("rf_session")
-        session = db.get(LoginSession, hashlib.sha256(raw.encode()).hexdigest()) if raw else None
+        session = current_session(request, db)
         if session:
+            audit.record(db, "auth.logout", actor_id=session.user_id)
             db.delete(session)
         secure_cookies = effective(db, "secure_cookies")
     # The same attributes as at login, so browsers that compare them replace the cookie.
-    response.delete_cookie("rf_session", httponly=True, samesite="strict", secure=secure_cookies)
+    response.delete_cookie(SESSION_COOKIE, httponly=True, samesite="strict", secure=secure_cookies)
     return {"ok": True}
+
+
+# --- Phase 22: account security (Settings → Security) -------------------------------------------------------------
+
+def _account(request: Request) -> str:
+    with Session() as db:
+        return authorize(request, db).id
+
+
+def _refuse(action: str, user_id: str, status: int, message: str, **details):
+    """Record a refused account change (in its own transaction), then refuse it."""
+    audit.record_now(action, outcome="failure", actor_id=user_id, details=details or None)
+    raise HTTPException(status, message)
+
+
+@app.get("/api/account/security")
+def account_security(request: Request):
+    with Session() as db:
+        user = authorize(request, db)
+        current = current_session(request, db)
+        return accounts.security_view(db, user, current.token_hash if current else None,
+                                      email_delivery=mailer.enabled())
+
+
+@app.post("/api/account/password")
+def change_password(data: PasswordChangeInput, request: Request):
+    """Current password, new password twice. Other sessions are signed out; this one stays."""
+    same_origin(request)
+    user_id = _account(request)
+    limit_rate("account_change", user_id)
+    with Session() as db:
+        user = db.get(User, user_id)
+        if not check_password(data.current_password, user.password_hash):
+            _refuse("account.password_changed", user_id, 400, "Current password is incorrect")
+        if data.new_password != data.confirm_password:
+            raise HTTPException(400, "Passwords do not match")
+        if accounts.password_problem(data.new_password, user.email):
+            raise HTTPException(400, "Use a password of at least 12 characters, different from your email")
+        if check_password(data.new_password, user.password_hash):
+            raise HTTPException(400, "Choose a password different from the current one")
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        current = current_session(request, db)
+        user.password_hash, user.password_changed_at = hashed_password(data.new_password), datetime.now(timezone.utc)
+        revoked = accounts.revoke_sessions(db, user.id, keep_hash=current.token_hash if current else None)
+        audit.record(db, "account.password_changed", actor_id=user.id, details={"sessions_revoked": revoked})
+        queue_email(db, user, "password_changed", {"time": datetime.now(timezone.utc), "link": public_link("/")})
+    mailer.kick()
+    return {"ok": True, "sessions_revoked": revoked}
+
+
+@app.post("/api/account/password/forgot")
+def forgot_password(data: EmailInput, request: Request):
+    """Always the same answer, whether or not the account exists; the link goes by email (60 minutes, once)."""
+    same_origin(request)
+    ip = client_ip.resolve(request)
+    email = data.email.strip().lower()
+    limit_rate("forgot_ip", ip)
+    limit_rate("forgot_account", email)
+    with Session.begin() as db:
+        user = db.scalar(select(User).where(User.email == email))
+        if user is not None and user.is_active and mailer.enabled():
+            raw = accounts.issue_token(db, user, "password_reset", lifetime=accounts.RESET_LIFETIME, ip=ip)
+            queue_email(db, user, "password_reset", {"link": public_link("/reset-password", raw),
+                                                     "minutes": int(accounts.RESET_LIFETIME.total_seconds() // 60)})
+        audit.record(db, "account.password_reset_requested", actor_id=user.id if user else None,
+                     details={"known": user is not None})
+    mailer.kick()
+    return {"ok": True}
+
+
+@app.post("/api/account/password/reset/check")
+def check_reset_token(data: TokenInput, request: Request):
+    same_origin(request)
+    limit_rate("reset_ip", client_ip.resolve(request))
+    with Session() as db:
+        return {"valid": accounts.live_token(db, data.token, "password_reset") is not None}
+
+
+@app.post("/api/account/password/reset")
+def reset_password(data: PasswordResetInput, request: Request):
+    """A new password from an emailed link; the link dies, every session is signed out, the user is told."""
+    same_origin(request)
+    limit_rate("reset_ip", client_ip.resolve(request))
+    if data.confirm_password is not None and data.confirm_password != data.password:
+        raise HTTPException(400, "Passwords do not match")
+    with Session.begin() as db:
+        token = accounts.live_token(db, data.token, "password_reset", lock=True)
+        user = db.get(User, token.user_id) if token is not None else None
+        if user is None or not user.is_active:
+            raise HTTPException(410, "This link is invalid or has expired")
+        if accounts.password_problem(data.password, user.email):
+            raise HTTPException(400, "Use a password of at least 12 characters, different from your email")
+        moment = datetime.now(timezone.utc)
+        user.password_hash, user.password_changed_at = hashed_password(data.password), moment
+        user.email_verified_at = user.email_verified_at or moment  # the link reached this inbox
+        db.execute(update(AccountToken).where(AccountToken.user_id == user.id,
+                                              AccountToken.purpose == "password_reset",
+                                              AccountToken.used_at.is_(None)).values(used_at=moment))
+        revoked = accounts.revoke_sessions(db, user.id)
+        audit.record(db, "account.password_reset", actor_id=user.id, details={"sessions_revoked": revoked})
+        queue_email(db, user, "password_changed", {"time": moment, "link": public_link("/")})
+    mailer.kick()
+    return {"ok": True}
+
+
+@app.post("/api/account/verify-email")
+def verify_email(data: TokenInput, request: Request):
+    """Confirm the address with the emailed link; works signed in or not (the link is the proof)."""
+    same_origin(request)
+    limit_rate("verify_ip", client_ip.resolve(request))
+    with Session.begin() as db:
+        token = accounts.live_token(db, data.token, "verify_email", lock=True)
+        user = db.get(User, token.user_id) if token is not None else None
+        if user is None or (token.email or "").lower() != user.email.lower():
+            raise HTTPException(410, "This link is invalid or has expired")
+        moment = datetime.now(timezone.utc)
+        token.used_at = moment
+        first = user.email_verified_at is None
+        user.email_verified_at = user.email_verified_at or moment
+        audit.record(db, "account.email_verified", actor_id=user.id)
+        if first:
+            queue_email(db, user, "welcome", {"link": public_link("/")})
+        email = user.email
+    mailer.kick()
+    return {"verified": True, "email": email}
+
+
+@app.post("/api/account/verify-email/resend")
+def resend_verification(request: Request):
+    same_origin(request)
+    user_id = _account(request)
+    limit_rate("verify_resend", user_id)
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        if user.email_verified_at is not None:
+            return {"sent": False, "verified": True}
+        if not send_verification(db, user, request):
+            raise HTTPException(503, "Email delivery is not configured")
+        audit.record(db, "account.verification_sent", actor_id=user.id)
+    mailer.kick()
+    return {"sent": True, "verified": False}
+
+
+@app.post("/api/account/2fa/setup")
+def start_two_factor(data: PasswordInput, request: Request):
+    """Begin TOTP enrollment (the password again): a secret and its QR code, enabled only by /2fa/enable."""
+    same_origin(request)
+    user_id = _account(request)
+    limit_rate("account_change", user_id)
+    if not secret_box.available():
+        raise HTTPException(503, "The master encryption key is missing")
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        if not check_password(data.password, user.password_hash):
+            audit.record_now("account.two_factor_enabled", outcome="failure", actor_id=user_id,
+                             details={"reason": "password"})
+            raise HTTPException(400, "Current password is incorrect")
+        if accounts.two_factor_enabled(user):
+            raise HTTPException(409, "Two-factor authentication is already on")
+        return accounts.start_totp(db, user)
+
+
+@app.post("/api/account/2fa/enable")
+def enable_two_factor(data: CodeInput, request: Request):
+    """One correct code turns 2FA on; the ten recovery codes are returned this once. Other sessions end."""
+    same_origin(request)
+    user_id = _account(request)
+    limit_rate("two_factor_account", user_id)
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        if accounts.two_factor_enabled(user):
+            raise HTTPException(409, "Two-factor authentication is already on")
+        codes = accounts.enable_totp(db, user, data.code)
+        if codes is None:
+            audit.record_now("account.two_factor_enabled", outcome="failure", actor_id=user_id,
+                             details={"reason": "code"})
+            raise HTTPException(400, "Invalid verification code")
+        current = current_session(request, db)
+        revoked = accounts.revoke_sessions(db, user.id, keep_hash=current.token_hash if current else None)
+        audit.record(db, "account.two_factor_enabled", actor_id=user.id, details={"sessions_revoked": revoked})
+        queue_email(db, user, "security_2fa_enabled", {"time": datetime.now(timezone.utc)})
+    mailer.kick()
+    return {"enabled": True, "recovery_codes": codes}
+
+
+def _second_factor_change(request: Request, data: PasswordCodeInput, action: str):
+    user_id = _account(request)
+    limit_rate("two_factor_account", user_id)
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        if not accounts.two_factor_enabled(user):
+            raise HTTPException(409, "Two-factor authentication is off")
+        if not check_password(data.password, user.password_hash):
+            audit.record_now(action, outcome="failure", actor_id=user_id, details={"reason": "password"})
+            raise HTTPException(400, "Current password is incorrect")
+        if accounts.check_second_factor(db, user, data.code) is None:
+            audit.record_now(action, outcome="failure", actor_id=user_id, details={"reason": "code"})
+            raise HTTPException(400, "Invalid verification code")
+        return user_id
+
+
+@app.post("/api/account/2fa/disable")
+def disable_two_factor(data: PasswordCodeInput, request: Request):
+    same_origin(request)
+    user_id = _second_factor_change(request, data, "account.two_factor_disabled")
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        accounts.disable_totp(db, user)
+        audit.record(db, "account.two_factor_disabled", actor_id=user.id)
+        queue_email(db, user, "security_2fa_disabled", {"time": datetime.now(timezone.utc)})
+    mailer.kick()
+    return {"enabled": False}
+
+
+@app.post("/api/account/2fa/recovery-codes")
+def regenerate_recovery_codes(data: PasswordCodeInput, request: Request):
+    """Ten new recovery codes (shown this once); the previous ones stop working."""
+    same_origin(request)
+    user_id = _second_factor_change(request, data, "account.recovery_codes_regenerated")
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        codes = accounts.replace_recovery_codes(db, user)
+        audit.record(db, "account.recovery_codes_regenerated", actor_id=user.id)
+    return {"recovery_codes": codes}
+
+
+@app.delete("/api/account/sessions/{session_id}", status_code=204)
+def revoke_session(session_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        row = db.scalar(select(LoginSession).where(LoginSession.id == session_id, LoginSession.user_id == user.id))
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        db.delete(row)
+        audit.record(db, "account.session_revoked", actor_id=user.id, target_type="session", target_id=session_id)
+    return Response(status_code=204)
+
+
+@app.post("/api/account/sessions/revoke-others")
+def revoke_other_sessions(request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        current = current_session(request, db)
+        revoked = accounts.revoke_sessions(db, user.id, keep_hash=current.token_hash if current else None)
+        audit.record(db, "account.sessions_revoked", actor_id=user.id, details={"count": revoked})
+    return {"revoked": revoked}
+
+
+@app.get("/api/account/activity")
+def account_activity(request: Request, limit: int = Query(default=30, ge=1, le=100)):
+    """The signed-in user's own recent security events (sign-ins, password, 2FA, sessions)."""
+    with Session() as db:
+        user = authorize(request, db)
+        items, _ = audit.query(db, actor_id=user.id, limit=limit)
+        return {"items": [{key: item[key] for key in ("at", "action", "outcome", "ip", "details")} for item in items]}
+
+
+@app.get("/api/account/export")
+def export_account(request: Request):
+    """Download my data: the account's metadata as JSON (no media, no secrets)."""
+    user_id = _account(request)
+    limit_rate("account_export", user_id)
+    with Session.begin() as db:
+        user = db.get(User, user_id)
+        data = accounts.export(db, user)
+        audit.record(db, "account.export", actor_id=user.id)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return Response(json.dumps(data, ensure_ascii=False, indent=2), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="reelforge-account-{stamp}.json"'})
+
+
+@app.post("/api/account/closure-request", status_code=201)
+def request_account_closure(data: ClosureInput, request: Request):
+    """Closing an account is handled by a system admin: this opens an account support ticket for them."""
+    same_origin(request)
+    with Session.begin() as db:
+        user, _, ws = member_context(request, db)
+        body = "Please close my account.\n\n" + ((data.reason or "").strip() or "(no reason given)")
+        ticket = support.create_ticket(db, workspace_id=ws.id, user=user, subject="Account closure request",
+                                       category="account", body=body)
+        audit.record(db, "account.closure_requested", actor_id=user.id, workspace_id=ws.id,
+                     target_type="ticket", target_id=ticket.id)
+        return {"ticket_id": ticket.id}
+
+
+@app.put("/api/account/locale")
+def update_locale(data: LocaleInput, request: Request):
+    """The language of the user's emails (the interface language, remembered on the account)."""
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        user.locale = data.locale
+    return {"locale": data.locale}
+
+
+@app.post("/api/account/terms")
+def accept_terms(request: Request):
+    """Accept the current Terms of Service and Privacy Policy version (accounts created before they existed)."""
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        user.terms_version, user.terms_accepted_at = accounts.TERMS_VERSION, datetime.now(timezone.utc)
+    return {"version": accounts.TERMS_VERSION}
+
+
+# --- Phase 23: workspaces, members and invitations --------------------------------------------------------------
+
+def team_failure(exc: team.TeamError):
+    messages = {
+        "not_a_member": "Workspace not found", "member_not_found": "Member not found",
+        "invalid_role": "Choose admin, editor or viewer", "invalid_email": "Use a valid email address",
+        "cannot_change_own_role": "You cannot change your own role", "use_leave": "Use Leave workspace instead",
+        "cannot_remove_owner": "The owner cannot be removed; transfer ownership first",
+        "cannot_manage_member": "Your role cannot manage this member",
+        "owner_cannot_leave": "Transfer ownership before leaving the workspace",
+        "owner_required": "Workspace owner required", "already_owner": "This member already owns the workspace",
+        "member_inactive": "This account is disabled", "already_member": "This person is already a member",
+        "invite_invalid": "This invitation is invalid", "invite_expired": "This invitation has expired",
+        "invite_revoked": "This invitation was cancelled", "invite_accepted": "This invitation was already used",
+        "invite_email_mismatch": "This invitation is for another email address",
+    }
+    raise HTTPException(exc.status, {"code": exc.code, "field": None, "message": messages.get(exc.code, exc.code)})
+
+
+@app.get("/api/workspaces")
+def list_workspaces(request: Request):
+    with Session() as db:
+        user, _, ws = member_context(request, db)
+        return {"items": team.list_workspaces(db, user.id, ws.id), "active_id": ws.id}
+
+
+class NewWorkspaceInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+@app.post("/api/workspaces", status_code=201)
+def create_workspace(data: NewWorkspaceInput, request: Request):
+    """A studio of one's own on the Trial plan (an invited member who has none, or who left the last one).
+    Open while self-registration is; one owned studio per account (system admins may create more)."""
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        if not user.is_admin:
+            if not setting(db, "registration_enabled"):
+                raise HTTPException(403, "Registration is closed")
+            owned = db.scalar(select(func.count()).select_from(Membership)
+                              .where(Membership.user_id == user.id, Membership.role == "owner"))
+            if owned:
+                raise HTTPException(409, "You already own a studio")
+        plan = db.get(Plan, "trial")
+        if not plan or not plan.is_active:
+            raise HTTPException(403, "Trial plan unavailable")
+        name = " ".join(data.name.split())
+        if not name:
+            raise HTTPException(400, "Workspace name required")
+        ws = provision_workspace(db, user, name[:100], "trial")
+        session = current_session(request, db)
+        team.switch(db, user, session, ws.id)
+        audit.record(db, "workspace.created", actor_id=user.id, workspace_id=ws.id)
+        return {"id": ws.id, "name": ws.name}
+
+
+@app.post("/api/workspaces/{workspace_id}/switch")
+def switch_workspace(workspace_id: str, request: Request):
+    """Work in another workspace the user belongs to; remembered for this session and new ones."""
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        session = current_session(request, db)
+        try:
+            ws = team.switch(db, user, session, workspace_id)
+        except team.TeamError as exc:
+            team_failure(exc)
+        audit.record(db, "workspace.switched", actor_id=user.id, workspace_id=ws.id)
+        return {"id": ws.id, "name": ws.name}
+
+
+@app.get("/api/workspace/members")
+def workspace_members(request: Request):
+    with Session() as db:
+        user, membership, ws = member_context(request, db)
+        manage = permissions.allowed(membership.role, "members.manage")
+        return {"workspace": {"id": ws.id, "name": ws.name, "owner_id": ws.owner_id}, "role": membership.role,
+                "members": team.member_list(db, ws.id, user.id),
+                "invites": team.pending_invites(db, ws.id) if manage else [],
+                "can_manage": manage, "can_transfer": membership.role == "owner",
+                "editors_can_publish": team.editors_can_publish(db, ws.id),
+                "email_delivery": mailer.enabled(), "email_verified": user.email_verified_at is not None}
+
+
+@app.put("/api/workspace")
+def rename_workspace(data: WorkspaceNameInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        require_permission(db, membership, "settings.manage")
+        name = " ".join(data.name.split())
+        if not name:
+            raise HTTPException(400, "Workspace name required")
+        ws.name = name[:100]
+        audit.record(db, "workspace.renamed", actor_id=user.id, workspace_id=ws.id)
+        return {"id": ws.id, "name": ws.name}
+
+
+@app.post("/api/workspace/invites", status_code=201)
+def invite_member(data: InviteInput, request: Request):
+    """Invite by email with a role. The link is emailed; without email delivery it is returned to share by hand."""
+    same_origin(request)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        require_permission(db, membership, "members.manage")
+        if mailer.enabled() and user.email_verified_at is None:
+            raise HTTPException(403, "Verify your email address before inviting members")
+    limit_rate("invite_workspace", ws.id)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        try:
+            invitation, raw = team.invite(db, ws, membership, data.email, data.role)
+        except team.TeamError as exc:
+            team_failure(exc)
+        link = public_link("/invite", raw)
+        inviter = (db.get(UserProfile, user.id).display_name if db.get(UserProfile, user.id) else None) or user.email
+        sent = mailer.enqueue(db, to=invitation.email, template="member_invite", locale=user.locale,
+                              params={"workspace": ws.name, "inviter": inviter, "role": data.role, "link": link,
+                                      "days": team.INVITE_LIFETIME.days}) is not None
+        audit.record(db, "workspace.member_invited", actor_id=user.id, workspace_id=ws.id, target_type="invite",
+                     target_id=invitation.id, details={"email": invitation.email, "role": data.role, "emailed": sent})
+        result = {"id": invitation.id, "email": invitation.email, "role": invitation.role, "emailed": sent,
+                  "expires_at": accounts.iso(invitation.expires_at), "link": None if sent else link}
+    mailer.kick()
+    return result
+
+
+@app.post("/api/workspace/invites/{invite_id}/resend")
+def resend_invite(invite_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        require_permission(db, membership, "members.manage")
+    limit_rate("invite_workspace", ws.id)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        invitation = db.get(WorkspaceInvite, invite_id)
+        if invitation is None or invitation.workspace_id != ws.id or invitation.accepted_at or invitation.revoked_at:
+            raise HTTPException(404, "Invitation not found")
+        raw = team.renew(db, invitation)
+        link = public_link("/invite", raw)
+        sent = mailer.enqueue(db, to=invitation.email, template="member_invite", locale=user.locale,
+                              params={"workspace": ws.name, "inviter": user.email, "role": invitation.role,
+                                      "link": link, "days": team.INVITE_LIFETIME.days}) is not None
+        audit.record(db, "workspace.member_invited", actor_id=user.id, workspace_id=ws.id, target_type="invite",
+                     target_id=invitation.id, details={"email": invitation.email, "role": invitation.role,
+                                                       "emailed": sent, "resent": True})
+        result = {"id": invitation.id, "emailed": sent, "expires_at": accounts.iso(invitation.expires_at),
+                  "link": None if sent else link}
+    mailer.kick()
+    return result
+
+
+@app.delete("/api/workspace/invites/{invite_id}", status_code=204)
+def revoke_invite(invite_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        require_permission(db, membership, "members.manage")
+        invitation = db.get(WorkspaceInvite, invite_id)
+        if invitation is None or invitation.workspace_id != ws.id or invitation.accepted_at:
+            raise HTTPException(404, "Invitation not found")
+        invitation.revoked_at = invitation.revoked_at or datetime.now(timezone.utc)
+        audit.record(db, "workspace.invite_revoked", actor_id=user.id, workspace_id=ws.id, target_type="invite",
+                     target_id=invitation.id, details={"email": invitation.email})
+    return Response(status_code=204)
+
+
+@app.put("/api/workspace/members/{user_id}")
+def change_member_role(user_id: str, data: RoleInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        require_permission(db, membership, "members.manage")
+        try:
+            target = team.change_role(db, ws, membership, user_id, data.role)
+        except team.TeamError as exc:
+            team_failure(exc)
+        audit.record(db, "workspace.member_role_changed", actor_id=user.id, workspace_id=ws.id, target_type="user",
+                     target_id=user_id, details={"role": data.role})
+        notifications.notify(db, [user_id], "team.role_changed", "Your role changed",
+                             f"You are now {data.role} in {ws.name}.", workspace_id=ws.id, link="/settings?tab=members",
+                             params={"workspace": ws.name, "role": data.role})
+        return {"user_id": target.user_id, "role": target.role}
+
+
+@app.delete("/api/workspace/members/{user_id}", status_code=204)
+def remove_member(user_id: str, request: Request):
+    """Owner or admin removes a member (never the owner); their next request no longer reaches this workspace."""
+    same_origin(request)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        require_permission(db, membership, "members.manage")
+        try:
+            removed = team.remove(db, ws, membership, user_id)
+        except team.TeamError as exc:
+            team_failure(exc)
+        audit.record(db, "workspace.member_removed", actor_id=user.id, workspace_id=ws.id, target_type="user",
+                     target_id=user_id, details={"role": removed.role})
+        notifications.notify(db, [user_id], "team.removed", "Removed from a workspace",
+                             f"You no longer have access to {ws.name}.", params={"workspace": ws.name})
+    return Response(status_code=204)
+
+
+@app.post("/api/workspace/leave")
+def leave_workspace(request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        try:
+            team.leave(db, ws, membership)
+        except team.TeamError as exc:
+            team_failure(exc)
+        audit.record(db, "workspace.member_left", actor_id=user.id, workspace_id=ws.id)
+    return {"ok": True}
+
+
+@app.post("/api/workspace/transfer")
+def transfer_ownership(data: TransferInput, request: Request):
+    """The owner hands the workspace (and its billing) to another member: password (and 2FA code), and the
+    workspace name typed as confirmation. The previous owner stays as an admin."""
+    same_origin(request)
+    user_id = _account(request)
+    limit_rate("account_change", user_id)
+    with Session.begin() as db:
+        user, membership, ws = member_context(request, db)
+        require_permission(db, membership, "ownership.transfer")
+        if not check_password(data.password, user.password_hash):
+            audit.record_now("workspace.ownership_transferred", outcome="failure", actor_id=user.id,
+                             workspace_id=ws.id, details={"reason": "password"})
+            raise HTTPException(400, "Current password is incorrect")
+        if accounts.two_factor_enabled(user) and accounts.check_second_factor(db, user, data.code or "") is None:
+            audit.record_now("workspace.ownership_transferred", outcome="failure", actor_id=user.id,
+                             workspace_id=ws.id, details={"reason": "code"})
+            raise HTTPException(400, "Invalid verification code")
+        if " ".join(data.confirm.split()).lower() != " ".join(ws.name.split()).lower():
+            raise HTTPException(400, "Type the workspace name to confirm")
+        try:
+            target = team.transfer(db, ws, membership, data.user_id)
+        except team.TeamError as exc:
+            team_failure(exc)
+        audit.record(db, "workspace.ownership_transferred", actor_id=user.id, workspace_id=ws.id,
+                     target_type="user", target_id=target.user_id)
+        notifications.notify(db, [target.user_id], "team.ownership_received", "You now own a workspace",
+                             f"{user.email} transferred {ws.name} to you.", workspace_id=ws.id,
+                             link="/settings?tab=members", params={"workspace": ws.name, "from": user.email})
+        return {"owner_id": target.user_id, "your_role": membership.role}
+
+
+@app.post("/api/invites/lookup")
+def lookup_invite(data: TokenInput, request: Request):
+    """What an invitation link is for (no sign-in needed: the token is the secret)."""
+    same_origin(request)
+    limit_rate("invite_lookup_ip", client_ip.resolve(request))
+    with Session() as db:
+        invitation = team.find(db, data.token)
+        state = team.status(invitation)
+        if invitation is None:
+            return {"status": state}
+        ws = db.get(Workspace, invitation.workspace_id)
+        inviter = db.get(User, invitation.invited_by_user_id) if invitation.invited_by_user_id else None
+        exists = db.scalar(select(User.id).where(func.lower(User.email) == invitation.email.lower())) is not None
+        return {"status": state, "email": invitation.email, "role": invitation.role, "workspace": ws.name,
+                "invited_by": inviter.email if inviter else None, "account_exists": exists,
+                "expires_at": accounts.iso(invitation.expires_at)}
+
+
+@app.post("/api/invites/accept")
+def accept_invite(data: TokenInput, request: Request):
+    """Join the workspace as the signed-in account (its email must be the invited one), and switch to it."""
+    same_origin(request)
+    limit_rate("invite_lookup_ip", client_ip.resolve(request))
+    with Session.begin() as db:
+        user = authorize(request, db)
+        try:
+            ws, invitation = team.accept(db, data.token, user)
+        except team.TeamError as exc:
+            audit.record_now("workspace.invite_accepted", outcome="failure", actor_id=user.id,
+                             details={"reason": exc.code})
+            team_failure(exc)
+        session = current_session(request, db)
+        team.switch(db, user, session, ws.id)
+        audit.record(db, "workspace.invite_accepted", actor_id=user.id, workspace_id=ws.id, target_type="invite",
+                     target_id=invitation.id, details={"role": invitation.role})
+        notifications.notify(db, notifications.members(db, ws.id, managers_only=True), "team.member_joined",
+                             "New member", f"{user.email} joined {ws.name}.", workspace_id=ws.id,
+                             link="/settings?tab=members", params={"email": user.email, "role": invitation.role},
+                             dedupe=f"team:{ws.id}:joined:{user.id}")
+        return {"workspace": {"id": ws.id, "name": ws.name}, "role": invitation.role}
 
 
 @app.get("/api/dashboard")
 def dashboard(request: Request):
     with Session() as db:
-        ws = workspace_for(request, db)
+        user, membership, ws = member_context(request, db)
         projects = db.scalars(select(Project).where(Project.workspace_id == ws.id).order_by(Project.created_at.desc())).all()
         # An expired or deleted asset keeps its row with 0 bytes (app/storage.py); it is not listed.
         assets = db.scalars(select(Asset).where(Asset.workspace_id == ws.id, Asset.bytes > 0)
@@ -603,7 +1560,17 @@ def dashboard(request: Request):
         user = authorize(request, db)
         subscription = db.get(Subscription, ws.id)
         plan = db.get(Plan, subscription.plan_code) if subscription else None
-        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": workflow_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None},
+        publishing = team.editors_can_publish(db, ws.id)
+        migrated = accounts.ready(db)
+        return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable",
+                              "role": membership.role},
+                "permissions": permissions.granted(membership.role, editors_can_publish=publishing),
+                "workspaces": team.list_workspaces(db, user.id, ws.id),
+                "account": {"email_verified": user.email_verified_at is not None if migrated else True,
+                            "two_factor_enabled": accounts.two_factor_enabled(user) if migrated else False,
+                            "terms_accepted": user.terms_version == accounts.TERMS_VERSION if migrated else True,
+                            "email_delivery": mailer.enabled()},
+                "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": workflow_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None},
                 "storage": storage.usage(db, ws.id)}
 
 
@@ -630,16 +1597,19 @@ def get_settings(request: Request):
 def update_workspace_settings(data: WorkspaceSettingsInput, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
-        membership = db.get(Membership, (authorize(request, db).id, ws.id))
-        if membership.role != "owner":
-            raise HTTPException(403, "Workspace owner required")
+        ws = workspace_for(request, db, "settings.manage")
+        changed = []
         for key, value in data.model_dump().items():
             row = db.get(WorkspaceSetting, (ws.id, key))
             if row is None:
                 db.add(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)))
-            else:
+                changed.append(key)
+            elif row.value != json.dumps(value):
                 row.value = json.dumps(value)
+                changed.append(key)
+        if changed:
+            audit.record(db, "workspace.settings_changed", actor_id=authorize(request, db).id, workspace_id=ws.id,
+                         details={"changed": changed})
         return {"workspace": data.model_dump()}
 
 
@@ -744,9 +1714,16 @@ def update_system_settings(data: SystemSettingsInput, request: Request):
     with Session.begin() as db:
         if not authorize(request, db).is_admin:
             raise HTTPException(403, "System admin required")
+        changed = []
         for key, value in {**data.model_dump(), "frontend_origin": origin}.items():
-            db.get(SystemSetting, key).value = json.dumps(value)
+            row = db.get(SystemSetting, key)
+            if row.value != json.dumps(value):
+                changed.append(key)
+            row.value = json.dumps(value)
         db.get(Plan, "trial").project_limit = data.trial_project_limit
+        audit.record(db, "admin.system_settings_changed", actor_id=authorize(request, db).id,
+                     details={"changed": changed, "frontend_origin": origin, "secure_cookies": data.secure_cookies})
+        _ORIGIN_CACHE["value"] = None
         return {"system": {**{key: setting(db, key) for key in SYSTEM_DEFAULTS}, "local_override": LOCAL or None}}
 
 
@@ -778,10 +1755,12 @@ ORDER_PAGE = Query(default=10, ge=1, le=50)
 @app.get("/api/billing")
 def billing_overview(request: Request):
     with Session() as db:
-        ws = workspace_for(request, db)
+        _, membership, ws = member_context(request, db)
         subscription = db.get(Subscription, ws.id)
-        orders = db.scalars(select(PaymentOrder).where(PaymentOrder.workspace_id == ws.id).order_by(PaymentOrder.created_at.desc()).limit(10)).all()
-        total = db.scalar(select(func.count()).select_from(PaymentOrder).where(PaymentOrder.workspace_id == ws.id))
+        # The plan and its prices are everyone's; the payment history only owners' and admins' (billing.view).
+        sees_orders = permissions.allowed(membership.role, "billing.view")
+        orders = db.scalars(select(PaymentOrder).where(PaymentOrder.workspace_id == ws.id).order_by(PaymentOrder.created_at.desc()).limit(10)).all() if sees_orders else []
+        total = db.scalar(select(func.count()).select_from(PaymentOrder).where(PaymentOrder.workspace_id == ws.id)) if sees_orders else 0
         return {"plans": [plan_data(p) for p in db.scalars(select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.code))],
                 "subscription": {"plan_code": subscription.plan_code, "status": effective_status(subscription),
                                  "ends_at": subscription.ends_at.isoformat() if subscription.ends_at else None},
@@ -795,7 +1774,7 @@ def billing_overview(request: Request):
 def billing_orders(request: Request, limit: int = ORDER_PAGE, offset: int = Query(default=0, ge=0)):
     """The workspace's payment history, newest first, one page at a time."""
     with Session() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "billing.view")
         where = PaymentOrder.workspace_id == ws.id
         rows = db.scalars(select(PaymentOrder).where(where).order_by(PaymentOrder.created_at.desc(), PaymentOrder.id)
                           .limit(limit).offset(offset)).all()
@@ -810,10 +1789,12 @@ def billing_checkout(data: CheckoutInput, request: Request):
     # A disabled provider takes no new checkout; its existing orders still settle (webhooks, IPN, Check).
     if not provider.offered():
         raise HTTPException(503, "This payment method is not available")
+    with Session() as db:
+        buyer, _, ws_for_limit = member_context(request, db)
+    limit_rate("checkout_user", buyer.id)
+    limit_rate("checkout_workspace", ws_for_limit.id)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
-        if db.get(Membership, (authorize(request, db).id, ws.id)).role != "owner":
-            raise HTTPException(403, "Workspace owner required")
+        ws = workspace_for(request, db, "billing.manage")
         subscription = db.get(Subscription, ws.id)
         if not subscription or subscription.status not in ("active", "expired"):
             raise HTTPException(403, "Subscription is inactive")
@@ -855,15 +1836,24 @@ def billing_checkout(data: CheckoutInput, request: Request):
     return {"order_id": order_id, "checkout_url": link}
 
 
+def callback_rejected(provider: str, reason: str) -> None:
+    """A payment callback was refused: counted (metrics) and audited (alerts notice repeated failures)."""
+    metrics.inc("payment_callback_errors", provider=provider, reason=reason)
+    audit.record_now("payment.callback_rejected", outcome="failure", target_type="provider", target_id=provider,
+                     details={"provider": provider, "reason": reason})
+
+
 @app.post("/api/webhooks/payos")
 async def payos_webhook(request: Request):
     body = await request.body()
     if len(body) > 65536 or not billing.configured():
+        callback_rejected("payos", "not_configured" if len(body) <= 65536 else "too_large")
         raise HTTPException(400, "Invalid webhook")
     try:
         payload = json.loads(body)
         verified = billing.verify_webhook(body)
     except Exception as exc:
+        callback_rejected("payos", "signature")
         raise HTTPException(400, "Invalid webhook") from exc
     if not payload.get("success") or payload.get("code") != "00":
         return {"ok": True}
@@ -874,8 +1864,10 @@ async def payos_webhook(request: Request):
             payments.apply_paid(db, verified.order_code, int(verified.amount), str(getattr(verified, "reference", "")),
                                 provider="payos")
     except ValueError as exc:
+        callback_rejected("payos", "amount")
         raise HTTPException(400, str(exc)) from exc
     payment_setup.record_activity("payos", "webhook")
+    mailer.kick()
     return {"ok": True}
 
 
@@ -910,6 +1902,7 @@ def refresh_order(order_id: str, workspace_id: str | None = None):
             raise HTTPException(502, "Payment amount mismatch") from exc
         result = order_data(db.get(PaymentOrder, order_id))
     payment_setup.record_activity(name, "query")
+    mailer.kick()
     return result
 
 
@@ -927,7 +1920,7 @@ def _manual_order(db, order_id: str, workspace_id: str, lock: bool = False) -> P
 def manual_transfer_details(order_id: str, request: Request):
     """The QR and bank details of a pending manual VietQR order, to show it again."""
     with Session() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "billing.view")
         order = _manual_order(db, order_id, ws.id)
         values = bank_qr.settings()
         if bank_qr.problems(values):
@@ -941,10 +1934,8 @@ def report_manual_transfer(order_id: str, request: Request):
     """The buyer says the transfer is made. Nothing is paid until a system admin confirms the money arrived."""
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "billing.manage")
         user = authorize(request, db)
-        if db.get(Membership, (user.id, ws.id)).role != "owner":
-            raise HTTPException(403, "Workspace owner required")
         order = _manual_order(db, order_id, ws.id, lock=True)
         if order.status not in payments.WAITING_STATUSES:
             raise HTTPException(409, "Order is not awaiting payment")
@@ -965,7 +1956,7 @@ def report_manual_transfer(order_id: str, request: Request):
 def refresh_payment_order(order_id: str, request: Request):
     same_origin(request)
     with Session() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "billing.view")
     return refresh_order(order_id, ws.id)
 
 
@@ -1004,6 +1995,7 @@ def onepay_return(request: Request):
             # Left pending: the IPN or a later status check settles it.
             log_event(logger, "payment_confirmation_failed", level=logging.WARNING, provider="onepay",
                       reason=getattr(exc, "code", type(exc).__name__))
+    mailer.kick()  # the receipt (or the failure notice) queued by the settlement
     return RedirectResponse(f"/billing?payment={outcome}", status_code=303)
 
 
@@ -1024,17 +2016,45 @@ async def onepay_ipn(request: Request):
         evidence = card.evidence(params)
     except (onepay.OnePayError, payment_providers.ProviderMismatch):
         log_event(logger, "payment_callback_rejected", level=logging.WARNING, provider="onepay", reason="signature")
+        callback_rejected("onepay", "signature")
         return fail("confirm-fail")
     try:
         with Session.begin() as db:
             status = payments.settle(db, "onepay", evidence)
     except ValueError:
         log_event(logger, "payment_callback_rejected", level=logging.WARNING, provider="onepay", reason="amount")
+        callback_rejected("onepay", "amount")
         return fail("amount-mismatch")
     if status == "unknown" or (evidence.status == "paid" and status not in ("paid", "paid_unapplied")):
         return fail("order-not-found")
     payment_setup.record_activity("onepay", "ipn")
+    mailer.kick()
     return PlainTextResponse("responsecode=1&desc=confirm-success")
+
+
+@app.get("/api/onboarding")
+def onboarding(request: Request):
+    """The first-steps checklist of the active workspace (Phase 26), from its own data; no provider setup."""
+    with Session() as db:
+        _, membership, ws = member_context(request, db)
+        Publication = publications.Publication
+        count = lambda query: int(db.scalar(select(func.count()).select_from(query.subquery())) or 0)  # noqa: E731
+        reviewed = count(select(WorkflowRunStep.id).join(WorkflowRun, WorkflowRun.id == WorkflowRunStep.run_id)
+                         .where(WorkflowRun.workspace_id == ws.id, WorkflowRunStep.node_type == "review",
+                                WorkflowRunStep.status == "completed"))
+        steps = {
+            "project": count(select(Project.id).where(Project.workspace_id == ws.id)) > 0,
+            "channel": any(item.get("status") == "connected" for item in channel_statuses(db, ws.id)),
+            "template": count(select(Workflow.id).where(Workflow.workspace_id == ws.id)) > 0,
+            "generate": count(select(WorkflowRun.id).where(WorkflowRun.workspace_id == ws.id)) > 0,
+            "review": reviewed > 0,
+            "publish": count(select(Publication.id).where(Publication.workspace_id == ws.id,
+                                                          Publication.state.in_(("scheduled", "queued", "uploading",
+                                                                                 "succeeded")))) > 0,
+        }
+        return {"steps": [{"key": key, "done": done} for key, done in steps.items()],
+                "complete": all(done for key, done in steps.items() if key != "channel"),
+                "role": membership.role}
 
 
 @app.get("/api/usage")
@@ -1053,13 +2073,15 @@ def usage_overview(request: Request):
 def adjust_credits(workspace_id: str, data: CreditAdjustment, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        admin_for(request, db)
+        admin = admin_for(request, db)
         if not db.get(Workspace, workspace_id):
             raise HTTPException(404, "Workspace not found")
         try:
             balance = usage.post_credit(db, workspace_id, data.delta, "admin: " + data.reason, "admin:" + ident())
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        audit.record(db, "admin.credits_adjusted", actor_id=admin.id, workspace_id=workspace_id,
+                     details={"delta": data.delta, "reason": data.reason[:200], "balance": balance})
         return {"balance": balance}
 
 
@@ -1079,6 +2101,9 @@ def resolve_credit_reconciliation(data, request, decision, *, step_id=None, job_
             admin_id = admin.id
             item, changed = reconciliation.reconcile(db, step_id=step_id, job_id=job_id, decision=decision,
                                                       admin_user_id=admin_id, note=data.note)
+            if changed:
+                audit.record(db, "admin.reconciliation", actor_id=admin_id, target_type="job",
+                             target_id=job_id or step_id, details={"decision": decision})
     except reconciliation.ReconciliationError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     if changed:
@@ -1169,10 +2194,13 @@ def _first_studios(db, user_ids):
     return found
 
 
-def admin_user(user, created_at, studio, display_name=None):
+def admin_user(user, created_at, studio, display_name=None, *, migrated=True):
     role, ws, subscription = studio if studio else (None, None, None)
     return {"id": user.id, "email": user.email, "display_name": display_name, "is_admin": user.is_admin,
-            "is_active": user.is_active, "created_at": _iso_or_none(created_at),
+            "is_active": user.is_active, "created_at": _iso_or_none((user.created_at if migrated else None) or created_at),
+            "email_verified": user.email_verified_at is not None if migrated else True,
+            "two_factor": accounts.two_factor_enabled(user) if migrated else False,
+            "last_login_at": _iso_or_none(user.last_login_at) if migrated else None,
             "workspace": {"id": ws.id, "name": ws.name, "role": role} if ws else None,
             "plan_code": subscription.plan_code if subscription else None,
             "subscription_status": effective_status(subscription) if subscription else None}
@@ -1199,7 +2227,9 @@ def admin_users(request: Request, q: str | None = Query(default=None, max_length
         rows = db.execute(query.order_by(joined.c.created_at.desc().nulls_last(), User.email)
                           .limit(limit).offset(offset)).all()
         studios = _first_studios(db, [user.id for user, _, _ in rows])
-        return {"items": [admin_user(user, created, studios.get(user.id), name) for user, created, name in rows],
+        migrated = accounts.ready(db)
+        return {"items": [admin_user(user, created, studios.get(user.id), name, migrated=migrated)
+                          for user, created, name in rows],
                 "total": total, "limit": limit, "offset": offset}
 
 
@@ -1220,7 +2250,8 @@ def admin_user_detail(user_id: str, request: Request):
         sessions = count_of(db, select(LoginSession.token_hash).where(LoginSession.user_id == user_id,
                                                                      LoginSession.expires_at > datetime.now(timezone.utc)))
         first = (memberships[0][0], memberships[0][1], memberships[0][2]) if memberships else None
-        return {**admin_user(user, created, first, profile.display_name if profile else None),
+        return {**admin_user(user, created, first, profile.display_name if profile else None,
+                             migrated=accounts.ready(db)),
                 "active_sessions": sessions,
                 "workspaces": [{"id": ws.id, "name": ws.name, "role": role,
                                 "plan_code": sub.plan_code if sub else None,
@@ -1362,10 +2393,13 @@ def confirm_manual_payment(order_id: str, data: ManualConfirmInput, request: Req
                                      provider="bank_qr")
         db.add(PaymentOrderEvent(order_id=order.id, action="confirmed", user_id=admin.id, amount_vnd=order.amount_vnd,
                                  created_at=datetime.now(timezone.utc)))
+        audit.record(db, "admin.payment_confirmed", actor_id=admin.id, workspace_id=order.workspace_id,
+                     target_type="order", target_id=order.id, details={"amount_vnd": order.amount_vnd, "status": status})
         result = order_data(order)
         admin_id = admin.id
     log_event(logger, "manual_payment_confirmed", admin_id=admin_id, order_id=order_id, amount=data.amount_vnd,
               status=status)
+    mailer.kick()
     return result
 
 
@@ -1383,9 +2417,12 @@ def reject_manual_payment(order_id: str, data: ManualRejectInput, request: Reque
         db.add(PaymentOrderEvent(order_id=order.id, action="rejected", user_id=admin.id, amount_vnd=order.amount_vnd,
                                  note=reason, created_at=datetime.now(timezone.utc)))
         notifications.payment_rejected(db, order, reason)
+        audit.record(db, "admin.payment_rejected", actor_id=admin.id, workspace_id=order.workspace_id,
+                     target_type="order", target_id=order.id, details={"note": reason})
         result = order_data(order)
         admin_id = admin.id
     log_event(logger, "manual_payment_rejected", admin_id=admin_id, order_id=order_id)
+    mailer.kick()
     return result
 
 
@@ -1638,6 +2675,8 @@ async def update_payment_config(provider: str, request: Request):
             except system_config.ConfigError as exc:
                 raise _config_failure(exc) from None
         log_event(logger, "payment_config_saved", provider=provider, actions="updated", changed=",".join(changed))
+        audit.record_now("admin.payment_config_changed", actor_id=admin.id, target_type="provider", target_id=provider,
+                         details={"action": "updated", "changed": changed})
         with Session() as db:
             return _payment_view(db, provider)
     updates = {spec.name: (getattr(data, spec.name).action, getattr(data, spec.name).value or "")
@@ -1656,6 +2695,9 @@ async def update_payment_config(provider: str, request: Request):
     changed = sorted(name for name, (action, _) in updates.items() if action != "keep")
     log_event(logger, "payment_config_saved", provider=provider, actions=",".join(actions) or "none",
               changed=",".join(changed))
+    audit.record_now("admin.payment_config_changed", actor_id=admin.id, target_type="provider", target_id=provider,
+                     details={"action": ",".join(actions) or "none", "changed": changed,
+                              "mode": getattr(data, "mode", None), "enabled": data.enabled})
     with Session() as db:
         return _payment_view(db, provider)
 
@@ -1672,6 +2714,8 @@ def disable_payment_provider(provider: str, request: Request):
         else:
             payment_config.set_enabled(db, provider, admin.id, False)
     log_event(logger, "payment_config_saved", provider=provider, actions="disabled", changed="")
+    audit.record_now("admin.payment_config_changed", actor_id=admin.id, target_type="provider", target_id=provider,
+                     details={"action": "disabled"})
     with Session() as db:
         return _payment_view(db, provider)
 
@@ -1695,6 +2739,8 @@ async def enable_payment_provider(provider: str, request: Request):
         except payment_config.ConfigError as exc:
             raise _config_failure(exc) from None
     log_event(logger, "payment_config_saved", provider=provider, actions="enabled", changed="")
+    audit.record_now("admin.payment_config_changed", actor_id=admin.id, target_type="provider", target_id=provider,
+                     details={"action": "enabled"})
     with Session() as db:
         return _payment_view(db, provider)
 
@@ -1756,7 +2802,7 @@ def admin_payment_check(data: LegacyPaymentCheckInput, request: Request):
 # --- Phase 20: central system settings (system admins only) ------------------------------------------------
 # The same write-only rules as payment gateways: secrets are encrypted at rest, never returned, never echoed.
 
-ADMIN_SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications")
+ADMIN_SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications", "email", "security", "backups")
 
 
 class SystemConfigInput(BaseModel):
@@ -1813,6 +2859,8 @@ def _system_overview(db) -> dict:
         "storage": {"root": str(storage.media_root(db)), "source": system_config.source("storage.root"),
                     "files": _stored_files(db), "disk": storage.disk_usage(db)},
         "migrated": system_config.ready(db),
+        # Phase 22: whether transactional email is sending, and why not (never a credential).
+        "email": {"problem": mailer.problem(), "provider": mailer.config()["provider"], "stats": mailer.stats(db)},
     }
 
 
@@ -1857,6 +2905,9 @@ async def update_system_config(section: str, request: Request):
         except system_config.ConfigError as exc:
             raise _settings_failure(exc) from None
     log_event(logger, "system_settings_saved", section=section, changed=",".join(changed))
+    if changed:
+        audit.record_now("admin.system_config_changed", actor_id=admin.id, target_type="section", target_id=section,
+                         details={"changed": changed})
     with Session() as db:
         return _system_overview(db)
 
@@ -1935,6 +2986,8 @@ def update_verification(key: str, data: VerificationInput, request: Request):
         row.note = (data.note or "").strip() or None
         row.updated_at = now
         db.add(row)
+        audit.record(db, "admin.verification_updated", actor_id=admin.id, target_type="check", target_id=key,
+                     details={"verified": data.verified})
         return {"key": key, "verified": data.verified, "verified_at": _iso_or_none(row.verified_at),
                 "verified_by": admin.email if data.verified else None, "note": row.note}
 
@@ -2029,15 +3082,23 @@ def admin_support_reply(ticket_id: str, data: SupportReplyInput, request: Reques
                 support.set_status(db, ticket, data.status, by_admin=True)
         except support.SupportError as exc:
             support_error(exc)
+        audit.record(db, "admin.support_replied", actor_id=admin.id, workspace_id=ticket.workspace_id,
+                     target_type="ticket", target_id=ticket.id, details={"status": data.status})
+        creator = db.get(User, ticket.created_by_user_id)
+        if creator is not None and creator.is_active:
+            queue_email(db, creator, "support_reply", {"subject": ticket.subject,
+                                                       "link": public_link(f"/support/{ticket.id}")})
         db.flush()
-        return _ticket_detail(db, ticket, for_admin=True)
+        result = _ticket_detail(db, ticket, for_admin=True)
+    mailer.kick()
+    return result
 
 
 @app.patch("/api/admin/support/{ticket_id}")
 def admin_support_update(ticket_id: str, data: SupportAdminUpdate, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        admin_for(request, db)
+        admin = admin_for(request, db)
         ticket = _admin_ticket(db, ticket_id)
         try:
             if data.priority:
@@ -2046,8 +3107,13 @@ def admin_support_update(ticket_id: str, data: SupportAdminUpdate, request: Requ
                 support.set_status(db, ticket, data.status, by_admin=True)
         except support.SupportError as exc:
             support_error(exc)
+        audit.record(db, "admin.support_updated", actor_id=admin.id, workspace_id=ticket.workspace_id,
+                     target_type="ticket", target_id=ticket.id, details={"status": data.status,
+                                                                        "priority": data.priority})
         db.flush()
-        return _ticket_detail(db, ticket, for_admin=True)
+        result = _ticket_detail(db, ticket, for_admin=True)
+    mailer.kick()
+    return result
 
 
 @app.post("/api/admin/accounts", status_code=201)
@@ -2057,15 +3123,20 @@ def create_account(data: NewAccount, request: Request):
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(data.password) < 12 or not name:
         raise HTTPException(400, "Valid email, workspace name and password of at least 12 characters required")
     with Session.begin() as db:
-        admin_for(request, db)
+        admin = admin_for(request, db)
         if db.scalar(select(User.id).where(User.email == email)):
             raise HTTPException(409, "Email already exists")
         plan = db.get(Plan, data.plan_code)
         if not plan or not plan.is_active:
             raise HTTPException(400, "Plan unavailable")
-        user = User(id=ident(), email=email, password_hash=hashed_password(data.password), is_admin=False, is_active=True)
+        user = new_user(db, email, data.password, locale=admin.locale if accounts.ready(db) else None)
         ws = provision_workspace(db, user, name, plan.code)
-        return {"user_id": user.id, "workspace_id": ws.id}
+        audit.record(db, "admin.user_created", actor_id=admin.id, workspace_id=ws.id, target_type="user",
+                     target_id=user.id, details={"email": email, "plan": plan.code})
+        queue_email(db, user, "account_created", {"link": public_link("/")})
+        result = {"user_id": user.id, "workspace_id": ws.id}
+    mailer.kick()
+    return result
 
 
 @app.put("/api/admin/users/{user_id}")
@@ -2080,18 +3151,145 @@ def set_user_active(user_id: str, data: ActiveInput, request: Request):
             raise HTTPException(400, "Cannot disable your own account")
         if user.is_admin and not data.is_active and db.scalar(select(func.count()).select_from(User).where(User.is_admin.is_(True), User.is_active.is_(True))) <= 1:
             raise HTTPException(400, "Cannot disable the last system admin")
+        changed = user.is_active != data.is_active
         user.is_active = data.is_active
         if not data.is_active:
             for session in db.scalars(select(LoginSession).where(LoginSession.user_id == user_id)):
                 db.delete(session)
+        if changed:
+            audit.record(db, "admin.user_updated", actor_id=admin.id, target_type="user", target_id=user.id,
+                         details={"is_active": data.is_active, "email": user.email})
         return {"id": user.id, "is_active": user.is_active}
+
+
+def _admin_target(db, request: Request, user_id: str):
+    admin = admin_for(request, db)
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    return admin, user
+
+
+@app.post("/api/admin/users/{user_id}/reset-2fa")
+def admin_reset_two_factor(user_id: str, request: Request):
+    """For a user who lost their authenticator and recovery codes: 2FA off, every session signed out."""
+    same_origin(request)
+    with Session.begin() as db:
+        admin, user = _admin_target(db, request, user_id)
+        accounts.disable_totp(db, user)
+        revoked = accounts.revoke_sessions(db, user.id)
+        audit.record(db, "admin.user_two_factor_reset", actor_id=admin.id, target_type="user", target_id=user.id,
+                     details={"email": user.email, "sessions_revoked": revoked})
+        queue_email(db, user, "security_2fa_disabled", {"time": datetime.now(timezone.utc)})
+    mailer.kick()
+    return {"two_factor": False, "sessions_revoked": revoked}
+
+
+@app.post("/api/admin/users/{user_id}/verify-email")
+def admin_verify_email(user_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        admin, user = _admin_target(db, request, user_id)
+        user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
+        audit.record(db, "admin.user_email_verified", actor_id=admin.id, target_type="user", target_id=user.id,
+                     details={"email": user.email})
+    return {"email_verified": True}
+
+
+@app.post("/api/admin/users/{user_id}/revoke-sessions")
+def admin_revoke_sessions(user_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        admin, user = _admin_target(db, request, user_id)
+        revoked = accounts.revoke_sessions(db, user.id)
+        audit.record(db, "admin.user_sessions_revoked", actor_id=admin.id, target_type="user", target_id=user.id,
+                     details={"email": user.email, "count": revoked})
+    return {"revoked": revoked}
+
+
+@app.get("/api/admin/audit")
+def admin_audit(request: Request, action: str | None = Query(default=None, max_length=48),
+                outcome: Literal["success", "failure", "denied"] | None = None,
+                actor: str | None = Query(default=None, max_length=255),
+                workspace_id: str | None = Query(default=None, max_length=36),
+                since: datetime | None = None, until: datetime | None = None,
+                limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
+    """The audit log, newest first, filtered and paginated on the server."""
+    with Session() as db:
+        admin_for(request, db)
+        items, total = audit.query(db, action=action, outcome=outcome, actor=actor, workspace_id=workspace_id,
+                                   since=since, until=until, limit=limit, offset=offset)
+        return {"items": items, "total": total, "limit": limit, "offset": offset, "actions": list(audit.ACTIONS)}
+
+
+class EmailTestInput(BaseModel):
+    to: str | None = Field(default=None, max_length=320)
+
+
+@app.post("/api/admin/system-config/email/test")
+def test_email(data: EmailTestInput, request: Request):
+    """Send the test email now with the saved settings (to the admin unless another address is given)."""
+    same_origin(request)
+    with Session() as db:
+        admin = admin_for(request, db)
+        to = (data.to or admin.email).strip()
+        locale = admin.locale
+        admin_id = admin.id
+    if not re.fullmatch(EMAIL_RE, to):
+        raise HTTPException(422, {"code": "invalid_email", "field": "to", "message": "Use a valid email address"})
+    limit_rate("email_test", admin_id)
+    result = mailer.send_test(to, locale)
+    audit.record_now("admin.email_test", outcome="success" if result["ok"] else "failure", actor_id=admin_id,
+                     details={"error": result["error"], "provider": mailer.config()["provider"]})
+    with Session.begin() as db:
+        system_config.audit(db, "email", "tested", admin_id, ok=result["ok"], error=result["error"])
+    return {**result, "to": to, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+class KeyBackupInput(BaseModel):
+    confirmed: bool
+
+
+@app.put("/api/admin/master-key/backup-confirmation")
+def confirm_master_key_backup(data: KeyBackupInput, request: Request):
+    """An admin states the master key is backed up off the server. Only a fingerprint is stored: a new key
+    (another fingerprint) asks for a new confirmation."""
+    same_origin(request)
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        fingerprint = readiness.key_fingerprint()
+        row = db.get(SystemSetting, readiness.MASTER_KEY_BACKUP)
+        if data.confirmed:
+            if fingerprint is None:
+                raise HTTPException(409, "There is no usable master key to confirm")
+            value = json.dumps({"fingerprint": fingerprint, "confirmed_at": datetime.now(timezone.utc).isoformat(),
+                                "confirmed_by": admin.email})
+            if row is None:
+                db.add(SystemSetting(key=readiness.MASTER_KEY_BACKUP, value=value))
+            else:
+                row.value = value
+        elif row is not None:
+            db.delete(row)
+        audit.record(db, "admin.master_key_backup_confirmed", actor_id=admin.id,
+                     outcome="success", details={"confirmed": data.confirmed})
+    with Session() as db:
+        return {"check": next(item for item in readiness.security_checks(db) if item["key"] == "master_key_backup")}
+
+
+@app.get("/api/admin/backups")
+def admin_backups(request: Request):
+    """The last database backups and the retention (python -m app.backup run, the reelforge-backup timer)."""
+    with Session() as db:
+        admin_for(request, db)
+        key_backup = next(check for check in readiness.security_checks(db) if check["key"] == "master_key_backup")
+        return {**backup.status(db), "alerts": alerts.active(db), "master_key_backup": key_backup}
 
 
 @app.put("/api/admin/plans/{code}")
 def update_plan(code: str, data: PlanInput, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        admin_for(request, db)
+        admin = admin_for(request, db)
         plan = db.get(Plan, code)
         if not plan:
             raise HTTPException(404, "Plan not found")
@@ -2108,6 +3306,9 @@ def update_plan(code: str, data: PlanInput, request: Request):
             setattr(plan, field, value)
         if code == "trial":
             db.get(SystemSetting, "trial_project_limit").value = json.dumps(data.project_limit)
+        audit.record(db, "admin.plan_updated", actor_id=admin.id, target_type="plan", target_id=code,
+                     details={"price_vnd": data.price_vnd, "monthly_credits": data.monthly_credits,
+                              "is_active": data.is_active})
         return plan_data(plan)
 
 
@@ -2115,7 +3316,7 @@ def update_plan(code: str, data: PlanInput, request: Request):
 def update_subscription(workspace_id: str, data: SubscriptionInput, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        admin_for(request, db)
+        admin = admin_for(request, db)
         ws, plan = db.get(Workspace, workspace_id), db.get(Plan, data.plan_code)
         if not ws:
             raise HTTPException(404, "Workspace not found")
@@ -2131,14 +3332,25 @@ def update_subscription(workspace_id: str, data: SubscriptionInput, request: Req
         subscription.starts_at = datetime.now(timezone.utc)
         subscription.ends_at = data.ends_at
         ws.plan = plan.code  # Keep the legacy workspace column synchronized.
-        return {"workspace_id": ws.id, "plan_code": plan.code, "status": data.status}
+        audit.record(db, "admin.subscription_changed", actor_id=admin.id, workspace_id=ws.id,
+                     target_type="workspace", target_id=ws.id,
+                     details={"plan": plan.code, "status": data.status,
+                              "ends_at": data.ends_at.isoformat() if data.ends_at else None})
+        if data.status == "active":
+            owner = db.get(User, ws.owner_id)
+            if owner is not None and owner.is_active:
+                queue_email(db, owner, "subscription_activated",
+                            {"plan": plan.name, "workspace": ws.name, "ends": data.ends_at, "link": public_link("/")})
+        result = {"workspace_id": ws.id, "plan_code": plan.code, "status": data.status}
+    mailer.kick()
+    return result
 
 
 @app.post("/api/projects", status_code=201)
 def create_project(data: NewProject, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "content.edit")
         enforce_limit(db, ws, Project, "project_limit")
         project = Project(id=ident(), workspace_id=ws.id, title=data.title.strip(), topic=data.topic.strip())
         if not project.title:
@@ -2153,7 +3365,7 @@ def update_project(project_id: str, data: ProjectPatch, request: Request):
     if not data.model_fields_set or any(getattr(data, field) is None for field in data.model_fields_set):
         raise HTTPException(422, "Provide a title or topic")
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "content.edit")
         active_plan(db, ws)
         project = db.scalar(select(Project).where(Project.id == project_id, Project.workspace_id == ws.id))
         if not project:
@@ -2172,11 +3384,8 @@ def public_ai_tool(tool):
 
 
 def ai_tool_owner(request, db):
-    ws = workspace_for(request, db)
+    ws = workspace_for(request, db, "models.manage")
     active_plan(db, ws)
-    member = db.get(Membership, (authorize(request, db).id, ws.id))
-    if not member or member.role != "owner":
-        raise HTTPException(403, "Workspace owner required")
     return ws
 
 
@@ -2222,12 +3431,9 @@ def delete_ai_tool(tool_id: str, request: Request):
     return Response(status_code=204)
 
 
-def youtube_owner(request: Request, db):
-    ws = workspace_for(request, db)
-    membership = db.get(Membership, (authorize(request, db).id, ws.id))
-    if not membership or membership.role != "owner":
-        raise HTTPException(403, "Workspace owner required")
-    return ws
+def youtube_owner(request: Request, db, permission: str = "channels.manage"):
+    """The active workspace for connecting channels (owners, admins) or, with "publish", for publishing."""
+    return workspace_for(request, db, permission)
 
 
 def youtube_oauth_error(exc: google_oauth.OAuthError):
@@ -2333,7 +3539,7 @@ def list_youtube_publications(request: Request, run_id: str | None = None):
 def create_youtube_publication(data: YouTubePublicationInput, request: Request, response: Response):
     same_origin(request)
     with Session.begin() as db:
-        ws = youtube_owner(request, db)
+        ws = youtube_owner(request, db, "publish")
         active_plan(db, ws)
         if google_oauth.connection_status(db, workspace_id=ws.id) is None:
             raise HTTPException(409, "Connect YouTube before uploading")
@@ -2368,7 +3574,7 @@ def retry_youtube_publication(publication_id: str, request: Request, data: YouTu
     """Queue only a new upload job; the run's script, media and render are reused, never generated again."""
     same_origin(request)
     with Session.begin() as db:
-        ws = youtube_owner(request, db)
+        ws = youtube_owner(request, db, "publish")
         active_plan(db, ws)
         changes = data.model_dump(exclude_none=True) if data else {}
         try:
@@ -2580,7 +3786,7 @@ def create_publications(data: PublicationsInput, request: Request, response: Res
     if len(set(channels)) != len(channels):
         raise HTTPException(422, {"code": "duplicate_channel", "message": "Each channel can be chosen once"})
     with Session.begin() as db:
-        ws = youtube_owner(request, db)
+        ws = youtube_owner(request, db, "publish")
         active_plan(db, ws)
         for target in data.targets:
             try:
@@ -2635,7 +3841,7 @@ def retry_any_publication(publication_id: str, request: Request, data: RetryInpu
     """Queue only a new upload job for a failed publication that never sent media (any channel)."""
     same_origin(request)
     with Session.begin() as db:
-        ws = youtube_owner(request, db)
+        ws = youtube_owner(request, db, "publish")
         active_plan(db, ws)
         changes = data.model_dump(exclude_none=True) if data else {}
         try:
@@ -2653,7 +3859,7 @@ def cancel_publication(publication_id: str, request: Request):
     """Cancel before the upload starts; afterwards 409 ``upload_started``."""
     same_origin(request)
     with Session.begin() as db:
-        ws = youtube_owner(request, db)
+        ws = youtube_owner(request, db, "publish")
         try:
             row = publications.cancel_publication(db, workspace_id=ws.id, publication_id=publication_id)
         except LookupError as exc:
@@ -2668,7 +3874,7 @@ def reschedule_publication(publication_id: str, data: ScheduleInput, request: Re
     """Move a publication to another UTC time before its upload starts; ``null`` means as soon as possible."""
     same_origin(request)
     with Session.begin() as db:
-        ws = youtube_owner(request, db)
+        ws = youtube_owner(request, db, "publish")
         active_plan(db, ws)
         try:
             row = publications.reschedule_publication(db, workspace_id=ws.id, publication_id=publication_id,
@@ -2790,7 +3996,7 @@ def list_recent_runs(request: Request):
 def start_workflow_run(workflow_id: str, data: StartWorkflowRun, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "runs.execute")
         active_plan(db, ws)
         workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
         project = db.scalar(select(Project).where(Project.id == data.project_id, Project.workspace_id == ws.id))
@@ -2837,10 +4043,7 @@ def get_workflow_run_summary(run_id: str, request: Request):
 def approve_workflow_run(run_id: str, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
-        membership = db.get(Membership, (authorize(request, db).id, ws.id))
-        if not membership or membership.role != "owner":
-            raise HTTPException(403, "Workspace owner required")
+        ws = workspace_for(request, db, "runs.execute")
         # Locked like every executor pass over a run, so a worker cannot advance it concurrently.
         run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id)
                         .with_for_update())
@@ -2868,7 +4071,7 @@ def approve_workflow_run(run_id: str, request: Request):
 def retry_workflow_run(run_id: str, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "runs.execute")
         active_plan(db, ws)
         original = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.workspace_id == ws.id).with_for_update())
         if not original:
@@ -2913,7 +4116,7 @@ def retry_workflow_run(run_id: str, request: Request):
 def create_workflow(data: NewWorkflow, request: Request):
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "content.edit")
         if data.template is not None and data.template not in TEMPLATES:
             raise HTTPException(422, {"code": "unknown_template", "message": "Unknown workflow template"})
         enforce_limit(db, ws, Workflow, "workflow_limit")
@@ -2944,11 +4147,8 @@ def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
     same_origin(request)
     validate_graph(graph)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "content.edit")
         active_plan(db, ws)
-        membership = db.get(Membership, (authorize(request, db).id, ws.id))
-        if membership.role != "owner":
-            raise HTTPException(403, "Workspace owner required")
         workflow = db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.workspace_id == ws.id))
         if not workflow:
             raise HTTPException(404, "Workflow not found")
@@ -3026,7 +4226,7 @@ def update_asset(asset_id: str, data: AssetPatch, request: Request):
     """Attach an uploaded file to one of the workspace's projects (or detach it). Generated media keeps its run's project."""
     same_origin(request)
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "content.edit")
         asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.workspace_id == ws.id))
         if not asset:
             raise HTTPException(404, "Asset not found")
@@ -3046,7 +4246,7 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
     if content_type not in ALLOWED_TYPES:
         raise HTTPException(415, "Unsupported media type")
     with Session.begin() as db:
-        ws = workspace_for(request, db)
+        ws = workspace_for(request, db, "content.edit")
         active_plan(db, ws)
         # Serialize quota checks for simultaneous uploads (and workers) in the same workspace.
         storage.lock_workspace(db, ws.id)
@@ -3096,12 +4296,9 @@ def download_asset(asset_id: str, request: Request):
         return FileResponse(path, media_type=asset.content_type, filename=asset.filename)
 
 
-def workspace_owner(request: Request, db):
-    ws = workspace_for(request, db)
-    membership = db.get(Membership, (authorize(request, db).id, ws.id))
-    if not membership or membership.role != "owner":
-        raise HTTPException(403, "Workspace owner required")
-    return ws
+def workspace_owner(request: Request, db, permission: str = "content.edit"):
+    """The active workspace for removing media (owners, admins, editors) or, with settings.manage, for cleanup."""
+    return workspace_for(request, db, permission)
 
 
 def delete_media(request: Request, asset_ids: list[str]) -> dict:
@@ -3248,6 +4445,7 @@ async def notification_stream(request: Request):
     async def events():
         global _open_streams
         _open_streams += 1
+        metrics.set_gauge("sse_connections", _open_streams)
         last_id, unread, began = start, None, time.monotonic()
         quiet_since = began
         try:
@@ -3274,6 +4472,7 @@ async def notification_stream(request: Request):
                 await asyncio.sleep(poll)
         finally:
             _open_streams -= 1
+            metrics.set_gauge("sse_connections", _open_streams)
 
     log_event(logger, "notification_stream_opened", user_id=user_id, resumed=bool(resume.isdigit()))
     # no-transform keeps proxies (and Next.js) from compressing, which would buffer the events.
@@ -3298,11 +4497,9 @@ class SupportMessageInput(BaseModel):
 
 
 def _support_scope(request: Request, db):
-    """The user, their workspace, and whether they own it (owners see every ticket of the studio)."""
-    user = authorize(request, db)
-    ws = workspace_for(request, db)
-    membership = db.get(Membership, (user.id, ws.id))
-    return user, ws, bool(membership and membership.role == "owner")
+    """The user, their workspace, and whether they see every ticket of it (owners and admins do)."""
+    user, membership, ws = member_context(request, db)
+    return user, ws, permissions.allowed(membership.role, "members.manage")
 
 
 def _visible_tickets(user, ws, owner: bool):
@@ -3338,6 +4535,7 @@ def list_support_tickets(request: Request, limit: int = Query(default=20, ge=1, 
 @app.post("/api/support/tickets", status_code=201)
 def create_support_ticket(data: SupportTicketInput, request: Request):
     same_origin(request)
+    limit_rate("support_ticket", _account(request))
     with Session.begin() as db:
         user, ws, _ = _support_scope(request, db)
         try:
@@ -3362,6 +4560,7 @@ def support_ticket(ticket_id: str, request: Request):
 @app.post("/api/support/tickets/{ticket_id}/messages", status_code=201)
 def reply_support_ticket(ticket_id: str, data: SupportMessageInput, request: Request):
     same_origin(request)
+    limit_rate("support_message", _account(request))
     with Session.begin() as db:
         user, ticket = _user_ticket(db, request, ticket_id, lock=True)
         try:
@@ -3388,7 +4587,7 @@ def storage_cleanup(data: StorageCleanupInput, request: Request):
     same_origin(request)
     now = datetime.now(timezone.utc)
     with Session.begin() as db:
-        ws = workspace_owner(request, db) if data.apply else workspace_for(request, db)
+        ws = workspace_owner(request, db, "settings.manage") if data.apply else workspace_for(request, db)
         if data.project_id is not None and not db.scalar(
                 select(Project.id).where(Project.id == data.project_id, Project.workspace_id == ws.id)):
             raise HTTPException(404, "Project not found")

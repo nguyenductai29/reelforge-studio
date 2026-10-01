@@ -69,7 +69,7 @@ VALID_MP4 = (b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
 MP3 = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" * 64
 SECRETS = ("sk-SENTINEL", "google-SECRET", "tiktok-SECRET", "facebook-SECRET", "tok-")
 
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email": "owner@example.com", "password": "long-password-123"}).status_code == 200
 workspace = client.get("/api/dashboard").json()["workspace"]["id"]
 with Session.begin() as db:

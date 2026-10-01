@@ -36,6 +36,7 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, delete, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app import master_key
+from app import permissions
 from app.models import Base, Membership
 from app.publishers.facebook import GRAPH_URL, API_VERSION
 from app import system_config
@@ -216,8 +217,8 @@ def status(db: Session, channel: str, workspace_id: str, *, now: datetime | None
 def begin_authorization(db: Session, config: ChannelConfig, *, workspace_id: str, user_id: str) -> AuthorizationStart:
     """Create a ten-minute state; the caller commits before redirecting the browser."""
     membership = db.get(Membership, (user_id, workspace_id))
-    if membership is None or membership.role != "owner":
-        raise ChannelOAuthError("forbidden", "Workspace owner required")
+    if membership is None or not permissions.allowed(membership.role, "channels.manage"):
+        raise ChannelOAuthError("forbidden", "Workspace owner or admin required")
     state = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     expires_at = now + STATE_LIFETIME
@@ -281,7 +282,8 @@ def _consume_state(db: Session, config: ChannelConfig, *, state: str, current_us
     now = datetime.now(timezone.utc)
     if (pending is None or pending.channel != config.channel or pending.user_id != current_user_id
             or pending.consumed_at is not None or _utc(pending.expires_at) <= now
-            or pending.redirect_uri != config.redirect_uri or membership is None or membership.role != "owner"):
+            or pending.redirect_uri != config.redirect_uri or membership is None
+            or not permissions.allowed(membership.role, "channels.manage")):
         db.rollback()
         raise ChannelOAuthError("invalid_state", "OAuth state is expired or does not match the user")
     workspace_id = pending.workspace_id

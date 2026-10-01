@@ -42,14 +42,17 @@ export const STORAGE_TEXT: Record<StorageLevel, string> = {
 };
 const ALL = "__all__";
 
-export function StorageBar({ info, className }: { info: StorageLevelInfo; className?: string }) {
+export function StorageBar({ info, className, label }: { info: StorageLevelInfo; className?: string; label?: string }) {
+  const { t } = useI18n();
   const width = Math.min(100, info.percent);
   return (
     <div
       role="meter"
+      aria-label={label ?? t.storage.usedOf(formatBytes(info.used_bytes), formatBytes(info.quota_bytes))}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={width}
+      aria-valuetext={`${info.percent}%`}
       className={cn("h-2 w-full overflow-hidden rounded-full bg-surface-2", className)}
     >
       <div className={cn("h-full rounded-full transition-all", BAR[info.level])} style={{ width: `${width}%` }} />

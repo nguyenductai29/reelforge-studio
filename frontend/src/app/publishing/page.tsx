@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { CalendarClock, ExternalLink, Loader2, RotateCcw, Send, XCircle } from "lucide-react";
 import { toast } from "sonner";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -229,7 +230,11 @@ export default function PublishingPage() {
             <span>{t.publishing.columns.time}</span>
             <span>{t.publishing.columns.status}</span>
           </div>
-          {publications.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">{t.publishing.queueEmpty}</p>}
+          {page.isError ? (
+            <QueryError error={page.error} onRetry={() => void page.refetch()} className="m-3" />
+          ) : publications.length === 0 && !page.isPending && (
+            <p className="px-4 py-5 text-sm text-muted-foreground">{t.publishing.queueEmpty}</p>
+          )}
           {publications.map((publication) => (
             <div
               key={publication.id}

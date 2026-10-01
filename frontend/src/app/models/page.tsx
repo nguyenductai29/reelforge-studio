@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Bot, Loader2, MoreHorizontal, Plus } from "lucide-react";
 import { toast } from "sonner";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -32,7 +33,8 @@ import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
-import { keys, useAiTools } from "@/lib/queries";
+import { can } from "@/lib/permissions";
+import { keys, useAiTools, useDashboard } from "@/lib/queries";
 import type { AiTask, AiTool } from "@/lib/types";
 
 const TASKS: AiTask[] = ["script", "image", "video", "voice", "transcription", "music"];
@@ -190,6 +192,8 @@ export default function ModelsPage() {
   const client = useQueryClient();
   const showError = useErrorToast();
   const tools = useAiTools();
+  // Adding, editing and switching models is for owners and admins (the API refuses others).
+  const manage = can(useDashboard().data, "models.manage");
   const [category, setCategory] = useState<AiTask>("video");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [removing, setRemoving] = useState<AiTool | null>(null);
@@ -234,11 +238,11 @@ export default function ModelsPage() {
       <PageHeader
         title={t.models.title}
         subtitle={t.models.subtitle}
-        actions={
+        actions={manage && (
           <Button onClick={() => setDraft({ task: category, provider: "", model: "", is_enabled: true })}>
             <Plus className="size-4" /> {t.models.addModel}
           </Button>
-        }
+        )}
       />
       <FilterPills
         value={category}
@@ -248,16 +252,18 @@ export default function ModelsPage() {
 
       {tools.isPending ? (
         <Loader2 className="mx-auto size-5 animate-spin text-muted-foreground" />
+      ) : tools.isError ? (
+        <QueryError error={tools.error} onRetry={() => void tools.refetch()} />
       ) : visible.length === 0 ? (
         <EmptyState
           icon={Bot}
           title={t.models.empty}
           description={t.models.emptyHint}
-          action={
+          action={manage && (
             <Button variant="outline" onClick={() => setDraft({ task: category, provider: "", model: "", is_enabled: true })}>
               <Plus className="size-4" /> {t.models.addModel}
             </Button>
-          }
+          )}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -273,12 +279,12 @@ export default function ModelsPage() {
                   <div className="flex items-center gap-1">
                     <Switch
                       checked={tool.is_enabled}
-                      disabled={busy === tool.id}
+                      disabled={busy === tool.id || !manage}
                       onCheckedChange={(v) => void toggle(tool, v)}
                       aria-label={tool.model}
                     />
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
+                      <DropdownMenuTrigger asChild disabled={!manage}>
                         <Button variant="ghost" size="icon" className="size-7" aria-label={t.common.edit}>
                           <MoreHorizontal className="size-4" />
                         </Button>

@@ -85,7 +85,7 @@ assert any(message == "job_lease_reclaimed" and fields["previous_worker"] == "te
 # Only system admins see operations.
 assert client.post("/api/admin/accounts", json={"email": "member@example.com", "password": "long-password-123",
                                                 "workspace_name": "Member", "plan_code": "trial"}).status_code == 201
-member = TestClient(app)
+member = TestClient(app, headers={"Origin": "http://testserver"})
 assert member.post("/api/login", json={"email": "member@example.com", "password": "long-password-123"}).status_code == 200
 for path in ("/api/admin/workers", "/api/admin/jobs", "/api/admin/storage"):
     assert member.get(path).status_code == 403, path

@@ -13,3 +13,14 @@ Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/reelforge/runtime.env
 Nice=10
 IOSchedulingClass=idle
+# Hardening (Phase 25): no privilege gain, a private /tmp, /usr /boot /etc read-only, kernel settings off-limits.
+# /home (the application, instance/, .venv) and /srv (media, backups) stay writable as before.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes

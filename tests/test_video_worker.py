@@ -42,7 +42,7 @@ from app import usage, video_worker
 VALID_MP4 = (b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
              b"\x00\x00\x00\x10mdat12345678"
              b"\x00\x00\x00\x10moov\x00\x00\x00\x08trak")
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 workspace = client.get("/api/dashboard").json()["workspace"]["id"]
 project = client.post("/api/projects", json={"title":"A", "topic":"Rừng đêm"}).json()["id"]

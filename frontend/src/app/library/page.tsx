@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { FileText, LibraryBig, Search } from "lucide-react";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, PageHeader } from "@/components/reelforge/primitives";
 import { MediaThumb } from "@/components/reelforge/media-preview";
 import Link from "next/link";
@@ -48,18 +49,16 @@ export default function LibraryPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="space-y-6">
       <PageHeader title={t.library.title} subtitle={t.library.subtitle} />
       <div className="flex flex-wrap items-center gap-3">
-        <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
-          <TabsList className="h-auto flex-wrap">
-            {tabs.map((key) => (
-              <TabsTrigger key={key} value={key}>
-                {t.library.tabs[key]}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        <TabsList className="h-auto flex-wrap">
+          {tabs.map((key) => (
+            <TabsTrigger key={key} value={key}>
+              {t.library.tabs[key]}
+            </TabsTrigger>
+          ))}
+        </TabsList>
         <div className="relative min-w-[200px] flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -72,69 +71,74 @@ export default function LibraryPage() {
         </div>
       </div>
 
-      {tab === "scripts" ? (
-        !scripts.data?.items.length ? (
-          <EmptyState icon={FileText} title={t.library.tabs.scripts} description={t.library.noScripts} />
+      {/* One panel for the selected tab: the tabs filter what it shows. */}
+      <TabsContent value={tab} className="mt-0">
+        {tab === "scripts" ? (
+          scripts.isError ? (
+            <QueryError error={scripts.error} onRetry={() => void scripts.refetch()} />
+          ) : !scripts.data?.items.length ? (
+            <EmptyState icon={FileText} title={t.library.tabs.scripts} description={t.library.noScripts} />
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {scripts.data.items.map((script) => {
+                  const project = data?.projects.find((p) => p.id === script.project_id);
+                  return (
+                    <Link
+                      key={script.step_id}
+                      href={`/workflows/${script.workflow_id}?run=${script.run_id}`}
+                      className="panel group flex flex-col gap-2 p-4 transition-colors hover:border-border-strong"
+                    >
+                      <p className="text-[11px] text-muted-foreground">
+                        {t.nodes[script.node_type]?.name ?? script.node_type} · {t.workspace.words(script.words)} ·{" "}
+                        {formatRelative(script.created_at)}
+                      </p>
+                      <p className="line-clamp-6 whitespace-pre-line text-sm leading-relaxed">{script.text}</p>
+                      <span className="mt-auto inline-block max-w-full truncate rounded-md bg-surface-2 px-2 py-0.5 text-[11px] text-muted-foreground group-hover:text-primary">
+                        {project?.title ?? t.library.origin.workflowOnly}
+                      </span>
+                    </Link>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Button variant="outline" size="sm" disabled={scriptOffset === 0}
+                        onClick={() => setScriptOffset(Math.max(0, scriptOffset - SCRIPT_PAGE))}>
+                  {t.table.previous}
+                </Button>
+                <Button variant="outline" size="sm" disabled={scriptOffset + SCRIPT_PAGE >= scripts.data.total}
+                        onClick={() => setScriptOffset(scriptOffset + SCRIPT_PAGE)}>
+                  {t.table.next}
+                </Button>
+              </div>
+            </div>
+          )
+        ) : assets.length === 0 ? (
+          <EmptyState icon={LibraryBig} title={t.library.empty} description={t.library.emptyHint} />
+        ) : visible.length === 0 ? (
+          <div className="panel p-5 text-sm text-muted-foreground">{t.library.noMatch}</div>
         ) : (
-          <div className="space-y-3">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {scripts.data.items.map((script) => {
-                const project = data?.projects.find((p) => p.id === script.project_id);
-                return (
-                  <Link
-                    key={script.step_id}
-                    href={`/workflows/${script.workflow_id}?run=${script.run_id}`}
-                    className="panel group flex flex-col gap-2 p-4 transition-colors hover:border-border-strong"
-                  >
-                    <p className="text-[11px] text-muted-foreground">
-                      {t.nodes[script.node_type]?.name ?? script.node_type} · {t.workspace.words(script.words)} ·{" "}
-                      {formatRelative(script.created_at)}
-                    </p>
-                    <p className="line-clamp-6 whitespace-pre-line text-sm leading-relaxed">{script.text}</p>
-                    <span className="mt-auto inline-block max-w-full truncate rounded-md bg-surface-2 px-2 py-0.5 text-[11px] text-muted-foreground group-hover:text-primary">
-                      {project?.title ?? t.library.origin.workflowOnly}
-                    </span>
-                  </Link>
-                );
-              })}
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              <Button variant="outline" size="sm" disabled={scriptOffset === 0}
-                      onClick={() => setScriptOffset(Math.max(0, scriptOffset - SCRIPT_PAGE))}>
-                {t.table.previous}
-              </Button>
-              <Button variant="outline" size="sm" disabled={scriptOffset + SCRIPT_PAGE >= scripts.data.total}
-                      onClick={() => setScriptOffset(scriptOffset + SCRIPT_PAGE)}>
-                {t.table.next}
-              </Button>
-            </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {visible.map((asset) => (
+              <Link key={asset.id} href={`/media?asset=${asset.id}`} className="panel group overflow-hidden transition-colors hover:border-border-strong">
+                <div className="aspect-video overflow-hidden bg-black">
+                  <MediaThumb asset={asset} />
+                </div>
+                <div className="space-y-1.5 p-4">
+                  <p className="truncate text-sm font-medium leading-snug group-hover:text-primary">{asset.filename}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t.media.kinds[assetKind(asset.content_type)]} · {formatBytes(asset.bytes)}
+                    {asset.created_at ? ` · ${formatRelative(asset.created_at)}` : ""}
+                  </p>
+                  <span className="inline-block max-w-full truncate rounded-md bg-surface-2 px-2 py-0.5 text-[11px] text-muted-foreground">
+                    {published.has(asset.id) ? t.library.tabs.published : origin(asset.project_id, asset.run_id)}
+                  </span>
+                </div>
+              </Link>
+            ))}
           </div>
-        )
-      ) : assets.length === 0 ? (
-        <EmptyState icon={LibraryBig} title={t.library.empty} description={t.library.emptyHint} />
-      ) : visible.length === 0 ? (
-        <div className="panel p-5 text-sm text-muted-foreground">{t.library.noMatch}</div>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {visible.map((asset) => (
-            <Link key={asset.id} href={`/media?asset=${asset.id}`} className="panel group overflow-hidden transition-colors hover:border-border-strong">
-              <div className="aspect-video overflow-hidden bg-black">
-                <MediaThumb asset={asset} />
-              </div>
-              <div className="space-y-1.5 p-4">
-                <p className="truncate text-sm font-medium leading-snug group-hover:text-primary">{asset.filename}</p>
-                <p className="text-xs text-muted-foreground">
-                  {t.media.kinds[assetKind(asset.content_type)]} · {formatBytes(asset.bytes)}
-                  {asset.created_at ? ` · ${formatRelative(asset.created_at)}` : ""}
-                </p>
-                <span className="inline-block max-w-full truncate rounded-md bg-surface-2 px-2 py-0.5 text-[11px] text-muted-foreground">
-                  {published.has(asset.id) ? t.library.tabs.published : origin(asset.project_id, asset.run_id)}
-                </span>
-              </div>
-            </Link>
-          ))}
-        </div>
-      )}
-    </div>
+        )}
+      </TabsContent>
+    </Tabs>
   );
 }

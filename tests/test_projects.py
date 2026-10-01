@@ -26,7 +26,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 command.upgrade(Config("alembic.ini"), "head")
 from app.main import app
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 project = client.post("/api/projects", json={"title":"Draft", "topic":"Old topic"}).json()["id"]
 res = client.patch(f"/api/projects/{project}", json={"title":"  New title  ", "topic":"  New topic  "})
@@ -36,7 +36,7 @@ assert res.json()["topic"] == "New topic"
 assert client.get("/api/dashboard").json()["projects"][0]["topic"] == "New topic"
 assert client.patch(f"/api/projects/{project}", json={"title":"   "}).status_code == 400
 assert client.patch(f"/api/projects/{project}", json={"topic":""}).json()["topic"] == ""
-assert client.post("/api/register", json={"email":"b@example.com", "password":"long-password-123", "workspace_name":"B"}).status_code == 201
+assert client.post("/api/register", json={"accept_terms": True, "email":"b@example.com", "password":"long-password-123", "workspace_name":"B"}).status_code == 201
 assert client.patch(f"/api/projects/{project}", json={"topic":"Forbidden"}).status_code == 404
 '''
             completed = subprocess.run([sys.executable, "-c", program], cwd=target,

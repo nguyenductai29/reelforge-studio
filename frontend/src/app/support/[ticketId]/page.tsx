@@ -5,9 +5,10 @@ import { useParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import { SupportReply, SupportStatusBadge, SupportThread } from "@/components/reelforge/support";
-import { api, jsonRequest } from "@/lib/api";
+import { ApiError, api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
@@ -38,6 +39,9 @@ export default function SupportTicketPage() {
   }
 
   if (ticket.isPending) return <Loader2 className="mx-auto mt-10 size-5 animate-spin text-muted-foreground" />;
+  if (!ticket.data && ticket.isError && !(ticket.error instanceof ApiError && ticket.error.status === 404)) {
+    return <QueryError error={ticket.error} onRetry={() => void ticket.refetch()} />;
+  }
   if (!ticket.data) {
     return (
       <div className="space-y-4">

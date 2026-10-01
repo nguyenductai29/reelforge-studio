@@ -30,7 +30,7 @@ from app.db import engine
 def fk(connection, record): connection.execute("PRAGMA foreign_keys=ON")
 command.upgrade(Config("alembic.ini"), "head")
 from app.main import app
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 project = client.post("/api/projects", json={"title":"A", "topic":"Chủ đề"}).json()["id"]
 workflow = client.post("/api/workflows", json={"name":"Demo"}).json()["id"]
@@ -61,7 +61,7 @@ assert len(retry.json()["steps"]) == 4
 assert "chưa kết nối" in retry.json()["steps"][2]["detail"]
 assert client.get(f"/api/workflow-runs/{run['id']}").json()["steps"][2]["detail"] == run["steps"][2]["detail"]
 assert client.post(f"/api/workflows/{workflow}/runs", json={"project_id":project}).json()["status"] == "completed"
-assert client.post("/api/register", json={"email":"b@example.com","password":"long-password-123","workspace_name":"B"}).status_code == 201
+assert client.post("/api/register", json={"accept_terms": True, "email":"b@example.com","password":"long-password-123","workspace_name":"B"}).status_code == 201
 assert client.get(f"/api/workflow-runs/{run['id']}").status_code == 404
 assert client.post(f"/api/workflow-runs/{run['id']}/retry").status_code == 404
 assert client.get(f"/api/workflows/{workflow}/runs").status_code == 404

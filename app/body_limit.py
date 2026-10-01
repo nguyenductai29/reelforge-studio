@@ -5,12 +5,15 @@ raised during multipart parsing into HTTP 400, hiding a streaming size error.
 The preflight spool is bounded, and is closed as soon as the request finishes.
 """
 
+import json
 from tempfile import SpooledTemporaryFile
 from typing import Any, Awaitable, Callable
 
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
+
+from app import request_context
 
 
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
@@ -57,7 +60,11 @@ class RequestBodyLimitMiddleware:
             try:
                 await run_in_threadpool(self.preflight, scope)
             except HTTPException as exc:
-                response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+                # The same body as every other API error (app/main.py): detail, a stable code, the request ID.
+                code = {401: "unauthorized", 403: "forbidden", 404: "not_found"}.get(exc.status_code, "error")
+                response = JSONResponse({"detail": exc.detail, "code": code,
+                                         "request_id": request_context.request_id.get()},
+                                        status_code=exc.status_code, headers=exc.headers)
                 await response(scope, receive, send)
                 return
 
@@ -107,7 +114,8 @@ class RequestBodyLimitMiddleware:
 
     @staticmethod
     async def _reject(send: Callable) -> None:
-        body = b'{"detail":"File exceeds 100 MB"}'
+        body = json.dumps({"detail": "File exceeds 100 MB", "code": "payload_too_large",
+                           "request_id": request_context.request_id.get()}).encode("utf-8")
         await send({
             "type": "http.response.start",
             "status": 413,

@@ -6,16 +6,20 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FieldLabel, OptionChips, PageHeader, SettingRow } from "@/components/reelforge/primitives";
 import { DefaultModelsForm, StorageUsagePanel } from "@/components/reelforge/default-models";
+import { AccountSecurityPanel } from "@/components/reelforge/account-security";
+import { WorkspaceMembersPanel } from "@/components/reelforge/workspace-members";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle, useSearchParam } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { can } from "@/lib/permissions";
 import { LOCALES, LOCALE_NAMES, isLocale } from "@/lib/i18n/config";
 import { keys, useDashboard, useSettings } from "@/lib/queries";
 import { formatBytes } from "@/lib/studio";
@@ -64,7 +68,7 @@ export default function SettingsPage() {
   const dirty = Boolean(workspace && settings.data && JSON.stringify(workspace) !== JSON.stringify(settings.data.workspace));
   const storedBytes = (dashboard?.assets ?? []).reduce((sum, a) => sum + a.bytes, 0);
   const tabs = [
-    ...(["general", "workspace", "defaults", "ai", "publishing", "storage", "security"] as const),
+    ...(["general", "workspace", "members", "defaults", "ai", "publishing", "storage", "security"] as const),
     ...(dashboard?.is_admin ? (["system"] as const) : []),
   ];
 
@@ -121,6 +125,7 @@ export default function SettingsPage() {
     }
   }
 
+  if (!workspace && settings.isError) return <QueryError error={settings.error} onRetry={() => void settings.refetch()} />;
   if (!workspace) return <Loader2 className="mx-auto mt-10 size-5 animate-spin text-muted-foreground" />;
 
   return (
@@ -135,7 +140,7 @@ export default function SettingsPage() {
               {s.system.save}
             </Button>
           ) : (
-            <Button onClick={() => void saveWorkspace()} disabled={!dirty || saving !== null}>
+            <Button onClick={() => void saveWorkspace()} disabled={!dirty || saving !== null || !can(dashboard, "settings.manage")}>
               {saving === "workspace" && <Loader2 className="size-4 animate-spin" />}
               {t.common.saveChanges}
             </Button>
@@ -328,7 +333,12 @@ export default function SettingsPage() {
           </div>
         </TabsContent>
 
-        <TabsContent value="security" className="mt-5">
+        <TabsContent value="members" className="mt-5">
+          <WorkspaceMembersPanel />
+        </TabsContent>
+
+        <TabsContent value="security" className="mt-5 space-y-4">
+          <AccountSecurityPanel />
           <div className="panel max-w-xl space-y-4 p-5 text-sm">
             <SettingRow label={s.security.signOut}>
               <Button variant="outline" size="sm" onClick={() => void signOut()}>

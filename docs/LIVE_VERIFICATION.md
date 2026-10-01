@@ -1,4 +1,4 @@
-# Live verification (Phase 18D)
+# Live verification (Phase 18D, extended in v1.0)
 
 Admin → **Kiểm định** answers two questions for system admins:
 
@@ -22,7 +22,11 @@ Code: `app/readiness.py`, the `/api/admin/readiness` and `/api/admin/verificatio
 | AI providers | Whether each provider's variables are set (names only) and how many enabled models use it. An enabled model without its key is an error |
 | Publishing | YouTube OAuth, TikTok and Facebook apps, and the token encryption key |
 | Payments | payOS, manual VietQR (and the VietQR mode) and OnePAY configured, OnePAY's mode (sandbox, production or custom), and the encryption key |
-| Security | Where the master key comes from (file, legacy variable, missing), the file's permissions, a differing legacy variable |
+| Security | Where the master key comes from (file, legacy variable, missing), the file's permissions, a differing legacy variable; since v1.0 whether the key's off-server backup is confirmed (and still matches the key in use) |
+| Backups | The last successful database backup and its age (a warning past `backups.max_age_hours`), the last failure |
+| Email | Whether transactional email is configured and enabled, the outbox (queued, failed recently), the last test |
+| Accounts | System administrators without two-factor authentication (a warning) |
+| Alerts | Active system alerts ([SECURITY.md](SECURITY.md#observability)) |
 | Configuration | Settings still read from a legacy environment variable (names), whether a legacy runtime file was loaded, and the workers' settings cache (15 s). A fresh installation shows neither of the first two |
 | Realtime | Open notification streams and the poll interval |
 | Support | Tickets awaiting an answer |
@@ -33,7 +37,7 @@ The payments section shows each gateway's state (available, disabled, not config
 
 ## Manual checklist
 
-The checklist has 31 items in six groups (platform, paid AI, publishing, VietQR payments, card payments, operations), stored in `verification_checks`:
+The checklist has 41 items in eight groups (platform, paid AI, publishing, VietQR payments, card payments, operations, email, security), stored in `verification_checks`. The release checklist ([RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md)) adds the items that live outside the app (legal review, off-server copies, CI). For each item:
 
 - whether the item is verified;
 - who verified it and when;
@@ -45,7 +49,7 @@ Items marked **Tốn phí** cost money or credits. Run them deliberately, once.
 
 | Item | How to verify | Paid |
 | --- | --- | --- |
-| Migration upgraded | `python -m alembic upgrade head`, then `python -m alembic current` shows `0020_manual_payment_statuses (head)`, and readiness shows Migration ok | |
+| Migration upgraded | `python -m alembic upgrade head`, then `python -m alembic current` shows `0024_operations (head)`, and readiness shows Migration ok | |
 | Storage on the HDD | Admin → Cài đặt hệ thống → Lưu trữ: `/srv/data/videos/reelforge` (or the legacy `REELFORGE_STORAGE_ROOT`); readiness shows the root and writable ([STORAGE.md](STORAGE.md)) | |
 | FFmpeg verified | `python -m app.render_worker --check` | |
 | Master key in its own file | `python -m app.master_key init`, `ls -l /etc/reelforge/master.key` shows `-rw-------`, a copy is stored off the server; Kiểm định → Bảo mật is OK ([SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md)) | |
@@ -76,6 +80,16 @@ Items marked **Tốn phí** cost money or credits. Run them deliberately, once.
 | Support round trip | A user opens a ticket; an admin replies; the user sees the reply and the bell ([SUPPORT.md](SUPPORT.md)) | |
 | Cleanup dry run | `python -m app.media_maintenance --intermediates` lists what would be deleted and deletes nothing | |
 | Daily cleanup timer | `systemctl list-timers reelforge-media-maintenance.timer` shows the next run; readiness shows the last run | |
+| Daily backup timer | `systemctl list-timers reelforge-backup.timer`; a new dump appears every day; Kiểm định → Sao lưu shows its age ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)) | |
+| Restore rehearsal | `deploy/restore-check.sh --dump … --scratch-url … --master-key <copy>` passes: counts plausible, every secret decrypts | |
+| Server reboot | Reboot; every service, timer and the tunnel come back by themselves; readiness is green | |
+| Email: verification | Register a test account; the verification email arrives and its link verifies the address ([EMAIL.md](EMAIL.md)) | |
+| Email: password reset | Forgot password; the email arrives; the link sets a new password; other sessions are signed out | |
+| Email: support reply | An admin reply to a ticket reaches the user by email | |
+| Security: 2FA | Turn on 2FA; sign in with a code, then once with a recovery code ([SECURITY.md](SECURITY.md)) | |
+| Security: sessions | Sign another session out from Cài đặt → Bảo mật | |
+| Security: rate limit | Repeated wrong passwords end in "too many attempts" (429) and the lockout email | |
+| Security: client address | Through the tunnel, Cài đặt → Bảo mật and the audit log show your real address, not 127.0.0.1 | |
 
 The tests never run these. Automated tests mock every provider (`python -m unittest discover -s tests`), so a green test run says nothing about live credentials. That is what this checklist is for.
 
@@ -84,5 +98,5 @@ The tests never run these. Automated tests mock every provider (`python -m unitt
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/admin/readiness` | `{checked_at, sections: [{key, checks: [{key, status, detail?, …}]}]}` |
-| `GET /api/admin/verification` | The 31 items: `{key, group, paid, how, verified, verified_at, verified_by, note}` |
+| `GET /api/admin/verification` | The 41 items: `{key, group, paid, how, verified, verified_at, verified_by, note}` |
 | `PUT /api/admin/verification/{key}` | `{verified, note?}`: ticks or unticks an item; only system admins |

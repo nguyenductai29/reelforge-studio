@@ -293,6 +293,15 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 - Phase 20: central system configuration (database over environment; master key file), manual VietQR confirmed by an admin; migration `0019_system_configuration`.
 - Phase 21: production hardening (every environment variable classified; workers pick up changes without restarts; master key safeguards; explicit `awaiting_confirmation` / `rejected` manual payment statuses; systemd units and deploy checks); migration `0020_manual_payment_statuses`.
 
+### Version 1.0 (Phases 22–26)
+
+- **Accounts:** email verification, forgot/reset password, change password, optional 2FA (authenticator app, recovery codes), sessions you can sign out, account data export, Terms/Privacy acceptance. See [docs/SECURITY.md](docs/SECURITY.md).
+- **Email:** SMTP or Resend, set in Admin → System settings → Email; templates in Vietnamese, English and Japanese. See [docs/EMAIL.md](docs/EMAIL.md).
+- **Teams:** owner, admin, editor and viewer roles enforced by the API; email invitations; a studio switcher; ownership transfer. See [docs/TEAMS.md](docs/TEAMS.md).
+- **Production security and observability:** the real client address behind Cloudflare, durable rate limits, security headers, cross-site request checks, an audit log, request IDs, `/health/live`, `/health/ready`, `/internal/metrics` and alerts.
+- **Backups:** a daily `pg_dump` timer with retention, restore checks and a recovery rehearsal; the master key is backed up separately. See [docs/BACKUP_RECOVERY.md](docs/BACKUP_RECOVERY.md).
+- Migrations `0022_account_security`, `0023_workspace_team`, `0024_operations`. Release: [docs/RELEASE_V1_CHECKLIST.md](docs/RELEASE_V1_CHECKLIST.md).
+
 ### Voice, subtitles and the final render (Phases 6–8)
 
 - **Voice** reads a script as one narration, or each scene's text as its own narration, with Google Gemini TTS (AI tool task **Voice**, `GEMINI_API_KEY`). Each narration is a job with its own reservation of `VOICE_CREDITS_PER_GENERATION` credits (default 1), and is stored as a checked WAV file by `python -m app.voice_worker`. See [docs/VOICE_GENERATION.md](docs/VOICE_GENERATION.md).
@@ -333,3 +342,12 @@ python -m unittest discover -s tests -v
 ```
 
 From `frontend/`, run `npm ci`, `npm run typecheck`, and `npm run build`. GitHub Actions runs these Python and frontend checks on pushes and pull requests. The suite never calls a paid provider: `tests/test_live_providers.py` is skipped unless `REELFORGE_LIVE_TESTS=1` is set in the shell.
+
+With an isolated PostgreSQL test database the same suite also covers row locks, `SKIP LOCKED`, `ON CONFLICT`, concurrent checkouts and quotas, every migration in both directions and the backup → restore rehearsal:
+
+```bash
+REELFORGE_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/reelforge_ci_test \
+REELFORGE_TEST_PG_BIN=/usr/lib/postgresql/16/bin python -m unittest discover -s tests
+```
+
+Browser tests (Playwright) run on a disposable copy of the stack: see [e2e/README.md](e2e/README.md). The load check is described in [docs/LOAD_BASELINE.md](docs/LOAD_BASELINE.md). CI (`.github/workflows/ci.yml`) runs the SQLite and PostgreSQL suites, `alembic upgrade`/`check`/`downgrade`, the frontend build and the browser tests.

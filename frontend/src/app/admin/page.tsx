@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, FieldLabel } from "@/components/reelforge/primitives";
+import { AdminAudit } from "@/components/reelforge/admin/admin-audit";
 import { AdminPayments } from "@/components/reelforge/admin/admin-payments";
 import { AdminSupport } from "@/components/reelforge/admin/admin-support";
 import { AdminSystem } from "@/components/reelforge/admin/admin-system";
@@ -26,7 +27,7 @@ import { GIB, formatBytes } from "@/lib/studio";
 import type { Plan } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification", "system"] as const;
+const TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification", "system", "audit"] as const;
 type Tab = (typeof TABS)[number];
 
 /** Why a plan can or cannot be bought right now (the checkout enforces the same rules). */
@@ -236,6 +237,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="verification" className="mt-3 flex min-h-0 flex-1 flex-col">
           <AdminVerification />
+        </TabsContent>
+        <TabsContent value="audit" className="mt-3 flex min-h-0 flex-1 flex-col">
+          <AdminAudit />
         </TabsContent>
         <TabsContent value="system" className="mt-3 flex min-h-0 flex-1 flex-col">
           <AdminSystem />

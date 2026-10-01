@@ -54,7 +54,8 @@ class BodyLimitTests(unittest.TestCase):
         self.assertEqual((reads, invoked), (0, []))
         self.assertEqual([event["type"] for event in events], ["http.response.start", "http.response.body"])
         self.assertEqual(events[0]["status"], 413)
-        self.assertEqual(json.loads(events[1]["body"]), {"detail": "File exceeds 100 MB"})
+        body = json.loads(events[1]["body"])
+        self.assertEqual((body["detail"], body["code"]), ("File exceeds 100 MB", "payload_too_large"))
 
     def test_missing_content_length_rejects_before_running_app(self):
         accepted = []
@@ -152,10 +153,10 @@ class BodyLimitTests(unittest.TestCase):
             return {"filename": file.filename}
 
         api.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=100)
-        with TestClient(api) as client:
+        with TestClient(api, headers={"Origin": "http://testserver"}) as client:
             response = client.post("/api/assets", files={"file": ("clip.mp4", b"x" * 200, "video/mp4")})
         self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json(), {"detail": "File exceeds 100 MB"})
+        self.assertEqual((response.json()["detail"], response.json()["code"]), ("File exceeds 100 MB", "payload_too_large"))
         self.assertEqual(called, [])
 
     def test_fastapi_multipart_chunked_body_rejected_before_endpoint(self):
@@ -176,14 +177,14 @@ class BodyLimitTests(unittest.TestCase):
             + b"x" * 200
             + b"\r\n--test-boundary--\r\n"
         )
-        with TestClient(api) as client:
+        with TestClient(api, headers={"Origin": "http://testserver"}) as client:
             response = client.post(
                 "/api/assets",
                 content=iter((body[:70], body[70:])),
                 headers={"content-type": f"multipart/form-data; boundary={boundary}"},
             )
         self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json(), {"detail": "File exceeds 100 MB"})
+        self.assertEqual((response.json()["detail"], response.json()["code"]), ("File exceeds 100 MB", "payload_too_large"))
         self.assertEqual(called, [])
 
     def test_real_asset_route_rejects_unauthorized_requests_without_reading_body(self):
@@ -217,10 +218,10 @@ def upload_without_body_read(client, headers=None):
     return client.post("/api/assets", content=unread_body(),
         headers={"content-type": "multipart/form-data; boundary=test", **(headers or {})})
 
-with TestClient(app) as client:
+with TestClient(app, headers={"Origin": "http://testserver"}) as client:
     response = upload_without_body_read(client)
     assert response.status_code == 401, response.text
-    assert response.json() == {"detail": "Please sign in"}
+    assert response.json()["detail"] == "Please sign in" and response.json()["code"] == "unauthorized"
 
     response = client.post("/api/setup", json={
         "email": "owner@example.com", "password": "long-password-123",
@@ -228,14 +229,14 @@ with TestClient(app) as client:
     assert response.status_code == 200, response.text
     response = upload_without_body_read(client, {"origin": "https://attacker.example"})
     assert response.status_code == 403, response.text
-    assert response.json() == {"detail": "Invalid origin"}
+    assert response.json()["detail"] == "Invalid origin" and response.json()["code"] == "invalid_origin"
 
     with Session.begin() as db:
         workspace = db.scalar(select(Workspace))
         db.get(Subscription, workspace.id).status = "paused"
     response = upload_without_body_read(client)
     assert response.status_code == 403, response.text
-    assert response.json() == {"detail": "Workspace subscription is inactive"}
+    assert response.json()["detail"] == "Workspace subscription is inactive"
 '''
             result = subprocess.run([sys.executable, "-c", program], cwd=target,
                 env={**os.environ, "PYTHONPATH": str(target)}, capture_output=True, text=True)

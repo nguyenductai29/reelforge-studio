@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from app.models import Asset, Project, Subscription, Workflow, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
 from app.publications import Publication
 from app.publishers.google_oauth import YouTubeConnection, connection_generation
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 workspace = client.get("/api/dashboard").json()["workspace"]["id"]
 assert client.get("/api/youtube/connection").json()["connected"] is False

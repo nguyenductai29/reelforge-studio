@@ -362,7 +362,7 @@ from app.db import Session
 from app.models import Workflow, WorkflowJob, WorkflowRun
 from app import usage
 from sqlalchemy import select
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.get("/api/workflow-node-types").status_code == 401
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 catalog = client.get("/api/workflow-node-types").json()

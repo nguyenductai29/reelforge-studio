@@ -16,6 +16,7 @@ import {
   SectionTitle,
   StatusBadge,
 } from "@/components/reelforge/primitives";
+import { OnboardingChecklist } from "@/components/reelforge/onboarding";
 import { ProjectCard } from "@/components/reelforge/project-card";
 import { MiniDiagram } from "@/components/workflow/mini-diagram";
 import { api, jsonRequest } from "@/lib/api";
@@ -113,6 +114,7 @@ export default function HomePage() {
 
   return (
     <div className="space-y-10">
+      <OnboardingChecklist />
       <section className="stage-glow panel relative overflow-hidden p-6 sm:p-8">
         <p className="min-h-5 text-sm text-muted-foreground">{hello}</p>
         <h1 className="mt-1 text-2xl font-semibold sm:text-4xl">{t.home.title}</h1>
@@ -285,6 +287,7 @@ export default function HomePage() {
             <Progress
               value={monthly > 0 ? Math.min(100, (balance / monthly) * 100) : balance > 0 ? 100 : 0}
               className="mt-4 h-2"
+              aria-label={t.shell.credits}
             />
             <Button asChild variant="outline" size="sm" className="mt-4 w-full">
               <Link href="/billing">{t.home.managePlan}</Link>

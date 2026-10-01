@@ -196,7 +196,7 @@ def drain(module, **kwargs):
         count += 1
         assert count < 60
 
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email": "a@example.com", "password": "long-password-123"}).status_code == 200
 workspace = client.get("/api/dashboard").json()["workspace"]["id"]
 from sqlalchemy import update

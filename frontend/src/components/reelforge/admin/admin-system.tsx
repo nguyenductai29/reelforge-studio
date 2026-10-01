@@ -21,12 +21,12 @@ import { ApiError, api, jsonRequest } from "@/lib/api";
 import { errorText, useErrorToast } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
 import type { Dictionary } from "@/lib/i18n/vi";
-import { keys, useSettings, useSystemConfig } from "@/lib/queries";
+import { keys, useBackups, useSettings, useSystemConfig } from "@/lib/queries";
 import { GIB, formatBytes } from "@/lib/studio";
 import type { ProviderTest, SecretUpdate, SystemConfigOverview, SystemSection, SystemSetting } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const NAV = ["security", "general", "ai", "social", "storage", "runtime", "credits", "notifications"] as const;
+const NAV = ["security", "general", "email", "ai", "social", "storage", "backups", "runtime", "credits", "notifications"] as const;
 type Nav = (typeof NAV)[number];
 const AI_PROVIDERS = ["openai", "anthropic", "gemini", "runway", "fal", "runware", "replicate"] as const;
 const CHANNELS = ["youtube", "tiktok", "facebook"] as const;
@@ -430,6 +430,147 @@ function GeneralPanel() {
   );
 }
 
+function EmailPanel({ data, version }: { data: SystemConfigOverview; version: string }) {
+  const { t } = useI18n();
+  const s = t.admin.system;
+  const e = t.adminV1.email;
+  const showError = useErrorToast();
+  const [to, setTo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const group = (name: string) => (data.sections.email ?? []).filter((x) => x.group === name);
+  const problem = data.email?.problem ?? null;
+
+  async function test() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const answer = await api<{ ok: boolean; error: string | null; to: string }>(
+        "admin/system-config/email/test", jsonRequest("POST", { to: to.trim() || null }));
+      setResult(answer.ok ? { ok: true, text: e.testOk(answer.to) }
+        : { ok: false, text: e.testFailed(e.errors[answer.error ?? ""] ?? answer.error ?? "") });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="panel space-y-1 p-4 text-xs">
+        <p className="text-sm font-semibold">{e.title}</p>
+        <p className="text-muted-foreground">{e.hint}</p>
+        <p className={cn("text-sm font-medium", problem ? (problem === "disabled" ? "text-warning" : "text-destructive") : "text-success")}>
+          {e.state[problem ?? "ok"] ?? problem}
+        </p>
+        {data.email && <p className="text-muted-foreground">sent {data.email.stats.sent} · queued {data.email.stats.queued} · failed {data.email.stats.failed}</p>}
+      </div>
+      <SettingsCard key={`email-sender-${version}`} section="email" title={e.sender} labels={s.labels} settings={group("sender")}
+                    footer={
+                      <div className="flex flex-wrap items-end gap-2">
+                        <div className="min-w-[14rem] flex-1">
+                          <label htmlFor="email-test-to" className="text-xs font-medium">{e.testTo}</label>
+                          <Input id="email-test-to" type="email" value={to} onChange={(event) => setTo(event.target.value)}
+                                 className="h-8 bg-surface-2 text-xs" />
+                        </div>
+                        <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void test()}>
+                          {busy && <Loader2 className="size-3.5 animate-spin" />}{e.test}
+                        </Button>
+                        {result && <p role="status" className={cn("w-full text-xs", result.ok ? "text-success" : "text-destructive")}>{result.text}</p>}
+                      </div>
+                    } />
+      <SettingsCard key={`email-smtp-${version}`} section="email" title={e.smtp} labels={s.labels} settings={group("smtp")} />
+      <SettingsCard key={`email-resend-${version}`} section="email" title={e.resend} labels={s.labels} settings={group("resend")} />
+    </div>
+  );
+}
+
+function BackupsPanel({ data, version }: { data: SystemConfigOverview; version: string }) {
+  const { t, formatDateTime } = useI18n();
+  const s = t.admin.system;
+  const b = t.adminV1.backups;
+  const k = t.adminV1.masterKeyBackup;
+  const client = useQueryClient();
+  const showError = useErrorToast();
+  const backups = useBackups(true);
+  const [busy, setBusy] = useState(false);
+  const status = backups.data;
+  const keyCheck = status?.master_key_backup;
+
+  async function confirmKey(confirmed: boolean) {
+    setBusy(true);
+    try {
+      await api("admin/master-key/backup-confirmation", jsonRequest("PUT", { confirmed }));
+      await Promise.all([client.invalidateQueries({ queryKey: keys.backups }),
+                         client.invalidateQueries({ queryKey: keys.systemReadiness })]);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="panel space-y-2 p-4 text-sm">
+        <h3 className="text-sm font-semibold">{b.title}</h3>
+        <p className="text-xs text-muted-foreground">{b.hint}</p>
+        {backups.isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> :
+          backups.isError ? <p className="text-destructive">{errorText(backups.error, t)}</p> : status && (
+            <>
+              <dl className="grid gap-1 text-xs sm:grid-cols-[12rem_1fr]">
+                <dt className="text-muted-foreground">{b.lastSuccess}</dt>
+                <dd className={status.last_success ? "" : "text-destructive"}>
+                  {status.last_success ? `${formatDateTime(status.last_success.at)} · ${b.age(status.last_success.age_hours)} · ${status.last_success.file} · ${formatBytes(status.last_success.bytes)}` : b.none}
+                </dd>
+                <dt className="text-muted-foreground">{b.lastFailure}</dt>
+                <dd className={status.last_failure ? "text-warning" : ""}>
+                  {status.last_failure ? `${formatDateTime(status.last_failure.at)} · ${status.last_failure.error}` : "—"}
+                </dd>
+                <dt className="text-muted-foreground">{s.storage.current}</dt><dd className="font-mono">{status.directory}</dd>
+                <dt className="text-muted-foreground">{b.settingsTitle}</dt>
+                <dd>{b.retention(status.retention.daily, status.retention.weekly, status.retention.monthly)}</dd>
+              </dl>
+              {status.runs.length > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer select-none font-medium">{b.runs}</summary>
+                  <ul className="mt-1 space-y-0.5">
+                    {status.runs.map((run) => (
+                      <li key={run.started_at} className="flex flex-wrap gap-2">
+                        <span>{formatDateTime(run.started_at)}</span>
+                        <span className={run.status === "failed" ? "text-destructive" : run.status === "succeeded" ? "text-success" : ""}>
+                          {b.statuses[run.status]}
+                        </span>
+                        {run.file && <span className="font-mono text-muted-foreground">{run.file}</span>}
+                        {run.error && <span className="text-muted-foreground">{run.error}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </>
+          )}
+      </div>
+      <div className="panel space-y-2 p-4 text-sm">
+        <h3 className="text-sm font-semibold">{k.title}</h3>
+        <p className="text-xs text-muted-foreground">{k.hint}</p>
+        {keyCheck?.detail === "key_changed" && <p className="text-xs text-warning">{k.changed}</p>}
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="size-4" disabled={busy || keyCheck?.detail === "no_key"}
+                 checked={keyCheck?.status === "ok"} onChange={(event) => void confirmKey(event.target.checked)} />
+          {k.confirm}
+        </label>
+        {keyCheck?.status === "ok" && typeof keyCheck.confirmed_at === "string" && (
+          <p className="text-xs text-muted-foreground">{k.confirmed(String(keyCheck.confirmed_by ?? "—"), formatDateTime(keyCheck.confirmed_at))}</p>
+        )}
+      </div>
+      <SettingsCard key={`backups-${version}`} section="backups" title={b.settingsTitle} labels={s.labels}
+                    settings={data.sections.backups ?? []} />
+    </div>
+  );
+}
+
 /** Admin → System settings: everything the server used to read from .env.runtime, edited here, never a secret shown. */
 export function AdminSystem() {
   const { t } = useI18n();
@@ -446,7 +587,16 @@ export function AdminSystem() {
     const version = keyed(data);
     const gigabytes = { show: (value: number) => String(Math.round((value / GIB) * 100) / 100),
                         store: (text: string) => Math.round(Number(text) * GIB), unit: "GB" };
-    if (nav === "security") content = <SecurityPanel data={data} />;
+    if (nav === "security") content = (
+      <div className="space-y-3">
+        <SecurityPanel data={data} />
+        <SettingsCard key={`proxy-${version}`} section="security" title={t.adminV1.proxy.title} labels={s.labels}
+                      description={<span className="text-xs text-muted-foreground">{t.adminV1.proxy.hint}</span>}
+                      settings={data.sections.security ?? []} />
+      </div>
+    );
+    else if (nav === "email") content = <EmailPanel data={data} version={version} />;
+    else if (nav === "backups") content = <BackupsPanel data={data} version={version} />;
     else if (nav === "general") content = <GeneralPanel />;
     else if (nav === "ai") content = (
       <div className="space-y-3">

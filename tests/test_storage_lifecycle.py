@@ -257,8 +257,8 @@ assert batch["deleted"] == [a["clip_new"], a["srt_old"]] and batch["skipped"] ==
 assert batch["freed_bytes"] == 200
 
 # Another studio cannot delete this one's media.
-other = TestClient(app)
-assert other.post("/api/register", json={"email": "other@example.com", "password": "long-password-123",
+other = TestClient(app, headers={"Origin": "http://testserver"})
+assert other.post("/api/register", json={"accept_terms": True, "email": "other@example.com", "password": "long-password-123",
                                          "workspace_name": "Khác"}).status_code == 201
 assert other.delete(f"/api/assets/{a['final_a']}").status_code == 404
 assert other.post("/api/assets/delete", json={"asset_ids": [d["final_d"]]}).json()["deleted"] == []

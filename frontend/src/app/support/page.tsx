@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { LifeBuoy, MessageSquare, Plus } from "lucide-react";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import { EmptyState, PageHeader } from "@/components/reelforge/primitives";
 import { NewTicketDialog, SupportStatusBadge, type SupportContext } from "@/components/reelforge/support";
@@ -60,7 +61,9 @@ function SupportPage() {
           </Button>
         }
       />
-      {!items.length && !tickets.isPending ? (
+      {tickets.isError && !items.length ? (
+        <QueryError error={tickets.error} onRetry={() => void tickets.refetch()} className="max-w-4xl" />
+      ) : !items.length && !tickets.isPending ? (
         <EmptyState icon={LifeBuoy} title={s.empty} description={s.emptyHint} />
       ) : (
         <div className="panel max-w-4xl divide-y divide-border">

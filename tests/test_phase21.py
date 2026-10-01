@@ -44,6 +44,8 @@ DIRECT_ENV_MODULES = {
     "providers/catalog.py": "experimental Dola gateway",
     "provider_check.py": "dev tool: smoke-test choices",
     "smoke_test.py": "dev tool: the live-test opt-in",
+    "backup.py": "passes the environment (PATH, PG* settings) to pg_dump; the password only as PGPASSWORD",
+    "restore_check.py": "points the key resolver at the backed-up key copy under test",
 }
 ENV_LITERAL = re.compile(r'"((?:REELFORGE|OPENAI|ANTHROPIC|GEMINI|RUNWAY|RUNWAYML|FAL|RUNWARE|REPLICATE|DOLA|GOOGLE|TIKTOK|'
                          r'FACEBOOK|ONEPAY|RENDER|VIDEO|IMAGE|VOICE|TEXT|TRANSCRIPTION|WORKSPACE|CREDITS)_[A-Z0-9_]+)"')

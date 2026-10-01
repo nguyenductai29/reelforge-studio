@@ -255,6 +255,8 @@ class Publication(Base):
         UniqueConstraint("workspace_id", "run_id", "channel", name="uq_publications_run_channel"),
         UniqueConstraint("job_id", name="uq_publications_job_id"),
         Index("ix_publications_workspace_state", "workspace_id", "state", "updated_at"),
+        # Migration 0014: the scheduler's scan of due publications.
+        Index("ix_publications_due", "state", "scheduled_for"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

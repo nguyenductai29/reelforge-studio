@@ -24,7 +24,7 @@ from app.db import Session, engine
 from app.models import WorkflowJob
 from app import usage, video_worker
 
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email": "a@example.com", "password": "long-password-123"}).status_code == 200
 workspace = client.get("/api/dashboard").json()["workspace"]["id"]
 project = client.post("/api/projects", json={"title": "A", "topic": "Rừng"}).json()["id"]

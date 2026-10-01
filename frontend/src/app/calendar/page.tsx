@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader, PlatformIcon, StatusBadge, platformLabel } from "@/components/reelforge/primitives";
@@ -114,6 +115,7 @@ export default function CalendarPage() {
         </TabsList>
 
         <TabsContent value="month" className="mt-5">
+          {range.isError && <QueryError error={range.error} onRetry={() => void range.refetch()} className="mb-3" />}
           <div className="panel overflow-x-auto p-2">
             <div className="min-w-[560px]">
               <div className="grid grid-cols-7 gap-1 pb-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -130,7 +132,7 @@ export default function CalendarPage() {
                       key={dayKey(day)}
                       className={cn(
                         "min-h-[88px] rounded-lg border border-border bg-surface p-1.5",
-                        day.getMonth() !== cursor.getMonth() && "opacity-40",
+                        day.getMonth() !== cursor.getMonth() && "border-dashed bg-transparent",
                         isToday && "border-primary/50",
                       )}
                     >

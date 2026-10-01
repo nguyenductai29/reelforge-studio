@@ -650,6 +650,8 @@ ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='a-long-password' npm run create-admi
 
 Once an account exists, the command prints that there is nothing to do and exits successfully, so it is safe to keep in a deploy script.
 
+At the first sign-in the administrator is asked to accept the Terms of Service and the Privacy Policy (a banner), and to turn on two-factor authentication: **Cài đặt → Bảo mật → Bật 2FA**. Store the ten recovery codes off the server (see section 22).
+
 ---
 
 ## 11. Persistent media on the HDD
@@ -1503,3 +1505,42 @@ Media:
 ```
 
 For external developer database access, use the separately configured PostgreSQL public endpoint only when required. Production ReelForge services on the home server should use the local PostgreSQL connection.
+
+---
+
+## 22. Accounts, email, backups and hardening (v1.0)
+
+Version 1.0 adds account security, teams, observability and automated backups. On an existing installation, after
+`./deploy.sh` (it applies migrations 0022–0024):
+
+1. **Units.** Copy the changed and new units, then check that every service still starts with the hardening options:
+
+   ```bash
+   sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl restart reelforge-api reelforge-frontend 'reelforge-worker@*'
+   systemctl --failed
+   ```
+
+2. **Backups.** Enable the daily database backup and run it once:
+
+   ```bash
+   sudo mkdir -p /srv/data/backups/reelforge && sudo chown tai:tai /srv/data/backups/reelforge && sudo chmod 700 /srv/data/backups/reelforge
+   sudo systemctl enable --now reelforge-backup.timer
+   sudo systemctl start reelforge-backup.service && journalctl -u reelforge-backup.service -n 20 --no-pager
+   ```
+
+   Then back the master key up **off the server** and tick the confirmation in **Quản trị → Cài đặt hệ thống → Sao
+   lưu**. Restore checks and the rehearsal: [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md).
+3. **Journal size:** `sudo mkdir -p /etc/systemd/journald.conf.d && sudo cp deploy/journald/reelforge.conf /etc/systemd/journald.conf.d/ && sudo systemctl restart systemd-journald`.
+4. **Email.** In **Quản trị → Cài đặt hệ thống → Email**, set SMTP or Resend and press **Gửi email thử**. Password reset,
+   email verification and emailed invitations need it ([EMAIL.md](EMAIL.md)).
+5. **2FA** for every system administrator (Cài đặt → Bảo mật).
+6. **Client addresses.** The defaults trust `CF-Connecting-IP` from loopback only, which matches this setup (Cloudflare
+   Tunnel → Next.js on `127.0.0.1:3001` → API on `127.0.0.1:8000`). Keep both services on loopback
+   ([SECURITY.md](SECURITY.md#the-client-address-and-its-trust-boundary)).
+7. **Legal pages.** `/terms` and `/privacy` are templates: fill in every `[bracketed]` item and have them reviewed
+   before launch. Existing accounts are asked to accept them at their next visit.
+8. **Check.** `curl -fsS http://127.0.0.1:8000/health/ready`, Quản trị → Kiểm định, then the release checklist:
+   [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md).
+

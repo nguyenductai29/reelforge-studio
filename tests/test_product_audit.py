@@ -278,11 +278,11 @@ class Phase19FrontendTest(unittest.TestCase):
 class Phase20FrontendTest(unittest.TestCase):
     def test_admin_has_system_settings_for_every_section(self):
         admin = source("app/admin/page.tsx")
-        self.assertIn('"verification", "system"] as const', admin)
+        self.assertIn('"verification", "system", "audit"] as const', admin)
         self.assertIn('<TabsContent value="system" className="mt-3 flex min-h-0 flex-1 flex-col">', admin)
         system = source("components/reelforge/admin/admin-system.tsx")
-        self.assertIn('const NAV = ["security", "general", "ai", "social", "storage", "runtime", "credits", "notifications"]',
-                      system)
+        self.assertIn('const NAV = ["security", "general", "email", "ai", "social", "storage", "backups", "runtime", "credits",'
+                      ' "notifications"]', system)
         self.assertIn("`admin/system-config/${section}`", system)
         self.assertIn("`admin/system-config/ai/${provider}/test`", system)
         # Secret inputs never hold a saved value; the page scrolls inside the fixed admin layout.

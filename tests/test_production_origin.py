@@ -196,7 +196,8 @@ stranger = TestClient(main.app, base_url="https://testserver")
 for origin in ("https://evil.example.com", "http://studio.imokome-cloud.com", "https://studio.imokome-cloud.com.evil.example.com",
                "https://evil.studio.imokome-cloud.com", "http://localhost:3000", "null"):
     response = stranger.post("/api/login", json=OWNER, headers={"Origin": origin})
-    assert response.status_code == 403 and response.json() == {"detail": "Invalid origin"}, (origin, response.text)
+    assert response.status_code == 403 and response.json()["detail"] == "Invalid origin", (origin, response.text)
+    assert response.json()["code"] == "invalid_origin" and response.json()["request_id"], response.text
     no_cookie(response)
     assert client.post("/api/logout", headers={"Origin": origin}).status_code == 403
 assert stranger.get("/api/dashboard").status_code == 401

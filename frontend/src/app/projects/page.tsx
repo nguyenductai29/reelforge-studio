@@ -10,6 +10,7 @@ import { NewProjectDialog } from "@/components/reelforge/new-project-dialog";
 import { ProjectCard } from "@/components/reelforge/project-card";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { can } from "@/lib/permissions";
 import { useDashboard, usePublications, useRuns } from "@/lib/queries";
 import { assetKind, projectStatus, type ProjectStatus } from "@/lib/studio";
 import { cn } from "@/lib/utils";
@@ -40,7 +41,7 @@ export default function ProjectsPage() {
   );
   const limit = data?.limits.projects ?? null;
 
-  const newProject = (
+  const newProject = !can(data, "content.edit") ? null : (
     <NewProjectDialog
       onCreated={(project) => router.push(`/projects/${project.id}`)}
       trigger={

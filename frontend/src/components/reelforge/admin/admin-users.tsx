@@ -109,6 +109,47 @@ function CreateAccountDialog({ open, plans, onClose }: { open: boolean; plans: P
   );
 }
 
+/** Phase 22: what an admin can do for a user's account security; each action is audited. */
+function UserSecurityActions({ user }: { user: AdminUserDetail }) {
+  const { t } = useI18n();
+  const a = t.adminV1.users;
+  const client = useQueryClient();
+  const showError = useErrorToast();
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function run(action: string, done: (result: Record<string, number | boolean>) => string) {
+    setBusy(action);
+    try {
+      const result = await api<Record<string, number | boolean>>(`admin/users/${encodeURIComponent(user.id)}/${action}`, { method: "POST" });
+      toast.success(done(result));
+      await client.invalidateQueries({ queryKey: keys.adminUsers });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+      {user.two_factor && (
+        <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void run("reset-2fa", () => a.reset2faDone)}>
+          {busy === "reset-2fa" && <Loader2 className="size-3.5 animate-spin" />}{a.reset2fa}
+        </Button>
+      )}
+      {user.email_verified === false && (
+        <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void run("verify-email", () => a.verifyDone)}>
+          {busy === "verify-email" && <Loader2 className="size-3.5 animate-spin" />}{a.verifyEmail}
+        </Button>
+      )}
+      <Button size="sm" variant="outline" disabled={busy !== null || !user.active_sessions}
+              onClick={() => void run("revoke-sessions", (result) => a.revokeDone(Number(result.revoked ?? 0)))}>
+        {busy === "revoke-sessions" && <Loader2 className="size-3.5 animate-spin" />}{a.revokeSessions}
+      </Button>
+    </div>
+  );
+}
+
 function UserDetailDialog({ userId, onClose }: { userId: string | null; onClose: () => void }) {
   const { t, formatDateTime, formatNumber } = useI18n();
   const u = t.admin.users;
@@ -139,7 +180,15 @@ function UserDetailDialog({ userId, onClose }: { userId: string | null; onClose:
               <Detail label={u.columns.created}>{data.created_at ? formatDateTime(data.created_at) : "—"}</Detail>
               <Detail label={u.sessionsLabel}>{formatNumber(data.active_sessions)}</Detail>
               {data.display_name && <Detail label={u.displayName}>{data.display_name}</Detail>}
+              {data.email_verified !== undefined && (
+                <Detail label={t.account.email.title}>{data.email_verified ? t.adminV1.users.verified : t.adminV1.users.unverified}</Detail>
+              )}
+              {data.two_factor !== undefined && (
+                <Detail label={t.adminV1.users.twoFactor}>{data.two_factor ? t.account.twoFactor.on : t.account.twoFactor.off}</Detail>
+              )}
+              {data.last_login_at && <Detail label={t.adminV1.users.lastLogin}>{formatDateTime(data.last_login_at)}</Detail>}
             </dl>
+            <UserSecurityActions user={data} />
             <div>
               <p className="mb-2 text-xs font-medium text-muted-foreground">{u.studios}</p>
               <ul className="divide-y divide-border rounded-lg border border-border text-sm">

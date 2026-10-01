@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { QueryError } from "@/components/reelforge/query-state";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -22,8 +23,10 @@ import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle, useSearchParam } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { can } from "@/lib/permissions";
 import type { Dictionary } from "@/lib/i18n/vi";
-import { keys, useChannels } from "@/lib/queries";
+import { keys, useChannels, useDashboard } from "@/lib/queries";
+import { cn } from "@/lib/utils";
 import type { ChannelId, ChannelStatus } from "@/lib/types";
 
 type Cap = keyof Dictionary["channels"]["caps"];
@@ -51,6 +54,8 @@ function Caps({ caps }: { caps: Cap[] }) {
 /** One channel: status, account, and the connect, choose-Page or disconnect actions (owner only on the server). */
 function ChannelCard({ status, onDisconnect }: { status: ChannelStatus; onDisconnect: (channel: ChannelId) => void }) {
   const { t } = useI18n();
+  // Connecting and disconnecting are for owners and admins (the API refuses others).
+  const manage = can(useDashboard().data, "channels.manage");
   const client = useQueryClient();
   const showError = useErrorToast();
   const [busy, setBusy] = useState(false);
@@ -130,7 +135,7 @@ function ChannelCard({ status, onDisconnect }: { status: ChannelStatus; onDiscon
           </SelectContent>
         </Select>
       )}
-      <div className="flex gap-2">
+      <div className={cn("flex gap-2", !manage && "hidden")}>
         {status.status !== "configuration_required" && (connected || status.status === "authorization_required") && (
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDisconnect(channel)}>
             {t.channels.disconnect}
@@ -185,6 +190,9 @@ export default function ChannelsPage() {
       <PageHeader title={t.channels.title} subtitle={t.channels.subtitle} />
       <div className="grid gap-4 sm:grid-cols-2">
         {channels.isPending && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
+        {channels.isError && (
+          <QueryError error={channels.error} onRetry={() => void channels.refetch()} className="sm:col-span-2" />
+        )}
         {CHANNELS.map((channel) => {
           const status = channels.data?.find((item) => item.channel === channel);
           return status ? <ChannelCard key={channel} status={status} onDisconnect={setConfirm} /> : null;

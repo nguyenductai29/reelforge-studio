@@ -243,9 +243,9 @@ A fresh installation shows none of the first two.
 
 ## The admin UI
 
-**Admin → Cài đặt hệ thống** has eight sections. It is system-admin only, enforced by the API (`/api/admin/system-config…`).
+**Admin → Cài đặt hệ thống** has ten sections. It is system-admin only, enforced by the API (`/api/admin/system-config…`).
 
-- **Security:** where the master key comes from (file, legacy variable, missing), its path, whether the file is chmod 600, and whether a legacy variable still set differs from the file. The key itself is never shown or editable here.
+- **Security:** where the master key comes from (file, legacy variable, missing), its path, whether the file is chmod 600, and whether a legacy variable still set differs from the file. The key itself is never shown or editable here. Since v1.0 also the client address behind the proxy: `security.trusted_proxies` (CIDR list, default `127.0.0.0/8,::1/128`) and `security.client_ip_header` (default `CF-Connecting-IP`; empty trusts no header). `X-Forwarded-For` is never used ([SECURITY.md](SECURITY.md#the-client-address-and-its-trust-boundary)).
 - **General:** frontend origin, secure cookies, trial project limit, self-registration (the same settings as before, moved here).
 - **AI providers:** one card per provider with a switch, the write-only key, Runway's output hosts, how many enabled models use it, and **Kiểm tra kết nối**. The test sends one authenticated request to a free listing endpoint (models or account): OpenAI, Anthropic, Gemini, Replicate, Runway. It never generates anything; FAL and Runware get a local check only.
 - **Social OAuth:** YouTube, TikTok and Facebook app credentials. The redirect URL in use is shown with a copy button: derived from the frontend origin (`/youtube/callback`, `/channels/callback/tiktok`, `/channels/callback/facebook`) unless overridden. Changing an app never exposes stored tokens, which stay encrypted with the master key. A channel may need reconnecting if the new app is a different one.
@@ -253,6 +253,8 @@ A fresh installation shows none of the first two.
   - The root must be an absolute path to an existing, writable directory that is not a link or junction.
   - Changing it while files exist asks for confirmation. **Files are never moved:** move them yourself, or with a migration tool, before or after.
   - The per-studio ceiling is entered in GB; the retention periods in days.
+- **Email (v1.0):** enabled, provider (`smtp` or `resend`), from name and address, reply-to, SMTP host, port, security, username and password, Resend API key, and **Gửi email thử**. The password and the key are secrets ([EMAIL.md](EMAIL.md)).
+- **Backups (v1.0):** `backups.directory` (default `/srv/data/backups/reelforge`), `backups.keep_daily` / `keep_weekly` / `keep_monthly` (14 / 8 / 6), `backups.max_age_hours` (26: older is an alert), the last runs, and the master key backup confirmation (a fingerprint only) ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)).
 - **Runtime:** FFmpeg paths, subtitle font, render timeout, still duration, job waits.
 - **Credit pricing:** the six per-operation credit prices.
 - **Notifications:** stream timing and the low-credit threshold.
@@ -278,6 +280,8 @@ A fresh installation shows none of the first two.
 | `PUT /api/admin/system-config/{section}` | `{values: {key: value}, secrets: {key: {action: keep\|replace\|clear, value}}, reset: [keys], confirm_root_change}`. Validated as a whole; 422 `{code, field}` never echoes a value. A root change while files exist answers 409 `root_change_requires_confirmation` |
 | `POST /api/admin/system-config/ai/{provider}/test` | Local check, then one free listing request (`{local, remote}`) |
 | `POST /api/admin/system-config/storage/check` | `{root}` → whether it is usable and whether it would move away from the current root |
+| `POST /api/admin/system-config/email/test` | `{to?}` → sends the test email (10 per hour); `{ok, error}` with an error code, never a server response |
+| `PUT /api/admin/master-key/backup-confirmation` | `{confirmed}`: records that the key is backed up off the server (its fingerprint, the time, the admin) |
 
 ## Upgrading an existing installation
 

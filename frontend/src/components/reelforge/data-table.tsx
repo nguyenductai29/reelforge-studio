@@ -54,7 +54,7 @@ export function DataTable<T>({
   return (
     <div className={cn("panel flex min-h-0 flex-1 flex-col overflow-hidden", className)}>
       {toolbar && <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">{toolbar}</div>}
-      <div className="scrollbar-thin relative min-h-0 flex-1 overflow-auto">
+      <div className="scrollbar-thin relative min-h-0 flex-1 overflow-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" tabIndex={0}>
         <table className="w-full border-separate border-spacing-0 text-left text-sm" style={{ minWidth }}>
           <thead>
             <tr>

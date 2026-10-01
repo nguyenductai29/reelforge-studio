@@ -156,7 +156,7 @@ export function AdminVerification() {
             {stream === "ok" ? v.streamOk : v.streamFailed}
           </p>
         )}
-        <div className="scrollbar-thin relative min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="scrollbar-thin relative min-h-0 flex-1 overflow-y-auto p-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" tabIndex={0}>
           {readiness.isPending && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
           <div className="space-y-4">
             {readiness.data?.sections.map((section) => (
@@ -171,7 +171,10 @@ export function AdminVerification() {
                       <span className="min-w-0 flex-1">
                         <span className="font-medium">{v.checks[check.key as keyof typeof v.checks] ?? check.key}</span>
                         <span className="text-muted-foreground"> · {v.statuses[check.status]}</span>
-                        {check.detail && <span className="text-muted-foreground"> · {v.details[check.detail as keyof typeof v.details] ?? check.detail}</span>}
+                        {check.detail && <span className="text-muted-foreground"> · {check.key === "alert"
+                          ? (check.detail.startsWith("worker:") ? t.adminV1.workerAlert(check.detail.slice(7))
+                            : t.adminV1.alerts[check.detail] ?? check.detail)
+                          : v.details[check.detail as keyof typeof v.details] ?? check.detail}</span>}
                         {checkValue(check, formatDateTime) && (
                           <span className="block break-all text-[11px] text-muted-foreground">{checkValue(check, formatDateTime)}</span>
                         )}

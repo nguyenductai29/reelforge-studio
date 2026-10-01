@@ -20,6 +20,17 @@ Environment=PYTHONUNBUFFERED=1
 #Environment=REELFORGE_MASTER_KEY_FILE=/etc/reelforge/master.key
 EnvironmentFile=-/etc/reelforge/runtime.env
 UMask=0077
+# Hardening (Phase 25): no privilege gain, a private /tmp, /usr /boot /etc read-only, kernel settings off-limits.
+# /home (the application, instance/, .venv) and /srv (media, backups) stay writable as before.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
 StandardOutput=journal
 StandardError=journal
 

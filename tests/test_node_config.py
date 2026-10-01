@@ -408,7 +408,7 @@ from app.db import Session
 from app.models import Workflow, WorkflowJob, WorkflowRun, WorkflowRunStep
 from app import usage
 from sqlalchemy import select
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 catalog = client.get("/api/workflow-node-types").json()["node_types"]
 assert [f["key"] for f in catalog["scenes"]["config"]] == ["scene_duration", "max_scenes", "visual_style"]

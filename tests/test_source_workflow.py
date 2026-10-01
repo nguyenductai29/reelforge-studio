@@ -27,7 +27,7 @@ assert saved.status_code == 422 and saved.json()["detail"]["code"] == "invalid_a
 created = client.post("/api/admin/accounts", json={"email": "other@example.com", "password": "long-password-123",
                                                    "workspace_name": "Other", "plan_code": "trial"})
 assert created.status_code == 201, created.text
-other = TestClient(app)
+other = TestClient(app, headers={"Origin": "http://testserver"})
 assert other.post("/api/login", json={"email": "other@example.com", "password": "long-password-123"}).status_code == 200
 foreign = other.post("/api/assets", files={"file": ("x.txt", "Nội dung khác".encode(), "text/plain")}).json()["id"]
 _, saved = save_graph([node("src", "source_media", {"asset_id": foreign})], [])

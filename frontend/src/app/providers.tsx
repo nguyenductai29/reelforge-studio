@@ -1,18 +1,25 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
+import { useState, type FormEvent, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { Clapperboard, Loader2, RefreshCw } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { AppShell } from "@/components/reelforge/app-shell";
 import { AuthScreen } from "@/components/reelforge/auth-screen";
-import { ApiError } from "@/lib/api";
+import { FieldLabel } from "@/components/reelforge/primitives";
+import { FormError, PublicShell } from "@/components/reelforge/public-shell";
+import { api, ApiError, jsonRequest } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { I18nProvider, useI18n } from "@/lib/i18n";
 import type { Locale } from "@/lib/i18n/config";
-import { useDashboard } from "@/lib/queries";
+import { useAuthStatus, useDashboard } from "@/lib/queries";
+
+// Reachable signed out (Phase 22/26): emailed links, the legal pages. They render without the studio shell.
+const PUBLIC_PATHS = ["/forgot-password", "/reset-password", "/verify-email", "/invite", "/terms", "/privacy"];
 
 function makeClient() {
   return new QueryClient({
@@ -26,7 +33,62 @@ function makeClient() {
   });
 }
 
+/** Signed in, but a member of no studio (removed, or left the last one): create one, or sign out. */
+function NoWorkspace() {
+  const { t } = useI18n();
+  const n = t.team.noWorkspace;
+  const client = useQueryClient();
+  const status = useAuthStatus();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("workspaces", jsonRequest("POST", { name: new FormData(event.currentTarget).get("name") }));
+      await client.resetQueries();
+    } catch (e) {
+      setError(errorText(e, t));
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    await api("logout", { method: "POST" }).catch(() => undefined);
+    await client.resetQueries();
+  }
+
+  return (
+    <PublicShell>
+      <h1 className="text-xl font-semibold">{n.title}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{n.hint}</p>
+      {status.data?.registration_enabled && (
+        <form onSubmit={create} className="mt-5 space-y-3">
+          <div>
+            <FieldLabel htmlFor="studio-name">{t.team.switcher.createName}</FieldLabel>
+            <Input id="studio-name" name="name" required maxLength={100} className="bg-surface-2" />
+          </div>
+          <FormError message={error} />
+          <Button type="submit" className="w-full" disabled={busy}>
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {n.create}
+          </Button>
+        </form>
+      )}
+      <Button variant="outline" className="mt-3 w-full" onClick={() => void signOut()}>{n.signOut}</Button>
+    </PublicShell>
+  );
+}
+
 function SessionGate({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  if (PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) return <>{children}</>;
+  return <PrivateGate>{children}</PrivateGate>;
+}
+
+function PrivateGate({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const dashboard = useDashboard();
 
@@ -44,6 +106,9 @@ function SessionGate({ children }: { children: ReactNode }) {
     );
   }
   if (dashboard.error instanceof ApiError && dashboard.error.status === 401) return <AuthScreen />;
+  if (dashboard.error instanceof ApiError && dashboard.error.status === 403 && dashboard.error.detail === "No workspace") {
+    return <NoWorkspace />;
+  }
   if (dashboard.error) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background px-4">

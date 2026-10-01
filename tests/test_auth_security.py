@@ -204,7 +204,7 @@ from app.db import Session
 from app.auth_security import AuthAttempt
 command.upgrade(Config('alembic.ini'), 'head')
 from app.main import app
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 valid = {'email': 'owner@example.com', 'password': 'a-long-correct-password'}
 invalid = {'email': valid['email'], 'password': 'wrong-password'}
 assert client.post('/api/setup', json=valid).status_code == 200

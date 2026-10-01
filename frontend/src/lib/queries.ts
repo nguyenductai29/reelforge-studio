@@ -4,6 +4,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import { withStorageLevel } from "./studio";
 import type {
+  AccountActivity,
+  AccountSecurity,
+  AuditPage,
+  AuthStatus,
+  BackupStatus,
+  MembersView,
+  Onboarding,
   AdminJobs,
   AdminOverview,
   AdminPayment,
@@ -85,6 +92,13 @@ export const keys = {
   admin: ["admin"] as const,
   reconciliation: ["admin", "reconciliation"] as const,
   nodeTypes: ["workflow-node-types"] as const,
+  status: ["status"] as const,
+  account: ["account"] as const,
+  accountActivity: ["account", "activity"] as const,
+  members: ["workspace", "members"] as const,
+  onboarding: ["onboarding"] as const,
+  audit: ["admin", "audit"] as const,
+  backups: ["admin", "backups"] as const,
 };
 
 /** Each node type's ports; fixed for a server release, so fetched once. */
@@ -266,11 +280,12 @@ export function useAdminPayments(filters: AdminFilters) {
 }
 
 /** The workspace's payment history, one page at a time. */
-export function useBillingOrders(offset: number, limit = 10) {
+export function useBillingOrders(offset: number, limit = 10, enabled = true) {
   return useQuery({
     queryKey: [...keys.billingOrders, offset, limit],
     queryFn: () => adminPage<Page<Order>>("billing/orders", { limit, offset }),
     placeholderData: (previous) => previous,
+    enabled,
   });
 }
 
@@ -454,4 +469,42 @@ export function useVerification(enabled: boolean) {
     queryFn: () => api<{ items: VerificationItem[] }>("admin/verification").then((data) => data.items),
     enabled,
   });
+}
+
+// --- Phases 22–26 ------------------------------------------------------------------------------------------
+
+/** Public: whether setup is needed, registration is open, email works (forgot password), the terms version. */
+export function useAuthStatus() {
+  return useQuery({ queryKey: keys.status, queryFn: () => api<AuthStatus>("status") });
+}
+
+export function useAccountSecurity() {
+  return useQuery({ queryKey: keys.account, queryFn: () => api<AccountSecurity>("account/security") });
+}
+
+export function useAccountActivity() {
+  return useQuery({
+    queryKey: keys.accountActivity,
+    queryFn: () => api<{ items: AccountActivity[] }>("account/activity").then((data) => data.items),
+  });
+}
+
+export function useMembers() {
+  return useQuery({ queryKey: keys.members, queryFn: () => api<MembersView>("workspace/members") });
+}
+
+export function useOnboarding(enabled: boolean) {
+  return useQuery({ queryKey: keys.onboarding, queryFn: () => api<Onboarding>("onboarding"), enabled });
+}
+
+export function useAudit(filters: AdminFilters) {
+  return useQuery({
+    queryKey: [...keys.audit, filters],
+    queryFn: () => adminPage<AuditPage>("admin/audit", filters),
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function useBackups(enabled: boolean) {
+  return useQuery({ queryKey: keys.backups, queryFn: () => api<BackupStatus>("admin/backups"), enabled });
 }

@@ -46,7 +46,7 @@ from app import usage, video_worker, youtube_worker
 VALID_MP4 = (b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
              b"\x00\x00\x00\x10mdat12345678"
              b"\x00\x00\x00\x10moov\x00\x00\x00\x08trak")
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 workspace = client.get("/api/dashboard").json()["workspace"]["id"]
 project = client.post("/api/projects", json={"title":"A", "topic":"Rừng đêm"}).json()["id"]
@@ -106,7 +106,7 @@ result = client.get(f"/api/youtube/publications/{publication['id']}")
 assert result.status_code == 200 and result.json()["state"] == "succeeded"
 assert result.json()["remote_id"] == "abcdefghijk"
 assert len([request for request in seen if request.method == "POST"]) == 1
-assert client.post("/api/register", json={"email":"b@example.com","password":"long-password-123","workspace_name":"B"}).status_code == 201
+assert client.post("/api/register", json={"accept_terms": True, "email":"b@example.com","password":"long-password-123","workspace_name":"B"}).status_code == 201
 assert client.get(f"/api/youtube/publications/{publication['id']}").status_code == 404
 '''
             completed = subprocess.run([sys.executable, "-c", program], cwd=target,

@@ -16,6 +16,17 @@ Environment=PORT=3001
 ExecStart=/usr/bin/npm start -- --hostname 127.0.0.1
 Restart=always
 RestartSec=5
+# Hardening (Phase 25): no privilege gain, a private /tmp, /usr /boot /etc read-only, kernel settings off-limits.
+# /home (the application, instance/, .venv) and /srv (media, backups) stay writable as before.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
 StandardOutput=journal
 StandardError=journal
 

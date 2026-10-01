@@ -19,6 +19,7 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, delete, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app import master_key
+from app import permissions
 from app.models import Base, Membership
 from app.publishers.youtube import UPLOAD_SCOPE
 from app import system_config
@@ -247,7 +248,7 @@ def complete_authorization(
         or pending.consumed_at is not None
         or (pending.expires_at.replace(tzinfo=timezone.utc) if pending.expires_at.tzinfo is None else pending.expires_at) <= now
         or pending.redirect_uri != config.redirect_uri
-        or membership is None or membership.role != "owner"
+        or membership is None or not permissions.allowed(membership.role, "channels.manage")
     ):
         db.rollback()
         raise OAuthError("invalid_state", "OAuth state is expired or does not match the user")

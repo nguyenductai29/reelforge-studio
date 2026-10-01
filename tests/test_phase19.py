@@ -127,8 +127,8 @@ price = lambda credits, vnd: {"name": "Plan", "project_limit": None, "workflow_l
                               "is_active": True, "price_vnd": vnd}
 assert client.put("/api/admin/plans/standard", json={**price(5, 30000), "name": "Standard"}).status_code == 200
 assert client.put("/api/admin/plans/pro", json={**price(10, 50000), "name": "Pro"}).status_code == 200
-other = TestClient(app)
-assert other.post("/api/register", json={"email": "owner2@example.com", "password": "long-password-123",
+other = TestClient(app, headers={"Origin": "http://testserver"})
+assert other.post("/api/register", json={"accept_terms": True, "email": "owner2@example.com", "password": "long-password-123",
                                          "workspace_name": "Studio khác"}).status_code == 201
 '''
 
@@ -136,7 +136,7 @@ SECURITY = COMMON + r'''
 # An account the admin created (a normal user) and a self-registered studio owner: neither may touch gateways.
 assert client.post("/api/admin/accounts", json={"email": "member@example.com", "password": "long-password-123",
                                                  "workspace_name": "Member"}).status_code == 201
-member = TestClient(app)
+member = TestClient(app, headers={"Origin": "http://testserver"})
 assert member.post("/api/login", json={"email": "member@example.com", "password": "long-password-123"}).status_code == 200
 body = payos_body(client_id=replace("client-ABCD-9876"), api_key=replace(PAYOS_SECRET),
                   checksum_key=replace(PAYOS_CHECKSUM))

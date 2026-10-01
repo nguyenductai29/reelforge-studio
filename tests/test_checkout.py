@@ -35,7 +35,7 @@ def fk(connection, record): connection.execute("PRAGMA foreign_keys=ON")
 command.upgrade(Config("alembic.ini"), "head")
 from app.main import app
 from app import billing
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email": "owner@example.com", "password": "secret-pass-1234"}).status_code == 200
 assert client.post("/api/billing/checkout", json={"plan_code": "pro"}).status_code == 503
 billing.configured = lambda: True

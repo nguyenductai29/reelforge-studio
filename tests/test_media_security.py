@@ -28,7 +28,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 command.upgrade(Config("alembic.ini"), "head")
 from app.main import app
-client = TestClient(app)
+client = TestClient(app, headers={"Origin": "http://testserver"})
 assert client.post("/api/setup", json={"email":"a@example.com", "password":"long-password-123"}).status_code == 200
 def upload(content): return client.post("/api/assets", files={"file":("clip.mp4", content, "video/mp4")})
 assert upload(b"this is not an MP4").status_code == 415

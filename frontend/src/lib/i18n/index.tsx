@@ -47,6 +47,11 @@ export function I18nProvider({ initialLocale, children }: { initialLocale: Local
     document.cookie = `${LOCALE_COOKIE}=${next}; path=/; max-age=31536000; samesite=lax`;
     document.documentElement.lang = next;
     setLocaleState(next);
+    // Signed in: the account's emails follow the interface language. Signed out the API answers 401, which is fine.
+    void fetch("/api/account/locale", {
+      method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ locale: next }),
+    }).catch(() => undefined);
   }, []);
 
   const value = useMemo<I18n>(() => {

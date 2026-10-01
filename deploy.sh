@@ -65,7 +65,21 @@ systemctl is-active reelforge-api
 systemctl is-active reelforge-frontend
 
 echo "== 10. Health checks =="
-curl -fsS http://127.0.0.1:8000/openapi.json >/dev/null
+# /health/ready: the database answers, migrations are at head, the master key is usable (app/health.py).
+ready=no
+for _ in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null 2>&1; then
+    ready=yes
+    break
+  fi
+  sleep 1
+done
+if [ "$ready" != yes ]; then
+  echo "The API is not ready after 30 s:" >&2
+  curl -sS http://127.0.0.1:8000/health/ready >&2 || true
+  echo >&2
+  exit 1
+fi
 curl -fsSI http://127.0.0.1:3001 >/dev/null
 # The public origin as stored in System Settings. Not fatal: the Cloudflare Tunnel runs on its own.
 public_origin="$(python - <<'EOF' 2>/dev/null || true
@@ -86,13 +100,20 @@ if [ -n "$public_origin" ]; then
   fi
 fi
 
-# Units installed from deploy/systemd/ that differ from the repository's copy.
+# Units installed from deploy/systemd/ that differ from the repository's copy, and new ones not installed yet.
 for unit in deploy/systemd/*.service deploy/systemd/*.timer; do
   installed="/etc/systemd/system/$(basename "$unit")"
   if [ -f "$installed" ] && ! cmp -s "$unit" "$installed"; then
     echo "note: $unit changed; review it, copy it to /etc/systemd/system/ and run sudo systemctl daemon-reload."
+  elif [ ! -f "$installed" ]; then
+    echo "note: $unit is not installed (new). See docs/PRODUCTION_BOOTSTRAP.md, step 7."
   fi
 done
+if systemctl list-unit-files reelforge-backup.timer --no-legend 2>/dev/null | grep -q enabled; then
+  :
+else
+  echo "note: the daily database backup timer is not enabled: sudo systemctl enable --now reelforge-backup.timer"
+fi
 
 echo
 echo "====================================="

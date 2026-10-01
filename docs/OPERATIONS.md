@@ -133,6 +133,27 @@ List responses are `{items, total, limit, offset}` (`limit` 20 by default, at mo
 - **Storage.** Notifications fire at 80, 90 and 100 % of a studio's quota (once a day per level). This is on top of the 70 % warning on the Storage page.
 - **Media cleanup.** `media_maintenance --apply --intermediates` records its last run, which readiness shows. A warning after 36 h means the daily timer is not running.
 
+## Health, metrics, alerts and the audit log (Phase 24)
+
+| What | Where |
+| --- | --- |
+| Liveness | `GET /health/live` (loopback) |
+| Readiness | `GET /health/ready`: database, migrations at head, master key usable; 503 names the failing check. `deploy.sh` waits for it. No paid provider is called. |
+| Metrics | `GET /internal/metrics`, Prometheus text, for a scraper on the server or a signed-in system admin. Route templates only, never an email, a title or an ID. |
+| Alerts | Evaluated by the scheduler worker every 5 minutes: a stale or failing worker, the media disk at 80 / 90 %, an overdue or failed backup, failed jobs, rejected payment callbacks, the master key, email failures. One in-app notification to the system admins when a condition starts, then at most every 12 hours; Admin → Kiểm định shows the active ones. `python -m app.alerts` evaluates once. |
+| Audit log | Admin → Nhật ký kiểm toán: sign-ins, account and security changes, team changes, admin actions, payment callbacks rejected; filtered and paginated on the server, never a secret. |
+| Request IDs | Every response has `X-Request-ID`; error bodies repeat it as `request_id`, and the log line of that request carries it. Ask a user for it when they report an error. |
+
+Details, the rate limits and the client address behind Cloudflare: [SECURITY.md](SECURITY.md).
+
+## Backups and recovery (Phase 25)
+
+`reelforge-backup.timer` dumps PostgreSQL daily at 02:30 (`pg_dump` custom format, checked, chmod 600, 14 daily / 8
+weekly / 6 monthly, the newest never removed). Admin → Kiểm định shows the last success, its age and the last failure.
+`deploy/restore-check.sh` validates a dump, and with a scratch database and a copy of the master key rehearses the
+restore. The master key is never copied next to the dumps. Procedures, media backups, log rotation and the systemd
+hardening: [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md).
+
 ## Never logged or returned
 
-Provider keys, payment-provider credentials and hash keys (including admin-managed ones), OAuth access and refresh tokens, signed media URLs, cookies and upload session URLs. Logs carry IDs, codes and sizes; job payloads are summarized to safe fields (`app/logs.py`).
+Provider keys, payment-provider credentials and hash keys (including admin-managed ones), OAuth access and refresh tokens, signed media URLs, cookies and upload session URLs; since v1.0 also passwords, session tokens, email links' tokens, TOTP secrets and codes, recovery codes, the SMTP password and the Resend key. Logs carry IDs, codes and sizes; job payloads are summarized to safe fields (`app/logs.py`).

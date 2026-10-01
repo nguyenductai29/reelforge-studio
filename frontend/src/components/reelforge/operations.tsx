@@ -77,7 +77,7 @@ export function Operations() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div className="scrollbar-thin relative grid max-h-[42%] shrink-0 gap-3 overflow-y-auto lg:grid-cols-3">
+      <div className="scrollbar-thin relative grid max-h-[42%] shrink-0 gap-3 overflow-y-auto lg:grid-cols-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" tabIndex={0}>
         <section className="panel space-y-2 p-3 lg:col-span-2">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="text-sm font-semibold">{o.workers}</h2>
@@ -138,7 +138,7 @@ export function Operations() {
           {storage.data && (
             <div className="flex flex-wrap gap-1.5 text-[11px]">
               {(["notice", "warning", "critical", "full"] as const).map((level) => (
-                <span key={level} className={cn("rounded-md bg-surface-2 px-1.5 py-0.5", STORAGE_TEXT[level])}>
+                <span key={level} className={cn("rounded-md border border-border px-1.5 py-0.5", STORAGE_TEXT[level])}>
                   {o.storageLevel[level]}: {storage.data.levels[level]}
                 </span>
               ))}
@@ -153,7 +153,7 @@ export function Operations() {
                     {formatBytes(item.used_bytes)} / {formatBytes(item.quota_bytes)} · {item.percent}%
                   </span>
                 </div>
-                <StorageBar info={item} className="h-1" />
+                <StorageBar info={item} className="h-1" label={item.name} />
               </li>
             ))}
           </ul>

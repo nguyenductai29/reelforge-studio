@@ -83,8 +83,33 @@ export type Asset = {
   created_at: string | null;
 };
 
+export type Role = "owner" | "admin" | "editor" | "viewer";
+export type Permission =
+  | "workspace.view"
+  | "content.edit"
+  | "runs.execute"
+  | "publish"
+  | "channels.manage"
+  | "models.manage"
+  | "settings.manage"
+  | "members.manage"
+  | "billing.view"
+  | "billing.manage"
+  | "ownership.transfer";
+export type WorkspaceRef = { id: string; name: string; role: Role; active: boolean };
+export type AccountState = {
+  email_verified: boolean;
+  two_factor_enabled: boolean;
+  terms_accepted: boolean;
+  email_delivery: boolean;
+};
 export type Dashboard = {
-  workspace: { id: string; name: string; plan: string; subscription_status: string };
+  /** ``role`` (Phase 23) is absent from older APIs. */
+  workspace: { id: string; name: string; plan: string; subscription_status: string; role?: Role };
+  /** Phase 23/22: absent from older APIs. */
+  permissions?: Permission[];
+  workspaces?: WorkspaceRef[];
+  account?: AccountState;
   user: { email: string };
   is_admin: boolean;
   projects: Project[];
@@ -426,6 +451,8 @@ export type WorkspaceSettings = {
   default_language: "vi" | "en" | "ja";
   video_orientation: "vertical" | "horizontal" | "square";
   approval_required: boolean;
+  /** Phase 23: editors may publish (owners and admins always can). Absent from older APIs. */
+  editors_can_publish?: boolean;
   /** Text steps that leave these empty use them. */
   default_platform: ContentPlatform;
   default_tone: ContentTone;
@@ -492,6 +519,10 @@ export type AdminUser = {
   is_admin: boolean;
   is_active: boolean;
   created_at: string | null;
+  /** Phase 22; absent from older APIs. */
+  email_verified?: boolean;
+  two_factor?: boolean;
+  last_login_at?: string | null;
   workspace: { id: string; name: string; role: string } | null;
   plan_code: string | null;
   subscription_status: string | null;
@@ -654,7 +685,7 @@ export type SystemReadiness = { checked_at: string; sections: { key: string; che
 export type VerificationItem = {
   key: string;
   /** Absent from older APIs. */
-  group?: "platform" | "ai" | "publishing" | "vietqr" | "card" | "operations";
+  group?: "platform" | "ai" | "publishing" | "vietqr" | "card" | "operations" | "email" | "security";
   paid: boolean;
   how: string;
   verified: boolean;
@@ -680,7 +711,7 @@ export type SystemSetting = {
   configured?: boolean;
   value?: string | number | boolean | null;
 };
-export type SystemSection = "ai" | "social" | "storage" | "runtime" | "credits" | "notifications";
+export type SystemSection = "ai" | "social" | "storage" | "runtime" | "credits" | "notifications" | "email" | "security" | "backups";
 export type SystemConfigOverview = {
   sections: Record<SystemSection, SystemSetting[]>;
   history: Record<SystemSection, { action: string; at: string; by: string | null;
@@ -711,6 +742,8 @@ export type SystemConfigOverview = {
   };
   storage: { root: string; source: string; files: number; disk: { free_bytes: number; total_bytes: number } | null };
   migrated: boolean;
+  /** Phase 22; absent from older APIs. */
+  email?: { problem: string | null; provider: string; stats: { queued: number; sent: number; failed: number; last_error: string | null } };
 };
 export type ProviderTest = {
   provider: string;
@@ -718,3 +751,134 @@ export type ProviderTest = {
   remote: { status: string; code?: string };
   checked_at: string;
 };
+
+/** Phase 22: Settings → Security. */
+export type AccountSession = {
+  id: string;
+  user_agent: string | null;
+  ip: string | null;
+  created_at: string | null;
+  last_seen_at: string | null;
+  expires_at: string | null;
+  current: boolean;
+};
+export type AccountSecurity = {
+  email: string;
+  email_verified: boolean;
+  email_verified_at: string | null;
+  email_delivery: boolean;
+  password_changed_at: string | null;
+  created_at: string | null;
+  last_login_at: string | null;
+  two_factor: { enabled: boolean; enabled_at: string | null; recovery_codes_remaining: number; pending: boolean };
+  is_admin: boolean;
+  sessions: AccountSession[];
+  terms: { version: string | null; accepted_at: string | null; current_version: string };
+};
+export type AccountActivity = {
+  at: string;
+  action: string;
+  outcome: "success" | "failure" | "denied";
+  ip: string | null;
+  details: Record<string, unknown>;
+};
+export type TotpSetup = { secret: string; uri: string; qr: string };
+export type LoginResult = { email: string; two_factor_required: boolean };
+export type AuthStatus = {
+  setup_required: boolean;
+  registration_enabled: boolean;
+  /** Phase 22/26; absent from older APIs. */
+  email_delivery?: boolean;
+  terms_version?: string;
+};
+
+/** Phase 23: workspace members and invitations. */
+export type Member = {
+  user_id: string;
+  email: string;
+  display_name: string | null;
+  role: Role;
+  joined_at: string | null;
+  active: boolean;
+  you: boolean;
+  two_factor: boolean;
+  email_verified: boolean;
+};
+export type PendingInvite = {
+  id: string;
+  email: string;
+  role: Exclude<Role, "owner">;
+  invited_by: string | null;
+  created_at: string;
+  expires_at: string;
+  expired: boolean;
+};
+export type MembersView = {
+  workspace: { id: string; name: string; owner_id: string };
+  role: Role;
+  members: Member[];
+  invites: PendingInvite[];
+  can_manage: boolean;
+  can_transfer: boolean;
+  editors_can_publish: boolean;
+  email_delivery: boolean;
+  email_verified: boolean;
+};
+export type InviteResult = { id: string; email: string; role: Role; emailed: boolean; expires_at: string; link: string | null };
+export type InviteLookup = {
+  status: "pending" | "accepted" | "expired" | "revoked" | "invalid";
+  email?: string;
+  role?: Exclude<Role, "owner">;
+  workspace?: string;
+  invited_by?: string | null;
+  account_exists?: boolean;
+  expires_at?: string;
+};
+
+/** Phase 24: Admin → Audit. */
+export type AuditEvent = {
+  id: number;
+  at: string;
+  action: string;
+  outcome: "success" | "failure" | "denied";
+  actor: { id: string; email: string | null } | null;
+  workspace: { id: string; name: string | null } | null;
+  target_type: string | null;
+  target_id: string | null;
+  ip: string | null;
+  request_id: string | null;
+  details: Record<string, unknown>;
+};
+export type AuditPage = Page<AuditEvent> & { actions: string[] };
+
+/** Phase 25: database backups. */
+export type BackupRun = {
+  status: "running" | "succeeded" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  file: string | null;
+  bytes: number | null;
+  error: string | null;
+};
+export type SystemAlertItem = {
+  key: string;
+  level: "warning" | "critical";
+  message: string;
+  details: Record<string, unknown>;
+  since: string;
+  last_seen_at: string;
+};
+export type BackupStatus = {
+  directory: string;
+  max_age_hours: number;
+  retention: { daily: number; weekly: number; monthly: number };
+  last_success: { at: string; file: string; bytes: number; age_hours: number } | null;
+  last_failure: { at: string; error: string } | null;
+  runs: BackupRun[];
+  alerts: SystemAlertItem[];
+  master_key_backup?: SystemCheck;
+};
+
+/** Phase 26: the first-steps checklist. */
+export type OnboardingStep = { key: "project" | "channel" | "template" | "generate" | "review" | "publish"; done: boolean };
+export type Onboarding = { steps: OnboardingStep[]; complete: boolean; role: Role };
