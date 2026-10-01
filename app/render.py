@@ -24,8 +24,8 @@ Still images (an Image step, or uploaded pictures) are scenes too: each is
 shown for its scene's narration when there is one, else shares the single
 narration with the other stills, else lasts ``RENDER_STILL_SECONDS`` (default 5).
 
-Background music (a Music step) is looped to the video's length, lowered to its
-volume and mixed under everything else.
+Background music (a Music step) is looped to the video's length (or played once),
+cut where the video ends, lowered to its volume and mixed under everything else.
 
 Subtitles are re-timed onto this timeline: cues that belong to a scene are
 placed inside that scene's clip. Cues timed by narration keep their pace (and
@@ -140,7 +140,7 @@ def font_issue(run: Runner = subprocess.run) -> tuple[str, str] | None:
 
 def render_timeout_seconds() -> int:
     try:
-        seconds = int(os.environ.get("RENDER_TIMEOUT_SECONDS", "1800"))
+        seconds = int(os.environ.get("RENDER_TIMEOUT_SECONDS", "").strip() or "1800")
     except ValueError as exc:
         raise RuntimeError("RENDER_TIMEOUT_SECONDS must be an integer") from exc
     if not 60 <= seconds <= 21600:
@@ -151,7 +151,7 @@ def render_timeout_seconds() -> int:
 def render_credit_cost() -> int:
     """Credits for one render (``RENDER_CREDITS_PER_JOB``, default 0: rendering is local and free)."""
     try:
-        amount = int(os.environ.get("RENDER_CREDITS_PER_JOB", "0"))
+        amount = int(os.environ.get("RENDER_CREDITS_PER_JOB", "").strip() or "0")
     except ValueError as exc:
         raise RuntimeError("RENDER_CREDITS_PER_JOB must be an integer") from exc
     if not 0 <= amount <= 100000:
@@ -164,7 +164,7 @@ def render_credit_cost() -> int:
 def still_seconds() -> float:
     """How long a still image is shown when nothing else decides (``RENDER_STILL_SECONDS``, default 5)."""
     try:
-        value = float(os.environ.get("RENDER_STILL_SECONDS", "5"))
+        value = float(os.environ.get("RENDER_STILL_SECONDS", "").strip() or "5")
     except ValueError as exc:
         raise RenderError("invalid_config", "RENDER_STILL_SECONDS must be a number", "configuration_error") from exc
     if not 1 <= value <= 60:
@@ -257,7 +257,8 @@ def audio_mode(clips: list[Clip], tracks: list[Track]) -> str:
 
 
 def build_command(ffmpeg: str, clips: list[Clip], tracks: list[Track], *, subtitles: bool,
-                  style: str | None = None, music: Track | None = None, music_volume: float = 0.15) -> list[str]:
+                  style: str | None = None, music: Track | None = None, music_volume: float = 0.15,
+                  music_loop: bool = True) -> list[str]:
     """The ffmpeg argument list; it runs in the render's folder, where subtitles and output use fixed names."""
     width, height = frame_size(clips)
     total = sum(clip.duration for clip in clips)
@@ -270,7 +271,8 @@ def build_command(ffmpeg: str, clips: list[Clip], tracks: list[Track], *, subtit
     for track in tracks:
         args += ["-i", str(track.path)]
     if music is not None:
-        args += ["-stream_loop", "-1", "-i", str(music.path)]
+        # Looped to fill the video, or played once; either way it is cut where the video ends.
+        args += (["-stream_loop", "-1"] if music_loop else []) + ["-i", str(music.path)]
     graph = []
     for number, clip in enumerate(clips):
         graph.append(f"[{number}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"

@@ -39,6 +39,39 @@ export const en: Dictionary = {
     previous: "Previous",
     next: "Next",
   },
+  storage: {
+    usedOf: (used: string, quota: string) => `${used} of ${quota}`,
+    levels: {
+      ok: "",
+      notice: "Over 70% of the storage is used.",
+      warning: "Over 80% of the storage is used. Delete media you no longer need.",
+      critical: "Over 90% of the storage is used. Uploads and new media will soon be blocked.",
+      full: "Storage is full: uploads and new media are blocked. Existing media can still be viewed and downloaded.",
+    },
+    banner: {
+      warning: (percent: string) => `This studio uses ${percent}% of its storage.`,
+      critical: (percent: string) => `This studio uses ${percent}% of its storage: new media will soon be blocked.`,
+      full: (percent: string) => `Storage is full (${percent}%): uploads and new media are blocked.`,
+    },
+    manage: "Manage storage",
+    retention: (days: number, tempDays: number) =>
+      days
+        ? `Intermediate media (scene clips, narration, generated images, source cuts) is deleted ${days} days after its final video exists; temporary files after ${tempDays} days. Final videos and your uploads are never deleted automatically.`
+        : `Intermediate media is kept until you delete it; temporary files are deleted after ${tempDays} days. Final videos and your uploads are never deleted automatically.`,
+    intermediateTitle: "Intermediate media",
+    intermediateHint: (days: number) =>
+      `Scene clips, narration, generated images and source cuts of runs that rendered their final video${days ? ` (deleted automatically after ${days} days)` : ""}. Media a publication uses is kept.`,
+    intermediateNow: (count: number, size: string) => `Can be deleted now: ${count} files · ${size}`,
+    scope: "Scope",
+    allProjects: "All projects",
+    removeIntermediate: "Delete intermediate media",
+    confirmTitle: "Delete intermediate media?",
+    confirmDescription: (count: number, size: string) =>
+      `${count} files (${size}) will be deleted. Final videos still play, download and publish, but these runs can no longer be re-rendered. This can't be undone.`,
+    nothingToRemove: "There is no intermediate media to delete in this scope.",
+    removeConfirm: "Delete",
+    cleaned: (count: number, size: string) => `Deleted ${count} files, freeing ${size}.`,
+  },
   nav: {
     groups: { main: "Main", ai: "AI", workspace: "Workspace" },
     home: "Home",
@@ -761,6 +794,7 @@ export const en: Dictionary = {
       facebook_description: "Facebook description",
       music_file: "Music file",
       music_volume: "Music volume (%)",
+      music_mode: "When the music is shorter than the video",
     } as Record<string, string>,
     hints: {
       brief: "Used when nothing is connected to the Prompt input; leave empty to use the project topic.",
@@ -783,6 +817,7 @@ export const en: Dictionary = {
       tiktok_caption: "Leave empty to use the Metadata step's suggestion. TikTok receives the video as an inbox draft; you finish posting in the app.",
       music_file: "Upload an MP3, WAV or OGG file you have the rights to in Media. The music loops for the whole video.",
       music_volume: "Relative to the narration; 10–20% usually sits well. Connect the Music port to the Render step.",
+      music_mode: "Music longer than the video is always cut where the video ends.",
     } as Record<string, string>,
     placeholders: {
       brief: "E.g. Introduce the forest at night to beginners",
@@ -843,6 +878,7 @@ export const en: Dictionary = {
       recap_style: { summary: "Summary", storytelling: "Storytelling", review: "Review", explainer: "Explainer" },
       spoiler_level: { none: "No spoilers", light: "Light spoilers", full: "Whole story" },
       cut_mode: { copy_first: "Keep encoding, re-encode if needed", reencode: "Always re-encode (exact)" },
+      music_mode: { loop: "Loop it", once: "Play once" },
     } as Record<string, Record<string, string>>,
     errors: {
       invalid_config: "These settings are invalid.",
@@ -1022,6 +1058,19 @@ export const en: Dictionary = {
     selectHint: "Select a file to preview it and see details.",
     noProject: "No project",
     attached: "File project updated.",
+    projectFilter: "Filter by project",
+    allProjects: "All projects",
+    selectAll: "Select all",
+    selectedCount: (n: number) => `${n} selected`,
+    pick: (name: string) => `Select ${name}`,
+    delete: "Delete",
+    deleteSelected: "Delete selected",
+    deleteTitle: (n: number) => (n === 1 ? "Delete this file?" : `Delete ${n} files?`),
+    deleteDescription: (size: string) =>
+      `Frees ${size}. The files are removed from the server; run history keeps its record but can't re-render from them. This can't be undone.`,
+    deleted: (n: number, size: string) => `Deleted ${n} files, freeing ${size}.`,
+    inUse: "Some files are used by publications that haven't finished, so they were kept.",
+    unavailable: "File no longer available",
   },
   publishing: {
     title: "Publishing",
@@ -1252,6 +1301,7 @@ export const en: Dictionary = {
     paymentFailed: "The payment didn't go through. You can try again.",
     paymentInvalid: "The payment result couldn't be verified, so the order wasn't recorded. Use “Check” to verify it.",
     history: { plan: "Plan", method: "Method", amount: "Amount", status: "Status", created: "Created", paid: "Paid", reference: "Order" },
+    storage: (size: string) => `${size} of media storage`,
   },
   settings: {
     title: "Settings",
@@ -1311,7 +1361,8 @@ export const en: Dictionary = {
       pathHint: "Moving media data has to be done on the server.",
       quota: (used: string, quota: string) => `${used} of ${quota}`,
       byType: { video: "Video", audio: "Audio", image: "Images", document: "Documents" },
-      cleanupHint: "Clean temporary and orphan files with python -m app.media_maintenance on the server (preview by default).",
+      cleanupHint: "Temporary files and expired media are cleaned up daily on the server. Final videos and your uploads are never deleted automatically.",
+      pathFromEnv: "Set with REELFORGE_STORAGE_ROOT on the server.",
     },
     security: {
       signOut: "Sign out of this device",
@@ -1330,7 +1381,7 @@ export const en: Dictionary = {
   admin: {
     title: "Admin",
     subtitle: "Accounts, studios, plans and credits across the whole system.",
-    stats: { users: "Users", studios: "Studios", plans: "Plans", pendingPayments: "Pending payments", pendingReconciliation: "Awaiting reconciliation", stuckJobs: "Stuck jobs" },
+    stats: { users: "Users", studios: "Studios", plans: "Plans", pendingPayments: "Pending payments", pendingReconciliation: "Awaiting reconciliation", stuckJobs: "Stuck jobs", storageAlerts: "Studios ≥ 90% storage" },
     tabs: { users: "Users", studios: "Studios & credits", plans: "Plans", payments: "Payments", reconciliation: "Credit reconciliation", operations: "Operations" },
     reconciliation: {
       description: "Review uncertain provider requests against provider records, then confirm the charge or refund the reserved credits. Each decision is permanent and recorded for audit.",
@@ -1411,7 +1462,7 @@ export const en: Dictionary = {
       reason: "Reason",
       expires: (date: string) => `Ends ${date}`,
       owner: "Owner",
-      columns: { studio: "Studio", owner: "Owner", plan: "Plan", credits: "Credits", expires: "Expires", status: "Status", actions: "Actions" },
+      columns: { studio: "Studio", owner: "Owner", plan: "Plan", credits: "Credits", expires: "Expires", status: "Status", actions: "Actions", storage: "Storage" },
       noEnd: "No end date",
       viewDetails: "View details",
       changePlan: "Change plan",
@@ -1439,6 +1490,8 @@ export const en: Dictionary = {
       monthlyCredits: "Monthly credits",
       active: "Available",
       save: "Save plan",
+      storageLimit: "Storage (GB)",
+      storageDefault: (size: string) => `Server default (${size})`,
     },
     saved: "Changes saved.",
     operations: {
@@ -1458,6 +1511,8 @@ export const en: Dictionary = {
       files: (n: number) => `${n} files`,
       columns: { worker: "Worker", queue: "Queue", state: "State", attempts: "Attempts", updated: "Updated", error: "Error" },
       noJobs: "No matching jobs.",
+      disk: (used: string, total: string, free: string) => `Media disk: ${used} of ${total} (${free} free)`,
+      storageLevel: { notice: "≥70%", warning: "≥80%", critical: "≥90%", full: "Full" },
     },
     payments: {
       columns: { order: "Order", user: "User", studio: "Studio", plan: "Plan", provider: "Provider", amount: "Amount", status: "Status", created: "Created", paid: "Paid", reference: "Transaction ref.", actions: "Actions" },

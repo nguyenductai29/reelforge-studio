@@ -3,9 +3,19 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type DragEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Download, Grid2x2, Layers, List, Loader2, Upload } from "lucide-react";
+import { Download, Grid2x2, Layers, List, Loader2, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState, FieldLabel, FilterPills, PageHeader } from "@/components/reelforge/primitives";
 import { MediaThumb, assetKindIcon } from "@/components/reelforge/media-preview";
@@ -14,12 +24,14 @@ import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { keys, useDashboard } from "@/lib/queries";
+import type { MediaDeleteResult } from "@/lib/types";
 import { MAX_UPLOAD_BYTES, UPLOAD_ACCEPT, acceptedUpload, assetKind, formatBytes, type AssetKind } from "@/lib/studio";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | Exclude<AssetKind, "other">;
-// Radix Select items cannot use an empty string, so "no project" gets its own token.
+// Radix Select items cannot use an empty string, so "no project" and "every project" get their own tokens.
 const NO_PROJECT = "__none__";
+const ANY_PROJECT = "__any__";
 
 function MediaPage() {
   const { t, formatDateTime } = useI18n();
@@ -34,6 +46,10 @@ function MediaPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [projectFilter, setProjectFilter] = useState(ANY_PROJECT);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [confirming, setConfirming] = useState<string[] | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const linked = search.get("asset");
 
@@ -42,7 +58,14 @@ function MediaPage() {
     if (linked) setSelectedId(linked);
   }, [linked]);
 
-  const visible = assets.filter((a) => filter === "all" || assetKind(a.content_type) === filter);
+  const visible = assets.filter(
+    (a) =>
+      (filter === "all" || assetKind(a.content_type) === filter) &&
+      (projectFilter === ANY_PROJECT || (a.project_id ?? NO_PROJECT) === projectFilter),
+  );
+  const pickedSet = new Set(picked);
+  const toggle = (id: string) => setPicked((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]));
+  const confirmBytes = (confirming ?? []).reduce((sum, id) => sum + (assets.find((a) => a.id === id)?.bytes ?? 0), 0);
   const selected = assets.find((a) => a.id === selectedId) ?? visible[0] ?? null;
 
   async function upload(files: FileList | File[]) {
@@ -83,6 +106,26 @@ function MediaPage() {
       toast.success(t.media.attached);
     } catch (error) {
       showError(error);
+    }
+  }
+
+  /** Delete the chosen files after confirmation; media an unfinished publication still needs is kept. */
+  async function remove(ids: string[]) {
+    setDeleting(true);
+    try {
+      const result = await api<MediaDeleteResult>("assets/delete", jsonRequest("POST", { asset_ids: ids }));
+      await Promise.all([
+        client.invalidateQueries({ queryKey: keys.dashboard }),
+        client.invalidateQueries({ queryKey: keys.storage }),
+      ]);
+      if (result.deleted.length) toast.success(t.media.deleted(result.deleted.length, formatBytes(result.freed_bytes)));
+      if (result.skipped.some((item) => item.reason === "asset_in_use")) toast.error(t.media.inUse);
+      setPicked((current) => current.filter((id) => !result.deleted.includes(id)));
+      setConfirming(null);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -127,21 +170,64 @@ function MediaPage() {
                 label: f === "all" ? t.common.all : t.media.kinds[f],
               }))}
             />
-            <div className="flex rounded-lg border border-border bg-surface-2 p-0.5">
-              {(["grid", "list"] as const).map((l) => (
-                <button
-                  key={l}
-                  type="button"
-                  onClick={() => setLayout(l)}
-                  aria-pressed={layout === l}
-                  aria-label={l === "grid" ? t.common.grid : t.common.list}
-                  className={cn("rounded-md p-1.5", layout === l ? "bg-surface text-foreground" : "text-muted-foreground")}
-                >
-                  {l === "grid" ? <Grid2x2 className="size-4" /> : <List className="size-4" />}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={projectFilter}
+                onValueChange={(value) => {
+                  setProjectFilter(value);
+                  setPicked([]);
+                }}
+              >
+                <SelectTrigger className="h-8 w-48 bg-surface" aria-label={t.media.projectFilter}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY_PROJECT}>{t.media.allProjects}</SelectItem>
+                  <SelectItem value={NO_PROJECT}>{t.media.noProject}</SelectItem>
+                  {(data?.projects ?? []).map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex rounded-lg border border-border bg-surface-2 p-0.5">
+                {(["grid", "list"] as const).map((l) => (
+                  <button
+                    key={l}
+                    type="button"
+                    onClick={() => setLayout(l)}
+                    aria-pressed={layout === l}
+                    aria-label={l === "grid" ? t.common.grid : t.common.list}
+                    className={cn("rounded-md p-1.5", layout === l ? "bg-surface text-foreground" : "text-muted-foreground")}
+                  >
+                    {l === "grid" ? <Grid2x2 className="size-4" /> : <List className="size-4" />}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
+          {visible.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <label className="inline-flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-[var(--primary)]"
+                  checked={visible.every((a) => pickedSet.has(a.id))}
+                  onChange={(e) => setPicked(e.target.checked ? visible.map((a) => a.id) : [])}
+                />
+                {t.media.selectAll}
+              </label>
+              {picked.length > 0 && (
+                <>
+                  <span>{t.media.selectedCount(picked.length)}</span>
+                  <Button variant="outline" size="sm" className="h-7 text-destructive" onClick={() => setConfirming(picked)}>
+                    <Trash2 className="size-3.5" /> {t.media.deleteSelected}
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
           <button
             type="button"
             onClick={() => input.current?.click()}
@@ -169,36 +255,47 @@ function MediaPage() {
                 const kind = assetKind(asset.content_type);
                 const Icon = assetKindIcon[kind];
                 return (
-                  <button
-                    key={asset.id}
-                    type="button"
-                    onClick={() => setSelectedId(asset.id)}
-                    aria-pressed={selected?.id === asset.id}
-                    className={cn(
-                      "panel w-full p-3 text-left transition-colors hover:border-border-strong",
-                      selected?.id === asset.id && "border-primary/50",
-                      layout === "list" && "flex items-center gap-3",
-                    )}
-                  >
-                    <span
+                  <div key={asset.id} className="relative">
+                    <input
+                      type="checkbox"
+                      aria-label={t.media.pick(asset.filename)}
+                      checked={pickedSet.has(asset.id)}
+                      onChange={() => toggle(asset.id)}
                       className={cn(
-                        "flex items-center justify-center overflow-hidden rounded-lg bg-surface-2",
-                        layout === "grid" ? "mb-3 h-24 w-full" : "size-10 shrink-0",
+                        "absolute z-10 size-4 accent-[var(--primary)]",
+                        layout === "grid" ? "left-5 top-5" : "left-3 top-1/2 -translate-y-1/2",
+                      )}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(asset.id)}
+                      aria-pressed={selected?.id === asset.id}
+                      className={cn(
+                        "panel w-full p-3 text-left transition-colors hover:border-border-strong",
+                        selected?.id === asset.id && "border-primary/50",
+                        layout === "list" && "flex items-center gap-3 pl-9",
                       )}
                     >
-                      {layout === "grid" && kind !== "audio" ? (
-                        <MediaThumb asset={asset} />
-                      ) : (
-                        <Icon className="size-5 text-muted-foreground" />
-                      )}
-                    </span>
-                    <span className="block min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{asset.filename}</span>
-                      <span className="block text-xs text-muted-foreground">
-                        {t.media.kinds[kind]} · {formatBytes(asset.bytes)}
+                      <span
+                        className={cn(
+                          "flex items-center justify-center overflow-hidden rounded-lg bg-surface-2",
+                          layout === "grid" ? "mb-3 h-24 w-full" : "size-10 shrink-0",
+                        )}
+                      >
+                        {layout === "grid" && kind !== "audio" ? (
+                          <MediaThumb asset={asset} />
+                        ) : (
+                          <Icon className="size-5 text-muted-foreground" />
+                        )}
                       </span>
-                    </span>
-                  </button>
+                      <span className="block min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{asset.filename}</span>
+                        <span className="block text-xs text-muted-foreground">
+                          {t.media.kinds[kind]} · {formatBytes(asset.bytes)}
+                        </span>
+                      </span>
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -235,6 +332,14 @@ function MediaPage() {
                     <Download className="size-4" /> {t.common.download}
                   </a>
                 </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full text-destructive hover:text-destructive"
+                  onClick={() => setConfirming([selected.id])}
+                >
+                  <Trash2 className="size-4" /> {t.media.delete}
+                </Button>
                 {!selected.run_id && (
                   <div>
                     <FieldLabel>{t.media.addToProject}</FieldLabel>
@@ -263,6 +368,27 @@ function MediaPage() {
           )}
         </aside>
       </div>
+      <AlertDialog open={Boolean(confirming)} onOpenChange={(open) => !open && setConfirming(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.media.deleteTitle(confirming?.length ?? 0)}</AlertDialogTitle>
+            <AlertDialogDescription>{t.media.deleteDescription(formatBytes(confirmBytes))}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>{t.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault();
+                if (confirming) void remove(confirming);
+              }}
+            >
+              {deleting && <Loader2 className="size-4 animate-spin" />}
+              {t.media.delete}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

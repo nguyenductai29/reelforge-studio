@@ -50,7 +50,7 @@ def create_text_provider(provider_name: str, *, http_client=None) -> TextGenerat
 def text_credit_cost() -> int:
     """Credits held for, and charged by, one text generation (``TEXT_CREDITS_PER_GENERATION``)."""
     try:
-        amount = int(os.environ.get("TEXT_CREDITS_PER_GENERATION", "1"))
+        amount = int(os.environ.get("TEXT_CREDITS_PER_GENERATION", "").strip() or "1")
     except ValueError as exc:
         raise RuntimeError("TEXT_CREDITS_PER_GENERATION must be a positive integer") from exc
     if not 1 <= amount <= 100000:

@@ -8,9 +8,11 @@ import { useI18n } from "@/lib/i18n";
 import { useAdminJobs, useAdminStorage, useAdminWorkers } from "@/lib/queries";
 import { formatBytes } from "@/lib/studio";
 import type { AdminJob, StuckJob, WorkerHealth } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { DataTable, type Column } from "./data-table";
 import { FilterSelect } from "./admin/shared";
 import { StatusBadge } from "./primitives";
+import { STORAGE_TEXT, StorageBar } from "./storage";
 
 const LIMIT = 25;
 const STATES = ["queued", "leased", "succeeded", "failed"] as const;
@@ -55,7 +57,8 @@ export function Operations() {
   const [offset, setOffset] = useState(0);
   const workers = useAdminWorkers(true);
   const jobs = useAdminJobs(true, state, queue, offset, LIMIT);
-  const storage = useAdminStorage(true);
+  // The fullest studios first; the rest are in Studios & credits.
+  const storage = useAdminStorage(true, 0, 8);
   const stuck = jobs.data?.stuck;
   const nothingStuck = stuck && !stuck.expired_leases.length && !stuck.overdue.length && !stuck.orphan_steps.length;
 
@@ -118,16 +121,47 @@ export function Operations() {
             </>
           )}
           <h2 className="pt-2 text-sm font-semibold">{o.storage}</h2>
-          <ul className="space-y-0.5 text-xs">
-            {storage.data?.workspaces.slice(0, 8).map((item) => (
-              <li key={item.workspace_id} className="flex justify-between gap-2">
-                <span className="min-w-0 truncate">{item.name}</span>
-                <span className="shrink-0 text-muted-foreground">
-                  {formatBytes(item.bytes)} · {o.files(item.files)}
+          {storage.data?.disk && (
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">
+                {o.disk(formatBytes(storage.data.disk.used_bytes), formatBytes(storage.data.disk.total_bytes),
+                        formatBytes(storage.data.disk.free_bytes))}
+              </p>
+              <StorageBar
+                className="h-1.5"
+                info={{ used_bytes: storage.data.disk.used_bytes, quota_bytes: storage.data.disk.total_bytes,
+                        percent: storage.data.disk.percent,
+                        level: storage.data.disk.percent >= 90 ? "critical" : storage.data.disk.percent >= 80 ? "warning" : "ok" }}
+              />
+            </div>
+          )}
+          {storage.data && (
+            <div className="flex flex-wrap gap-1.5 text-[11px]">
+              {(["notice", "warning", "critical", "full"] as const).map((level) => (
+                <span key={level} className={cn("rounded-md bg-surface-2 px-1.5 py-0.5", STORAGE_TEXT[level])}>
+                  {o.storageLevel[level]}: {storage.data.levels[level]}
                 </span>
+              ))}
+            </div>
+          )}
+          <ul className="space-y-1 text-xs">
+            {storage.data?.workspaces.map((item) => (
+              <li key={item.workspace_id} className="space-y-0.5">
+                <div className="flex justify-between gap-2">
+                  <span className="min-w-0 truncate">{item.name}</span>
+                  <span className={cn("shrink-0 tabular-nums", STORAGE_TEXT[item.level])}>
+                    {formatBytes(item.used_bytes)} / {formatBytes(item.quota_bytes)} · {item.percent}%
+                  </span>
+                </div>
+                <StorageBar info={item} className="h-1" />
               </li>
             ))}
           </ul>
+          {storage.data && (
+            <p className="text-[11px] text-muted-foreground">
+              {t.storage.retention(storage.data.retention.intermediate_days, storage.data.retention.temp_days)}
+            </p>
+          )}
         </section>
       </div>
       <DataTable

@@ -67,7 +67,7 @@ def create_image_provider(provider_name: str, **kwargs) -> ImageGenerationProvid
 def image_credit_cost() -> int:
     """Credits held for, and charged by, one generated image (``IMAGE_CREDITS_PER_GENERATION``, default 2)."""
     try:
-        amount = int(os.environ.get("IMAGE_CREDITS_PER_GENERATION", "2"))
+        amount = int(os.environ.get("IMAGE_CREDITS_PER_GENERATION", "").strip() or "2")
     except ValueError as exc:
         raise RuntimeError("IMAGE_CREDITS_PER_GENERATION must be a positive integer") from exc
     if not 1 <= amount <= 100000:

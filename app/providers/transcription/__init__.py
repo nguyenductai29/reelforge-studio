@@ -54,7 +54,7 @@ def create_transcription_provider(provider_name: str, **kwargs) -> Transcription
 def transcription_credit_cost() -> int:
     """Credits for one transcription (``TRANSCRIPTION_CREDITS_PER_JOB``, default 2)."""
     try:
-        amount = int(os.environ.get("TRANSCRIPTION_CREDITS_PER_JOB", "2"))
+        amount = int(os.environ.get("TRANSCRIPTION_CREDITS_PER_JOB", "").strip() or "2")
     except ValueError as exc:
         raise RuntimeError("TRANSCRIPTION_CREDITS_PER_JOB must be a positive integer") from exc
     if not 1 <= amount <= 100000:

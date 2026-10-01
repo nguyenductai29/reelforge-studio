@@ -11,7 +11,7 @@ import time
 import httpx
 
 from app import heartbeat
-from app import jobs, publications
+from app import jobs, publications, storage
 from app.db import Session
 from app.main import media_root
 from app.models import Asset
@@ -73,7 +73,7 @@ def run_one(*, client: httpx.Client | None = None, poll_seconds: int = 15,
             publications.fail_publication(db, publication_id=publication_id, job_id=job_id,
                 lease_token=token, error="connection_changed", needs_attention=True)
             return True
-        file_path = media_root(db) / publication.workspace_id / asset.id
+        file_path = storage.file_in(media_root(db), publication.workspace_id, asset.id)
         title, description, workspace_id = publication.title, publication.description, publication.workspace_id
         privacy, tags = publication.privacy_status or "private", tuple(publications.publication_tags(publication))
         had_session = publication.upload_session_ciphertext is not None

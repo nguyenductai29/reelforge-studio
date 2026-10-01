@@ -190,7 +190,8 @@ def approved_run(filename="final.mp4"):
                                status="completed", detail="", output=json.dumps({"approved_by": "owner"})))
         db.flush()
         db.add(Asset(id=asset_id, workspace_id=workspace, project_id=project, run_id=ids["run"], step_id=ids["render"],
-                     provider="ffmpeg", model="local", filename=filename, content_type="video/mp4", bytes=len(VALID_MP4)))
+                     provider="ffmpeg", model="local", filename=filename, content_type="video/mp4", bytes=len(VALID_MP4),
+                     kind="final_render"))
         root = media_root(db) / workspace
     root.mkdir(parents=True, exist_ok=True)
     (root / asset_id).write_bytes(VALID_MP4)
@@ -250,7 +251,8 @@ def run_program(body: str, env: dict | None = None):
         clean = {key: value for key, value in os.environ.items()
                  if not key.startswith(("FAL_", "VIDEO_", "GEMINI", "VOICE_", "RENDER_", "OPENAI", "TEXT_", "GOOGLE_",
                                         "REELFORGE_TOKEN", "TIKTOK_", "FACEBOOK_", "TRANSCRIPTION_", "RUNWAY",
-                                        "ANTHROPIC", "REPLICATE", "RUNWARE", "DOLA", "ONEPAY_"))}
+                                        "ANTHROPIC", "REPLICATE", "RUNWARE", "DOLA", "ONEPAY_", "WORKSPACE_MEDIA",
+                                        "REELFORGE_STORAGE", "REELFORGE_RETENTION"))}
         return subprocess.run([sys.executable, "-c", PRELUDE + body], cwd=target,
                               env={**clean, **(env or {}), "PYTHONPATH": str(target), "PYTHONIOENCODING": "utf-8"},
                               capture_output=True, text=True, encoding="utf-8")

@@ -29,6 +29,15 @@ class RenderCommandTest(unittest.TestCase):
         self.assertIn("[abed][music]amix=inputs=2:duration=first:dropout_transition=0,volume=2[aout]", graph)
         self.assertEqual(command[command.index("-t", still + 1):][1], "7.500")  # the output length
 
+    def test_music_played_once_is_not_looped(self):
+        clips = [render.Clip(Path("a.mp4"), 1, 4.0, False, 1080, 1920)]
+        command = render.build_command("ffmpeg", clips, [], subtitles=False, music=render.Track(Path("m.mp3"), None),
+                                       music_loop=False)
+        self.assertNotIn("-stream_loop", command)
+        self.assertEqual(command[command.index("m.mp3") - 1], "-i")
+        # It is still cut where the video ends.
+        self.assertIn("atrim=duration=4.000", command[command.index("-filter_complex") + 1])
+
     def test_without_music_or_stills_the_command_is_unchanged(self):
         clips = [self.clip("a.mp4", 1), self.clip("b.mp4", 2)]
         command = render.build_command("ffmpeg", clips, [], subtitles=False)
@@ -64,7 +73,7 @@ assert (by_node["render"]["status"], by_node["render"]["output"]["still_count"],
        ("queued", 1, True), by_node["render"]
 with Session() as db:
     job = db.scalar(select(WorkflowJob).where(WorkflowJob.logical_key.like("render:%:final")))
-    assert job.payload["music"] == {"asset_id": song, "volume": 30} and job.payload["clips"][0]["still"] is True
+    assert job.payload["music"] == {"asset_id": song, "volume": 30, "mode": "loop"} and job.payload["clips"][0]["still"] is True
 runner = ffmpeg_runner()
 assert render_worker.run_one(runner=runner)
 state, by_node = steps(run["id"])

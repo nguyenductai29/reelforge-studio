@@ -26,7 +26,8 @@ from typing import Any
 from sqlalchemy import select
 
 from app import render
-from app.media_paths import asset_path, stored_bytes, workspace_media_quota
+from app import storage
+from app.media_paths import asset_path
 from app.models import Asset
 from app.scene_matching import match_scenes, segments_from
 from app.workflow.config import INTEGER, NUMBER, SELECT, ConfigField, advanced
@@ -333,7 +334,7 @@ class ExtractClipsNodeHandler(NodeHandler):
             return NodeExecutionResult.blocked(SOURCE_MISSING_DETAIL, NodeError("input_missing", "Source missing"))
         if issue := render.tools_issue():
             return NodeExecutionResult.blocked(issue[1], NodeError(issue[0], issue[1]))
-        if stored_bytes(db, workspace_id) >= workspace_media_quota():
+        if storage.is_full(db, workspace_id):
             return NodeExecutionResult.blocked(STORAGE_FULL_DETAIL, NodeError("storage_limit_exceeded", "Storage full"))
         step = context.step_for(node)
         config = self.config_values(inputs.config)

@@ -32,7 +32,7 @@ import uuid
 import httpx
 from sqlalchemy import select, update
 
-from app import heartbeat, jobs, render, sources, usage
+from app import heartbeat, jobs, render, sources, storage, usage
 from app.logs import log_event, payload_summary
 from app.media_paths import media_root
 from app.models import CreditReconciliation, UsageEvent, WorkflowRun, WorkflowRunStep
@@ -222,7 +222,7 @@ def _audio_parts(claim: Claim, folder: Path, runner) -> tuple[list[Path], float]
     asset_id = claim.payload.get("asset_id")
     if not isinstance(asset_id, str) or not _ASSET_ID.fullmatch(asset_id):
         raise SourceJobError("input_missing", "The media asset ID is invalid")
-    path = claim.root / claim.workspace_id / asset_id
+    path = storage.file_in(claim.root, claim.workspace_id, asset_id)
     if not path.is_file():
         raise SourceJobError("input_missing", "The media file is missing from storage")
     ffmpeg, ffprobe = render.tools()
@@ -254,7 +254,7 @@ def _audio_parts(claim: Claim, folder: Path, runner) -> tuple[list[Path], float]
 def transcription_max_seconds() -> int:
     """Longest media one Transcript step accepts (``TRANSCRIPTION_MAX_SECONDS``, default 3 hours)."""
     try:
-        value = int(os.environ.get("TRANSCRIPTION_MAX_SECONDS", str(3 * 3600)))
+        value = int(os.environ.get("TRANSCRIPTION_MAX_SECONDS", "").strip() or str(3 * 3600))
     except ValueError as exc:
         raise RuntimeError("TRANSCRIPTION_MAX_SECONDS must be a positive integer") from exc
     if not 60 <= value <= 12 * 3600:

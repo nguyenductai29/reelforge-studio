@@ -63,7 +63,7 @@ def create_voice_provider(provider_name: str, **kwargs) -> VoiceGenerationProvid
 def voice_credit_cost() -> int:
     """Credits held for, and charged by, one narration file (``VOICE_CREDITS_PER_GENERATION``, default 1)."""
     try:
-        amount = int(os.environ.get("VOICE_CREDITS_PER_GENERATION", "1"))
+        amount = int(os.environ.get("VOICE_CREDITS_PER_GENERATION", "").strip() or "1")
     except ValueError as exc:
         raise RuntimeError("VOICE_CREDITS_PER_GENERATION must be a positive integer") from exc
     if not 1 <= amount <= 100000:

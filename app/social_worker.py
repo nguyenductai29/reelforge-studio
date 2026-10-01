@@ -31,7 +31,7 @@ import time
 
 import httpx
 
-from app import heartbeat, jobs, publications
+from app import heartbeat, jobs, publications, storage
 from app.logs import log_event
 from app.media_paths import media_root
 from app.models import Asset
@@ -326,7 +326,7 @@ def run_one(*, client: httpx.Client | None = None, poll_seconds: int = POLL_SECO
                                           lease_token=job.lease_token, error="oauth:not_configured",
                                           needs_attention=publication.upload_session_ciphertext is not None)
             return True
-        source = root / publication.workspace_id / asset.id
+        source = storage.file_in(root, publication.workspace_id, asset.id)
         work = _Job(Session, job, publication, source, config, poll_seconds)
         try:
             session = publications.load_upload_session(publication, encryption_key=config.encryption_key)

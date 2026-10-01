@@ -36,10 +36,10 @@ import uuid
 
 from sqlalchemy import func, select, update
 
-from app import jobs, usage
+from app import jobs, storage, usage
 from app.db import Session
 from app.logs import log_event, payload_summary
-from app.main import media_root, workspace_media_quota
+from app.main import media_root
 from app.models import Asset, CreditReconciliation, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep
 from app.provider_progress import provider_progress, safe_error_code, step_output
 from app.providers.errors import CATEGORIES, ProviderError, error_category
@@ -177,8 +177,7 @@ def begin(db, kind: MediaKind, job: WorkflowJob, worker_id: str) -> Claimed | No
     action = record["status"]
     storage_full = False
     if action == "queued":
-        stored = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.workspace_id == job.workspace_id))
-        storage_full = stored >= workspace_media_quota()
+        storage_full = storage.is_full(db, job.workspace_id)
         record["status"] = "submitting"
         provider_progress(record, stage="preflight")
         step.status, step.detail = "running", kind.running_detail
@@ -401,7 +400,7 @@ def _store_files(kind, claimed, writers: list[Callable[[Path], Any]]):
         live = _live(db, claimed.job_id, claimed.token, lock=False)
         if not live:
             return
-        root = media_root(db) / live.job.workspace_id
+        root = storage.file_in(media_root(db), live.job.workspace_id)
     root.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     stored = []
@@ -422,9 +421,8 @@ def _store_files(kind, claimed, writers: list[Callable[[Path], Any]]):
             live = _live(db, claimed.job_id, claimed.token)
             if not live or not jobs.complete_job(db, job_id=claimed.job_id, lease_token=claimed.token):
                 raise _Discard()
-            used = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(
-                Asset.workspace_id == live.job.workspace_id))
-            if used + sum(item[1] for item in stored) > workspace_media_quota():
+            storage.lock_workspace(db, live.job.workspace_id)
+            if not storage.has_room(db, live.job.workspace_id, sum(item[1] for item in stored)):
                 raise ValueError("Workspace media quota reached")
             model = payload.get("model") or payload.get("model_id")
             entries = []
@@ -432,7 +430,8 @@ def _store_files(kind, claimed, writers: list[Callable[[Path], Any]]):
                 filename = f"{kind.name}-{asset_id[:8]}.{extension}"
                 db.add(Asset(id=asset_id, workspace_id=live.job.workspace_id, project_id=live.run.project_id,
                              run_id=live.run.id, step_id=live.step.id, provider=payload["provider"], model=model,
-                             filename=filename, content_type=content_type, bytes=size))
+                             filename=filename, content_type=content_type, bytes=size,
+                             kind=storage.kind_for_node(live.step.node_type)))
                 entries.append({"id": asset_id, "asset_id": asset_id, "filename": filename,
                                 "content_type": content_type, "provider": payload["provider"], "model": model,
                                 "scene_index": payload.get("scene_index"), **extra})

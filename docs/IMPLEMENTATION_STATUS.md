@@ -14,6 +14,8 @@
 
 > Phases 14–16 add card payments (OnePAY) beside VietQR (payOS) through one provider abstraction and one settlement path, rebuild the admin console as server-paginated tables that fit the window, and remove every "coming soon" control by implementing it (Background Music, image slideshows, the Movie Review, Article → Video and Product Video templates, scripts in the Library, display name and content defaults) or hiding it (Instagram, voice clone, timeline and other advanced steps), with migration 0015; see [Phase 14, 15 and 16 changes](#phase-14-15-and-16-changes), [PAYMENTS.md](PAYMENTS.md) and [FINAL_PRODUCT_AUDIT.md](FINAL_PRODUCT_AUDIT.md). Offline tests only: no real OnePAY, payOS, TikTok, Facebook or YouTube call and no paid AI call.
 
+> Phase 17 makes local storage safe for many studios: one configurable root (`REELFORGE_STORAGE_ROOT`), per-plan storage limits with warning levels and race-free enforcement, asset kinds, retention of intermediate media once a final video exists, a daily cleanup that only deletes verified files inside the root, and owner-confirmed deletion, with migration 0016; see [Phase 17 changes](#phase-17-changes) and [STORAGE.md](STORAGE.md). Offline tests only.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -525,10 +527,23 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
 - **Tests (offline):** `test_payments.py`, `test_admin_console.py`, `test_product_features.py`, `test_product_audit.py`, `test_admin_payments_migration.py`; existing tests updated where behaviour intentionally changed (music no longer a placeholder, image scenes render, new templates).
 - **Not verified live:** OnePAY (sandbox and real), payOS after the refactor, a real FFmpeg render with music and stills, and the new templates with paid providers.
 
+### Phase 17 changes
+
+- **Storage module** (`app/storage.py`): the media root (`REELFORGE_STORAGE_ROOT`, else `storage_dir`), ID-only paths (`file_in`, `asset_path`, which refuse separators and dots), per-plan quotas capped by `WORKSPACE_MEDIA_QUOTA_BYTES`, warning levels (70/80/90/100 %), `lock_workspace` before every store, kinds, the retention policy and `expirable_query`. `app/media_paths.py` re-exports it; every upload, worker and node that stores media now uses it (the render and clip workers and the image/voice store also take the studio lock now).
+- **Kinds** set at creation: `source`, `generated_image`, `scene_video`, `voice`, `subtitle`, `extracted_clip`, `final_render`; migration 0016 labels older assets from their step's node type.
+- **Expiry keeps the row** (`bytes` 0, `expired_at`, `expired_reason`, `expired_bytes`): usage sums, the dashboard's `bytes > 0` filter and publishing's existing `bytes > 0` check need no schema-dependent query; downloads answer 410 `media_expired`.
+- **Cleanup** (`app/media_maintenance.py`): `--intermediates` expires eligible intermediates (older than 30 days, run has a live final render, no publication) under row locks after a path-safety check, removes their files, and sweeps expired rows whose file survived; policy ages for partials (1 day), temp folders and orphans (3 days); `--dry-run` remains the default. A systemd timer at 03:00 is documented.
+- **API**: `GET /api/storage` (level, intermediate summary, retention), `DELETE /api/assets/{id}`, `POST /api/assets/delete`, `POST /api/storage/cleanup` (owner; preview or apply), `GET /api/admin/storage` (paginated, levels, disk), storage per studio in `GET /api/admin/workspaces`, `counts.storage_alerts`, plan `storage_limit_bytes`.
+- **Frontend**: storage meter and cleanup in Settings → Storage, a banner from 80 %, multi-select delete on Media, storage limits in Admin → Plans, a storage column in Studios, disk and levels in Operations, plan storage on Billing, a "file no longer available" placeholder.
+- **Also**: Background Music `mode` (loop or play once); a blank numeric setting in the runtime file (as systemd passes `KEY=`) now means its default instead of failing.
+- **Schema**: migration `0016_storage_lifecycle` (`plans.storage_limit_bytes`; `assets.kind`, `expired_at`, `expired_reason`, `expired_bytes`; `ix_assets_kind_created_at`), tested from 0015 and back.
+- **Tests**: `test_storage_lifecycle.py`, `test_storage_migration.py`; `test_reconciliation_workers.py` now sets the quota through `WORKSPACE_MEDIA_QUOTA_BYTES` instead of patching the removed `video_worker.workspace_media_quota`.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
 - **`system_settings` table:** `frontend_origin`, `secure_cookies`, `storage_dir`, `trial_project_limit`, `registration_enabled`.
+- **`plans` table:** `storage_limit_bytes` per plan (Phase 17).
 - **`workspace_settings` table:** `default_language`, `video_orientation`, `approval_required`, `default_platform`, `default_tone`, `default_duration`, `default_publish_time` (Phase 16).
 - **`user_profiles` table:** optional `display_name` (Phase 16).
 - **Environment variables (API and workers):**
@@ -537,6 +552,7 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
   - Provider settings: `DOLA_EXPERIMENTAL_ENABLED`, `DOLA_BASE_URL`, `DOLA_MEDIA_BASE_URL`, `DOLA_MAX_JOB_AGE_SECONDS`, `RUNWAY_OUTPUT_HOSTS`.
   - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `IMAGE_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `IMAGE_JOB_MAX_AGE_SECONDS`, `VOICE_CREDITS_PER_GENERATION`, `VOICE_JOB_MAX_AGE_SECONDS`, `RENDER_CREDITS_PER_JOB`, `RENDER_TIMEOUT_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
   - Rendering: `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`, `RENDER_SUBTITLE_FONT`, `RENDER_STILL_SECONDS`.
+  - Storage (Phase 17): `REELFORGE_STORAGE_ROOT`, `WORKSPACE_MEDIA_QUOTA_BYTES` (a cap), `REELFORGE_RETENTION_INTERMEDIATE_DAYS`, `REELFORGE_RETENTION_TEMP_DAYS`, `REELFORGE_RETENTION_PARTIAL_DAYS`, `REELFORGE_RETENTION_ORPHAN_DAYS`.
   - Card payments (Phase 14): `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`.
   - YouTube OAuth: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `REELFORGE_TOKEN_ENCRYPTION_KEY`.
   - Runtime file and logs: `REELFORGE_ENV_FILE` (default `.env.runtime`), `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL`.

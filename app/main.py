@@ -25,7 +25,7 @@ from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import UserProfile
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
 from app import (auth_security, billing, heartbeat, jobs, media_maintenance, payment_providers, payments, publications,
-                 reconciliation, run_summary, sources, usage)
+                 reconciliation, run_summary, sources, storage, usage)
 from app.payment_providers import onepay
 from app.models import CreditReconciliation
 # Re-exported: existing callers import video_provider_config_issue from app.main.
@@ -76,9 +76,8 @@ def workspace_settings(db, workspace_id):
     return values
 
 
-def media_root(db):
-    path = Path(setting(db, "storage_dir"))
-    return path if path.is_absolute() else ROOT / path
+# Storage paths, quotas and retention live in app/storage.py; this name stays for existing importers.
+media_root = storage.media_root
 
 
 if not inspect(engine).has_table("system_settings"):
@@ -165,16 +164,6 @@ def media_signature_matches(content_type: str, path: Path) -> bool:
     return signatures.get(content_type, False)
 
 
-def workspace_media_quota():
-    try:
-        quota = int(os.environ.get("WORKSPACE_MEDIA_QUOTA_BYTES", str(1024 * 1024 * 1024)))
-    except ValueError as exc:
-        raise RuntimeError("WORKSPACE_MEDIA_QUOTA_BYTES must be a positive integer") from exc
-    if quota <= 0:
-        raise RuntimeError("WORKSPACE_MEDIA_QUOTA_BYTES must be a positive integer")
-    return quota
-
-
 class Credentials(BaseModel):
     email: str
     password: str
@@ -196,6 +185,8 @@ class PlanInput(BaseModel):
     monthly_credits: int = Field(default=0, ge=0)
     is_active: bool = True
     price_vnd: int | None = Field(default=None, ge=2000, le=2_000_000_000)
+    # Media storage per workspace (Phase 17); null uses WORKSPACE_MEDIA_QUOTA_BYTES. Left out, it is unchanged.
+    storage_limit_bytes: int | None = Field(default=None, ge=64 * 1024 * 1024, le=100 * 1024 ** 4)
 
 
 class CheckoutInput(BaseModel):
@@ -583,13 +574,15 @@ def dashboard(request: Request):
     with Session() as db:
         ws = workspace_for(request, db)
         projects = db.scalars(select(Project).where(Project.workspace_id == ws.id).order_by(Project.created_at.desc())).all()
-        assets = db.scalars(select(Asset).where(Asset.workspace_id == ws.id).order_by(Asset.created_at.desc())).all()
+        # An expired or deleted asset keeps its row with 0 bytes (app/storage.py); it is not listed.
+        assets = db.scalars(select(Asset).where(Asset.workspace_id == ws.id, Asset.bytes > 0)
+                            .order_by(Asset.created_at.desc())).all()
         workflows = db.scalars(select(Workflow).where(Workflow.workspace_id == ws.id)).all()
         user = authorize(request, db)
         subscription = db.get(Subscription, ws.id)
         plan = db.get(Plan, subscription.plan_code) if subscription else None
         return {"workspace": {"id": ws.id, "name": ws.name, "plan": plan.code if plan else ws.plan, "subscription_status": effective_status(subscription) if subscription else "unavailable"}, "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": workflow_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None},
-                "storage": {"used_bytes": sum(a.bytes or 0 for a in assets), "quota_bytes": workspace_media_quota()}}
+                "storage": storage.usage(db, ws.id)}
 
 
 @app.get("/api/settings")
@@ -600,6 +593,10 @@ def get_settings(request: Request):
         system = None
         if user.is_admin:
             system = {key: setting(db, key) for key in SYSTEM_DEFAULTS}
+            # The folder in use: REELFORGE_STORAGE_ROOT wins over the stored setting (app/storage.py).
+            system["storage_dir"] = str(storage.media_root(db))
+            from_env = bool(os.environ.get(storage.STORAGE_ROOT_ENV, "").strip())
+            system["storage_dir_source"] = "environment" if from_env else "setting"
         profile = db.get(UserProfile, user.id)
         return {"workspace": workspace_settings(db, ws.id), "system": system,
                 "profile": {"display_name": profile.display_name if profile else None}}
@@ -690,13 +687,26 @@ def update_default_models(data: DefaultModelsInput, request: Request):
         return {"default_models": chosen}
 
 
+def retention_data(policy: storage.RetentionPolicy) -> dict:
+    return {"intermediate_days": policy.intermediate_days, "temp_days": policy.temp_days,
+            "partial_days": policy.partial_days}
+
+
+def intermediate_summary(db, workspace_id, project_id=None) -> dict:
+    """Intermediate media a user may remove now: their run has a final render and no publication uses them."""
+    found = storage.expirable_query(workspace_id=workspace_id, project_id=project_id).subquery()
+    count, total = db.execute(select(func.count(), func.coalesce(func.sum(found.c.bytes), 0)).select_from(found)).one()
+    return {"assets": int(count), "bytes": int(total)}
+
+
 @app.get("/api/storage")
 def storage_overview(request: Request):
-    """How much media the workspace stores, by kind, against its quota."""
+    """How much media the workspace stores, by type, against its plan's quota, with the warning level."""
     with Session() as db:
         ws = workspace_for(request, db)
-        by_type = media_maintenance.usage_by_type(db, ws.id)
-        return {"used_bytes": sum(by_type.values()), "quota_bytes": workspace_media_quota(), "by_type": by_type}
+        return {**storage.usage(db, ws.id), "by_type": media_maintenance.usage_by_type(db, ws.id),
+                "intermediate": intermediate_summary(db, ws.id),
+                "retention": retention_data(storage.RetentionPolicy.from_environment())}
 
 
 @app.put("/api/settings/system")
@@ -719,7 +729,9 @@ def update_system_settings(data: SystemSettingsInput, request: Request):
 def plan_data(plan):
     return {"code": plan.code, "name": plan.name, "project_limit": plan.project_limit,
             "workflow_limit": plan.workflow_limit, "monthly_credits": plan.monthly_credits,
-            "is_active": plan.is_active, "price_vnd": plan.price_vnd}
+            "is_active": plan.is_active, "price_vnd": plan.price_vnd,
+            "storage_limit_bytes": plan.storage_limit_bytes,
+            "storage_quota_bytes": storage.effective_quota(plan.storage_limit_bytes)}
 
 
 def order_data(order):
@@ -1017,6 +1029,7 @@ def admin_overview(request: Request):
         users = select(User.id)
         stuck = jobs.stuck_jobs(db, limit=100)
         since = datetime.now(timezone.utc) - timedelta(hours=24)
+        levels = storage.level_counts(db)
         return {
             "counts": {
                 "users": count_of(db, users),
@@ -1029,7 +1042,10 @@ def admin_overview(request: Request):
                                                                              WorkflowJob.updated_at >= since)),
                 "stuck_jobs": len(stuck["expired_leases"]) + len(stuck["overdue"]),
                 "pending_payments": count_of(db, select(PaymentOrder.id).where(PaymentOrder.status == "pending")),
+                # Studios at 90 % of their storage or more (the levels below come from one grouped query).
+                "storage_alerts": sum(levels[name] for name in ("critical", "full")),
             },
+            "storage_levels": levels,
             "plans": [plan_data(p) for p in db.scalars(select(Plan).order_by(Plan.code))],
             "payment_providers": payment_providers.readiness(),
         }
@@ -1146,7 +1162,9 @@ def admin_workspaces(request: Request, q: str | None = Query(default=None, max_l
             query = query.where(Subscription.status == status)
         total = count_of(db, query)
         rows = db.execute(query.order_by(Workspace.created_at.desc(), Workspace.id).limit(limit).offset(offset)).all()
-        return {"items": [admin_workspace(*row) for row in rows], "total": total, "limit": limit, "offset": offset}
+        stored = storage.usage_by_workspace(db, [row[0].id for row in rows])
+        return {"items": [{**admin_workspace(*row), "storage": stored.get(row[0].id)} for row in rows],
+                "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/admin/workspaces/{workspace_id}")
@@ -1172,6 +1190,7 @@ def admin_workspace_detail(workspace_id: str, request: Request):
                            "workflows": count_of(db, select(Workflow.id).where(Workflow.workspace_id == workspace_id)),
                            "runs": count_of(db, select(WorkflowRun.id).where(WorkflowRun.workspace_id == workspace_id))},
                 "storage_bytes": sum(media_maintenance.usage_by_type(db, workspace_id).values()),
+                "storage": storage.usage(db, workspace_id),
                 "ledger": [{"id": e.id, "delta": e.delta, "reason": e.reason, "created_at": _iso(e.created_at)}
                            for e in ledger],
                 "orders": [order_data(order) for order in orders]}
@@ -1278,10 +1297,26 @@ def admin_jobs(request: Request, state: Literal["queued", "leased", "succeeded",
 
 
 @app.get("/api/admin/storage")
-def admin_storage(request: Request):
+def admin_storage(request: Request, limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
+    """Studios by storage use (fullest first, one page), how many are at each warning level, and the disk."""
     with Session() as db:
         admin_for(request, db)
-        return {"workspaces": media_maintenance.storage_usage(db), "quota_bytes": workspace_media_quota()}
+        usage_rows = storage.usage_by_workspace(db)
+        names = dict(db.execute(select(Workspace.id, Workspace.name)).all())
+        files = dict(db.execute(select(Asset.workspace_id, func.count(Asset.id)).where(Asset.bytes > 0)
+                                .group_by(Asset.workspace_id)).all())
+        # "bytes" repeats used_bytes for clients of the Phase 13 response.
+        items = sorted(({"workspace_id": workspace_id, "name": names.get(workspace_id, ""),
+                         "files": int(files.get(workspace_id, 0)), "bytes": item["used_bytes"], **item}
+                        for workspace_id, item in usage_rows.items()),
+                       key=lambda item: (-item["percent"], -item["used_bytes"], item["name"]))
+        levels = {name: 0 for _, name in storage.LEVELS}
+        for item in items:
+            if item["level"] in levels:
+                levels[item["level"]] += 1
+        return {"workspaces": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset,
+                "levels": levels, "disk": storage.disk_usage(db), "default_quota_bytes": storage.default_quota(),
+                "retention": retention_data(storage.RetentionPolicy.from_environment())}
 
 
 @app.post("/api/admin/accounts", status_code=201)
@@ -1335,7 +1370,10 @@ def update_plan(code: str, data: PlanInput, request: Request):
             raise HTTPException(400, "Trial cannot have a checkout price")
         if not data.is_active and db.scalar(select(func.count()).select_from(Subscription).where(Subscription.plan_code == code, Subscription.status == "active")):
             raise HTTPException(409, "Move active subscriptions before disabling this plan")
-        for field, value in data.model_dump().items():
+        values = data.model_dump()
+        if "storage_limit_bytes" not in data.model_fields_set:
+            values.pop("storage_limit_bytes")  # an older client: keep the plan's storage limit
+        for field, value in values.items():
             setattr(plan, field, value)
         if code == "trial":
             db.get(SystemSetting, "trial_project_limit").value = json.dumps(data.project_limit)
@@ -2279,13 +2317,15 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
     with Session.begin() as db:
         ws = workspace_for(request, db)
         active_plan(db, ws)
-        # Serialize quota checks for simultaneous uploads in the same workspace.
-        db.execute(update(Workspace).where(Workspace.id == ws.id).values(name=Workspace.name))
-        stored_bytes = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.workspace_id == ws.id))
-        quota = workspace_media_quota()
+        # Serialize quota checks for simultaneous uploads (and workers) in the same workspace.
+        storage.lock_workspace(db, ws.id)
+        stored_bytes = storage.stored_bytes(db, ws.id)
+        quota = storage.quota_bytes(db, ws.id)
+        if stored_bytes >= quota:
+            raise HTTPException(413, {"code": "storage_full", "message": "Workspace media quota reached"})
         asset_id = ident()
         filename = Path(file.filename or "upload").name[:255]
-        target = media_root(db) / ws.id / asset_id
+        target = storage.asset_path(db, ws.id, asset_id)
         target.parent.mkdir(parents=True, exist_ok=True)
         size = 0
         try:
@@ -2299,7 +2339,8 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
                     out.write(chunk)
             if not media_signature_matches(content_type, target):
                 raise HTTPException(415, "File contents do not match media type")
-            asset = Asset(id=asset_id, workspace_id=ws.id, filename=filename, bytes=size, content_type=content_type)
+            asset = Asset(id=asset_id, workspace_id=ws.id, filename=filename, bytes=size, content_type=content_type,
+                          kind=storage.SOURCE)
             db.add(asset)
         except Exception:
             target.unlink(missing_ok=True)
@@ -2314,4 +2355,99 @@ def download_asset(asset_id: str, request: Request):
         asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.workspace_id == ws.id))
         if not asset:
             raise HTTPException(404, "Asset not found")
-        return FileResponse(media_root(db) / ws.id / asset.id, media_type=asset.content_type, filename=asset.filename)
+        if asset.bytes == 0 and asset.expired_at is not None:
+            raise HTTPException(410, {"code": "media_expired", "reason": asset.expired_reason,
+                                      "message": "This media file was removed"})
+        path = storage.asset_path(db, ws.id, asset.id)
+        if not path.is_file():
+            raise HTTPException(404, "Media file missing")
+        return FileResponse(path, media_type=asset.content_type, filename=asset.filename)
+
+
+def workspace_owner(request: Request, db):
+    ws = workspace_for(request, db)
+    membership = db.get(Membership, (authorize(request, db).id, ws.id))
+    if not membership or membership.role != "owner":
+        raise HTTPException(403, "Workspace owner required")
+    return ws
+
+
+def delete_media(request: Request, asset_ids: list[str]) -> dict:
+    """Remove media a user chose. Each row stays with 0 bytes (lineage, run history); its file goes after commit.
+    Media an unfinished publication still needs is skipped."""
+    same_origin(request)
+    now = datetime.now(timezone.utc)
+    deleted, skipped, freed = [], [], 0
+    with Session.begin() as db:
+        ws = workspace_owner(request, db)
+        root = storage.media_root(db)
+        storage.lock_workspace(db, ws.id)
+        rows = {row.id: row for row in db.scalars(select(Asset).where(Asset.workspace_id == ws.id,
+                                                                       Asset.id.in_(asset_ids)).with_for_update())}
+        for asset_id in dict.fromkeys(asset_ids):
+            asset = rows.get(asset_id)
+            if asset is None or asset.expired_at is not None:
+                skipped.append({"id": asset_id, "reason": "not_found"})
+            elif blocker := storage.deletion_blocker(db, asset):
+                skipped.append({"id": asset_id, "reason": blocker})
+            elif media_maintenance.check_asset_file(root, ws.id, asset.id) == "unsafe":
+                skipped.append({"id": asset_id, "reason": "unsafe_path"})
+            else:
+                freed += storage.expire(db, asset, reason="deleted", now=now)
+                deleted.append(asset_id)
+    for asset_id in deleted:
+        media_maintenance.remove_asset_file(root, ws.id, asset_id)
+    log_event(logger, "media_deleted", workspace_id=ws.id, assets=len(deleted), freed_bytes=freed,
+              skipped=len(skipped))
+    return {"deleted": deleted, "skipped": skipped, "freed_bytes": freed}
+
+
+class MediaDeleteInput(BaseModel):
+    asset_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class StorageCleanupInput(BaseModel):
+    project_id: str | None = None
+    apply: bool = False
+
+
+@app.delete("/api/assets/{asset_id}")
+def delete_asset(asset_id: str, request: Request):
+    result = delete_media(request, [asset_id])
+    if not result["deleted"]:
+        reason = result["skipped"][0]["reason"]
+        if reason == "not_found":
+            raise HTTPException(404, "Asset not found")
+        raise HTTPException(409, {"code": reason, "message": "A publication still needs this media"})
+    return result
+
+
+@app.post("/api/assets/delete")
+def delete_assets(data: MediaDeleteInput, request: Request):
+    return delete_media(request, data.asset_ids)
+
+
+@app.post("/api/storage/cleanup")
+def storage_cleanup(data: StorageCleanupInput, request: Request):
+    """Preview (default) or remove the workspace's intermediate media whose run already has its final render."""
+    same_origin(request)
+    now = datetime.now(timezone.utc)
+    with Session.begin() as db:
+        ws = workspace_owner(request, db) if data.apply else workspace_for(request, db)
+        if data.project_id is not None and not db.scalar(
+                select(Project.id).where(Project.id == data.project_id, Project.workspace_id == ws.id)):
+            raise HTTPException(404, "Project not found")
+        if not data.apply:
+            return {**intermediate_summary(db, ws.id, data.project_id), "applied": False}
+        root = storage.media_root(db)
+        storage.lock_workspace(db, ws.id)
+        # A file whose path the safety check refuses is left alone, with its row.
+        found = [asset for asset in db.scalars(storage.expirable_query(workspace_id=ws.id, project_id=data.project_id)
+                                               .with_for_update())
+                 if media_maintenance.check_asset_file(root, ws.id, asset.id) != "unsafe"]
+        freed = sum(storage.expire(db, asset, reason="cleanup", now=now) for asset in found)
+        removed = [asset.id for asset in found]
+    for asset_id in removed:
+        media_maintenance.remove_asset_file(root, ws.id, asset_id)
+    log_event(logger, "media_cleanup", workspace_id=ws.id, assets=len(removed), freed_bytes=freed)
+    return {"assets": len(removed), "bytes": freed, "applied": True}

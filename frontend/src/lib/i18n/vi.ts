@@ -41,6 +41,39 @@ export const vi = {
     previous: "Trước",
     next: "Tiếp",
   },
+  storage: {
+    usedOf: (used: string, quota: string) => `${used} / ${quota}`,
+    levels: {
+      ok: "",
+      notice: "Đã dùng hơn 70% dung lượng.",
+      warning: "Đã dùng hơn 80% dung lượng. Hãy xoá media không cần nữa.",
+      critical: "Đã dùng hơn 90% dung lượng. Sắp không thể tải lên hoặc tạo media mới.",
+      full: "Đã hết dung lượng: không thể tải lên hoặc tạo media mới. Media hiện có vẫn xem và tải xuống được.",
+    },
+    banner: {
+      warning: (percent: string) => `Studio đã dùng ${percent}% dung lượng lưu trữ.`,
+      critical: (percent: string) => `Studio đã dùng ${percent}% dung lượng: sắp không thể tạo media mới.`,
+      full: (percent: string) => `Hết dung lượng lưu trữ (${percent}%): tải lên và tạo media mới đang bị chặn.`,
+    },
+    manage: "Quản lý dung lượng",
+    retention: (days: number, tempDays: number) =>
+      days
+        ? `Media trung gian (clip cảnh, giọng đọc, ảnh tạo, clip cắt từ nguồn) được xoá ${days} ngày sau khi có video hoàn chỉnh; tệp tạm sau ${tempDays} ngày. Video hoàn chỉnh và tệp bạn tải lên không bao giờ bị xoá tự động.`
+        : `Media trung gian được giữ đến khi bạn xoá; tệp tạm được xoá sau ${tempDays} ngày. Video hoàn chỉnh và tệp bạn tải lên không bao giờ bị xoá tự động.`,
+    intermediateTitle: "Media trung gian",
+    intermediateHint: (days: number) =>
+      `Clip cảnh, giọng đọc, ảnh tạo và clip cắt từ nguồn của các lượt chạy đã render xong video hoàn chỉnh${days ? ` (tự xoá sau ${days} ngày)` : ""}. Media đang dùng cho bài đăng được giữ lại.`,
+    intermediateNow: (count: number, size: string) => `Có thể xoá ngay: ${count} tệp · ${size}`,
+    scope: "Phạm vi",
+    allProjects: "Mọi dự án",
+    removeIntermediate: "Xoá media trung gian",
+    confirmTitle: "Xoá media trung gian?",
+    confirmDescription: (count: number, size: string) =>
+      `${count} tệp (${size}) sẽ bị xoá. Video hoàn chỉnh vẫn xem, tải xuống và đăng được, nhưng không thể render lại các lượt chạy này. Không thể hoàn tác.`,
+    nothingToRemove: "Không có media trung gian nào có thể xoá trong phạm vi này.",
+    removeConfirm: "Xoá",
+    cleaned: (count: number, size: string) => `Đã xoá ${count} tệp, giải phóng ${size}.`,
+  },
   nav: {
     groups: { main: "Chính", ai: "AI", workspace: "Studio" },
     home: "Trang chủ",
@@ -764,6 +797,7 @@ export const vi = {
       facebook_description: "Mô tả Facebook",
       music_file: "Tệp nhạc",
       music_volume: "Âm lượng nhạc (%)",
+      music_mode: "Khi nhạc ngắn hơn video",
     } as Record<string, string>,
     hints: {
       brief: "Dùng khi không có gì nối vào cổng Prompt; để trống sẽ dùng chủ đề dự án.",
@@ -786,6 +820,7 @@ export const vi = {
       tiktok_caption: "Để trống để dùng gợi ý từ bước Thông tin đăng. TikTok nhận video vào hộp thư nháp; bạn hoàn tất đăng trong ứng dụng.",
       music_file: "Tải tệp MP3, WAV hoặc OGG bạn có quyền sử dụng lên Media. Nhạc lặp lại hết video.",
       music_volume: "So với lời dẫn; 10–20% thường vừa nghe. Nối cổng Nhạc vào bước Render.",
+      music_mode: "Nhạc dài hơn video luôn được cắt ở cuối video.",
     } as Record<string, string>,
     placeholders: {
       brief: "Ví dụ: Giới thiệu khu rừng về đêm cho người mới",
@@ -846,6 +881,7 @@ export const vi = {
       recap_style: { summary: "Tóm tắt", storytelling: "Kể chuyện", review: "Review", explainer: "Giải thích" },
       spoiler_level: { none: "Không spoiler", light: "Spoiler nhẹ", full: "Toàn bộ câu chuyện" },
       cut_mode: { copy_first: "Giữ mã hóa, dự phòng mã hóa lại", reencode: "Luôn mã hóa lại (chính xác)" },
+      music_mode: { loop: "Lặp lại", once: "Phát một lần" },
     } as Record<string, Record<string, string>>,
     errors: {
       invalid_config: "Cài đặt không hợp lệ.",
@@ -927,6 +963,19 @@ export const vi = {
     selectHint: "Chọn một tệp để xem trước và xem chi tiết.",
     noProject: "Không thuộc dự án",
     attached: "Đã cập nhật dự án của tệp.",
+    projectFilter: "Lọc theo dự án",
+    allProjects: "Mọi dự án",
+    selectAll: "Chọn tất cả",
+    selectedCount: (n: number) => `Đã chọn ${n}`,
+    pick: (name: string) => `Chọn ${name}`,
+    delete: "Xoá",
+    deleteSelected: "Xoá mục đã chọn",
+    deleteTitle: (n: number) => (n === 1 ? "Xoá tệp này?" : `Xoá ${n} tệp?`),
+    deleteDescription: (size: string) =>
+      `Giải phóng ${size}. Tệp bị xoá khỏi máy chủ; lịch sử chạy vẫn ghi lại nhưng không thể render lại từ tệp này. Không thể hoàn tác.`,
+    deleted: (n: number, size: string) => `Đã xoá ${n} tệp, giải phóng ${size}.`,
+    inUse: "Một số tệp đang dùng cho bài đăng chưa hoàn tất nên được giữ lại.",
+    unavailable: "Tệp không còn",
   },
   publishing: {
     title: "Đăng tải",
@@ -1157,6 +1206,7 @@ export const vi = {
     paymentFailed: "Thanh toán không thành công. Bạn có thể thử lại.",
     paymentInvalid: "Không xác minh được kết quả thanh toán nên đơn chưa được ghi nhận. Dùng “Kiểm tra” để đối chiếu.",
     history: { plan: "Gói", method: "Phương thức", amount: "Số tiền", status: "Trạng thái", created: "Tạo lúc", paid: "Thanh toán lúc", reference: "Mã đơn" },
+    storage: (size: string) => `${size} lưu trữ media`,
   },
   settings: {
     title: "Cài đặt",
@@ -1216,7 +1266,8 @@ export const vi = {
       pathHint: "Chuyển dữ liệu media cần thực hiện trên server.",
       quota: (used: string, quota: string) => `${used} / ${quota}`,
       byType: { video: "Video", audio: "Âm thanh", image: "Ảnh", document: "Tài liệu" },
-      cleanupHint: "Dọn tệp tạm và tệp mồ côi bằng lệnh python -m app.media_maintenance trên server (mặc định chỉ xem trước).",
+      cleanupHint: "Tệp tạm và media hết hạn được máy chủ dọn hằng ngày. Video hoàn chỉnh và tệp bạn tải lên không bao giờ bị xoá tự động.",
+      pathFromEnv: "Đặt bằng biến REELFORGE_STORAGE_ROOT trên máy chủ.",
     },
     security: {
       signOut: "Đăng xuất khỏi thiết bị này",
@@ -1235,7 +1286,7 @@ export const vi = {
   admin: {
     title: "Quản trị",
     subtitle: "Tài khoản, studio, gói dịch vụ và credits của toàn hệ thống.",
-    stats: { users: "Người dùng", studios: "Studio", plans: "Gói dịch vụ", pendingPayments: "Thanh toán chờ", pendingReconciliation: "Chờ đối soát", stuckJobs: "Tác vụ kẹt" },
+    stats: { users: "Người dùng", studios: "Studio", plans: "Gói dịch vụ", pendingPayments: "Thanh toán chờ", pendingReconciliation: "Chờ đối soát", stuckJobs: "Tác vụ kẹt", storageAlerts: "Studio ≥ 90% dung lượng" },
     tabs: { users: "Người dùng", studios: "Studio & credits", plans: "Cấu hình gói", payments: "Thanh toán", reconciliation: "Đối soát credits", operations: "Vận hành" },
     reconciliation: {
       description: "Kiểm tra các yêu cầu chưa rõ kết quả với dữ liệu của provider, sau đó xác nhận tính phí hoặc hoàn credits đã giữ. Mỗi quyết định là cố định và được lưu để kiểm tra sau này.",
@@ -1316,7 +1367,7 @@ export const vi = {
       reason: "Lý do",
       expires: (date: string) => `Hết hạn ${date}`,
       owner: "Chủ sở hữu",
-      columns: { studio: "Studio", owner: "Chủ sở hữu", plan: "Gói", credits: "Credits", expires: "Hết hạn", status: "Trạng thái", actions: "Thao tác" },
+      columns: { studio: "Studio", owner: "Chủ sở hữu", plan: "Gói", credits: "Credits", expires: "Hết hạn", status: "Trạng thái", actions: "Thao tác", storage: "Lưu trữ" },
       noEnd: "Không thời hạn",
       viewDetails: "Xem chi tiết",
       changePlan: "Đổi gói",
@@ -1344,6 +1395,8 @@ export const vi = {
       monthlyCredits: "Credits mỗi tháng",
       active: "Cho phép sử dụng",
       save: "Lưu gói",
+      storageLimit: "Dung lượng lưu trữ (GB)",
+      storageDefault: (size: string) => `Mặc định máy chủ (${size})`,
     },
     saved: "Đã lưu thay đổi.",
     operations: {
@@ -1363,6 +1416,8 @@ export const vi = {
       files: (n: number) => `${n} tệp`,
       columns: { worker: "Worker", queue: "Hàng đợi", state: "Trạng thái", attempts: "Lần thử", updated: "Cập nhật", error: "Lỗi" },
       noJobs: "Không có tác vụ phù hợp.",
+      disk: (used: string, total: string, free: string) => `Ổ đĩa media: ${used} / ${total} (còn trống ${free})`,
+      storageLevel: { notice: "≥70%", warning: "≥80%", critical: "≥90%", full: "Đầy" },
     },
     payments: {
       columns: { order: "Mã đơn", user: "Người dùng", studio: "Studio", plan: "Gói", provider: "Cổng thanh toán", amount: "Số tiền", status: "Trạng thái", created: "Tạo lúc", paid: "Thanh toán lúc", reference: "Mã giao dịch", actions: "Thao tác" },

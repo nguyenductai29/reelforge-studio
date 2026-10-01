@@ -91,7 +91,7 @@ export type Dashboard = {
   assets: Asset[];
   workflows: Workflow[];
   limits: { projects: number | null; workflows: number | null };
-  storage?: { used_bytes: number; quota_bytes: number };
+  storage?: StorageLevelInfo;
 };
 
 export type RunStatus =
@@ -199,6 +199,10 @@ export type Plan = {
   monthly_credits: number;
   is_active: boolean;
   price_vnd: number | null;
+  /** Media a workspace on this plan may store; null uses the server default. */
+  storage_limit_bytes: number | null;
+  /** The limit in force (the server may cap it). */
+  storage_quota_bytes: number;
 };
 export type PaymentMethod = "vietqr" | "card";
 export type Order = {
@@ -284,10 +288,21 @@ export type ChannelStatus = {
 };
 
 export type DefaultModels = Record<"text" | "image" | "video" | "voice" | "transcription", string | null>;
-export type StorageUsage = {
-  used_bytes: number;
-  quota_bytes: number;
+/** ok below 70 %, then notice (70), warning (80), critical (90) and full (100: nothing new can be stored). */
+export type StorageLevel = "ok" | "notice" | "warning" | "critical" | "full";
+export type StorageLevelInfo = { used_bytes: number; quota_bytes: number; percent: number; level: StorageLevel };
+export type RetentionInfo = { intermediate_days: number; temp_days: number; partial_days: number };
+export type StorageUsage = StorageLevelInfo & {
   by_type: Record<"video" | "audio" | "image" | "document", number>;
+  /** Intermediate media a user may remove now (their run has a final render). */
+  intermediate: { assets: number; bytes: number };
+  retention: RetentionInfo;
+};
+export type StorageCleanup = { assets: number; bytes: number; applied: boolean };
+export type MediaDeleteResult = {
+  deleted: string[];
+  skipped: { id: string; reason: "not_found" | "asset_in_use" | "unsafe_path" }[];
+  freed_bytes: number;
 };
 
 export type WorkerHealth = {
@@ -333,8 +348,14 @@ export type AdminJobs = {
   };
 };
 export type AdminStorage = {
-  workspaces: { workspace_id: string; name: string; files: number; bytes: number }[];
-  quota_bytes: number;
+  workspaces: (StorageLevelInfo & { workspace_id: string; name: string; files: number })[];
+  total: number;
+  limit: number;
+  offset: number;
+  levels: Record<Exclude<StorageLevel, "ok">, number>;
+  disk: { total_bytes: number; used_bytes: number; free_bytes: number; percent: number } | null;
+  default_quota_bytes: number;
+  retention: RetentionInfo;
 };
 export type RunStepItem = { node_id: string; node_type: NodeType; status: RunStatus; detail: string; error_code: string | null };
 /** GET /api/workflow-runs/{id}/summary: progress, results, credits and publishing of one run. */
@@ -398,6 +419,8 @@ export type SystemSettings = {
   frontend_origin: string;
   secure_cookies: boolean;
   storage_dir: string;
+  /** Where the folder in use comes from: REELFORGE_STORAGE_ROOT or the stored setting. */
+  storage_dir_source?: "environment" | "setting";
   trial_project_limit: number;
   registration_enabled: boolean;
 };
@@ -420,7 +443,10 @@ export type AdminOverview = {
     failed_jobs_24h: number;
     stuck_jobs: number;
     pending_payments: number;
+    /** Studios at 90 % of their storage or more. */
+    storage_alerts: number;
   };
+  storage_levels: Record<Exclude<StorageLevel, "ok">, number>;
   plans: Plan[];
   payment_providers: PaymentProviderStatus[];
 };
@@ -449,11 +475,13 @@ export type AdminWorkspace = {
   ends_at: string | null;
   credits: number;
   created_at: string | null;
+  storage?: StorageLevelInfo;
 };
 export type AdminWorkspaceDetail = AdminWorkspace & {
   members: { email: string; role: string }[];
   counts: { projects: number; workflows: number; runs: number };
   storage_bytes: number;
+  storage: StorageLevelInfo;
   ledger: { id: string; delta: number; reason: string; created_at: string }[];
   orders: Order[];
 };

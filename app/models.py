@@ -76,6 +76,13 @@ class Asset(Base):
     # assets keep working on a database that has not reached migration 0014 yet.
     source_asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # Migration 0016 (storage lifecycle, app/storage.py): what the asset is, and when its file was removed.
+    # An expired or deleted asset keeps its row with bytes 0; expired_bytes records what was freed.
+    # Deferred like source_asset_id, so asset queries keep working before the migration runs.
+    kind: Mapped[str | None] = mapped_column(String(24), nullable=True, deferred=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
+    expired_reason: Mapped[str | None] = mapped_column(String(24), nullable=True, deferred=True)
+    expired_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True, deferred=True)
 
 
 class Workflow(Base):
@@ -108,6 +115,8 @@ class Plan(Base):
     monthly_credits: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     price_vnd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Migration 0016: media storage per workspace on this plan; null uses WORKSPACE_MEDIA_QUOTA_BYTES.
+    storage_limit_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True, deferred=True)
 
 
 class Subscription(Base):

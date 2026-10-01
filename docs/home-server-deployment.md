@@ -30,8 +30,9 @@ Background services:
   - ReelForge video worker
   - ReelForge YouTube worker
 
-Persistent media:
-  /srv/data/reelforge/media
+Persistent media (HDD):
+  /srv/data/videos/reelforge   (REELFORGE_STORAGE_ROOT)
+  /srv/data/backups/reelforge  (database dumps)
 ```
 
 The frontend is the only service exposed through Cloudflare. FastAPI and PostgreSQL remain private to the home server.
@@ -609,28 +610,92 @@ Once an account exists, the command prints that there is nothing to do and exits
 
 ## 11. Persistent media on the HDD
 
-Video and uploaded media can consume substantial disk space. Use the HDD rather than the OS SSD.
-
-Create:
-
-```bash
-sudo mkdir -p /srv/data/reelforge/media
-sudo chown -R tai:tai /srv/data/reelforge
-```
-
-Verify:
-
-```bash
-ls -lah /srv/data/reelforge
-```
-
-After the application is running, configure the ReelForge media/storage path in System Settings to:
+Keep the OS, the application, PostgreSQL and Docker/system files on the SSD. Put media and backups on the HDD, mounted at `/srv/data`; PostgreSQL metadata is small next to the video files.
 
 ```text
-/srv/data/reelforge/media
+/srv/data/
+├── backups/reelforge/   PostgreSQL dumps
+├── images/              other projects
+├── uploads/             other projects
+└── videos/reelforge/    every ReelForge media file (one storage root)
 ```
 
-Back up the PostgreSQL database and this media directory together. Database rows contain asset metadata, while the binary media files live on disk.
+ReelForge keeps all of its media (uploads, generated images, voice, clips and final videos) under one root, named by workspace and asset IDs only: `<root>/<workspace_id>/<asset_id>`. One root keeps quotas, lineage and cleanup in one place. See [STORAGE.md](STORAGE.md).
+
+Create the folders and point every process at the root:
+
+```bash
+sudo mkdir -p /srv/data/videos/reelforge /srv/data/backups/reelforge
+sudo chown -R tai:tai /srv/data/videos/reelforge /srv/data/backups/reelforge
+echo 'REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge' | sudo tee -a /etc/reelforge/runtime.env
+```
+
+`REELFORGE_STORAGE_ROOT` takes precedence over the stored `storage_dir` setting. Settings → Storage shows the folder in use to the system admin. Mount the HDD itself at `/srv/data` rather than linking the root: cleanup refuses to delete through symbolic links.
+
+**Upgrading an installation that used `/srv/data/reelforge/media`:** either keep it by setting `REELFORGE_STORAGE_ROOT=/srv/data/reelforge/media`, or move it:
+
+1. Stop the API and every worker.
+2. Run `rsync -a /srv/data/reelforge/media/ /srv/data/videos/reelforge/`.
+3. Set the variable and start the services.
+4. Check that media opens, then remove the old folder.
+
+**Quotas.** Each plan has a storage limit (Trial 1 GB, Standard 10 GB, Pro 30 GB after migration 0016; edit them in Admin → Plans). Keep the sum you expect to sell within the HDD's capacity. `WORKSPACE_MEDIA_QUOTA_BYTES`, when set, caps every studio.
+
+**Backups.**
+
+- Dump PostgreSQL daily to `/srv/data/backups/reelforge`, for example `pg_dump -Fc reelforge_studio_db > /srv/data/backups/reelforge/$(date +%F).dump`.
+- A backup on the same HDD does **not** protect against that disk failing. Copy the dumps, and `REELFORGE_TOKEN_ENCRYPTION_KEY`, to another machine or disk too.
+- Do not duplicate the full video tree on the same HDD by default. If the videos matter, `rsync` them to a second disk or host.
+
+### Daily media cleanup (03:00)
+
+Intermediate media (scene clips, narration, generated images, extracted clips) of runs that have their final video expires after 30 days. Worker leftovers expire after 1–3 days. Final videos and uploads are never removed automatically.
+
+Create `/etc/systemd/system/reelforge-media-maintenance.service`:
+
+```ini
+[Unit]
+Description=ReelForge Studio daily media maintenance
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=tai
+Group=tai
+WorkingDirectory=/home/tai/apps/reelforge-studio
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.media_maintenance --apply --intermediates
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/reelforge/runtime.env
+Nice=10
+IOSchedulingClass=idle
+```
+
+And `/etc/systemd/system/reelforge-media-maintenance.timer`:
+
+```ini
+[Unit]
+Description=Run ReelForge media maintenance daily
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Preview once, then enable:
+
+```bash
+cd ~/apps/reelforge-studio
+REELFORGE_ENV_FILE=/etc/reelforge/runtime.env .venv/bin/python -m app.media_maintenance --intermediates
+sudo systemctl daemon-reload
+sudo systemctl enable --now reelforge-media-maintenance.timer
+systemctl list-timers reelforge-media-maintenance.timer
+journalctl -u reelforge-media-maintenance
+```
+
+The retention ages are `REELFORGE_RETENTION_*` in the runtime file. Set `REELFORGE_RETENTION_INTERMEDIATE_DAYS=0` to keep intermediates.
 
 ---
 
@@ -980,7 +1045,7 @@ Never commit real payOS credentials.
 
 ### Optional OnePAY card payments
 
-Card payment appears in Billing only when OnePAY is configured. Add the merchant values to the private `.env.runtime` of the API service (see [PAYMENTS.md](PAYMENTS.md)):
+Card payment appears in Billing only when OnePAY is configured. Add the merchant values to `/etc/reelforge/runtime.env` (section 4.1; see [PAYMENTS.md](PAYMENTS.md)):
 
 ```text
 ONEPAY_MERCHANT_ID=...
@@ -1001,6 +1066,8 @@ Return: https://studio.imokome-cloud.com/api/billing/onepay/return
 Restart `reelforge-api` after changing them. **Admin → Payments** shows payOS and OnePAY as Configured or Missing, never their values. A browser return alone never marks an order paid: the IPN or a QueryDR check must confirm it. Test with OnePAY's sandbox, then one small real payment, before accepting customers.
 
 Migration `0015_admin_payments_profiles` (display names and indexes for the paginated admin tables) is applied by `python -m alembic upgrade head`, as usual; card orders need no other schema change.
+
+Migration `0016_storage_lifecycle` (plan storage limits, asset kinds and expiry) is applied the same way. Set up the storage root and the daily cleanup timer in section 11 when you upgrade.
 
 ---
 
@@ -1237,7 +1304,7 @@ Before treating the service as production-ready:
 - Set `frontend_origin` to the HTTPS production hostname.
 - Enable secure cookies after HTTPS is active.
 - Keep provider, payOS, OnePAY, Google OAuth and Fernet secrets out of the repository.
-- Back up PostgreSQL and `/srv/data/reelforge/media` together.
+- Back up PostgreSQL and the media root (`/srv/data/videos/reelforge`) together, and keep a copy off the HDD.
 - Back up `REELFORGE_TOKEN_ENCRYPTION_KEY` separately and securely.
 - Apply Alembic migrations before restarting application services after an update.
 - Review application and Cloudflare request-body/rate limits before public use.
@@ -1271,7 +1338,7 @@ PostgreSQL user:
 studio_admin
 
 Media:
- /srv/data/reelforge/media
+ /srv/data/videos/reelforge
 ```
 
 For external developer database access, use the separately configured PostgreSQL public endpoint only when required. Production ReelForge services on the home server should use the local PostgreSQL connection.

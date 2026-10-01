@@ -231,6 +231,14 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
   See [docs/FINAL_PRODUCT_AUDIT.md](docs/FINAL_PRODUCT_AUDIT.md).
 - Migration `0015_admin_payments_profiles` (user display names and admin/payment indexes).
 
+### Storage lifecycle (Phase 17)
+
+- **One media root**: `REELFORGE_STORAGE_ROOT` (on the home server `/srv/data/videos/reelforge`, on the HDD), with files named by workspace and asset IDs only.
+- **Plan quotas**: Trial 1 GB, Standard 10 GB and Pro 30 GB by default, edited in Admin → Plans. Warnings appear at 70, 80, 90 and 100 %, and a full studio cannot store anything new. Checks take the studio's lock, so concurrent writes cannot overshoot.
+- **Retention by kind**: scene videos, narration, generated images and extracted clips of runs that have their final video expire after 30 days. Final videos and uploads are never removed automatically. Run the daily job at 03:00 with `python -m app.media_maintenance --apply --intermediates`; it is a dry run without `--apply`.
+- **User cleanup**: owners delete media on the Media page, or a project's intermediate media in Settings → Storage, after a confirmation.
+- Migration `0016_storage_lifecycle`. See [docs/STORAGE.md](docs/STORAGE.md).
+
 ### Voice, subtitles and the final render (Phases 6–8)
 
 - **Voice** reads a script as one narration, or each scene's text as its own narration, with Google Gemini TTS (AI tool task **Voice**, `GEMINI_API_KEY`). Each narration is a job with its own reservation of `VOICE_CREDITS_PER_GENERATION` credits (default 1), and is stored as a checked WAV file by `python -m app.voice_worker`. See [docs/VOICE_GENERATION.md](docs/VOICE_GENERATION.md).
@@ -251,9 +259,9 @@ Select a step on the canvas to edit its settings in the right-hand inspector: la
 
 ### Worker and storage settings
 
-Run `python -m app.video_worker`, `python -m app.text_worker`, `python -m app.image_worker`, `python -m app.voice_worker`, `python -m app.render_worker`, `python -m app.source_worker`, `python -m app.youtube_worker`, `python -m app.social_worker` and `python -m app.scheduler_worker` continuously as separate processes (only the ones you use). Each reports a heartbeat that **Admin → Operations** shows. All support `--once` for one due job. `WORKSPACE_MEDIA_QUOTA_BYTES` sets the per-workspace media ceiling (default 1 GiB) for the API and the video, image, voice and render workers; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys through `.env.runtime` or one `EnvironmentFile=` (see Provider keys, processes and logs). Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
+Run `python -m app.video_worker`, `python -m app.text_worker`, `python -m app.image_worker`, `python -m app.voice_worker`, `python -m app.render_worker`, `python -m app.source_worker`, `python -m app.youtube_worker`, `python -m app.social_worker` and `python -m app.scheduler_worker` continuously as separate processes (only the ones you use). Each reports a heartbeat that **Admin → Operations** shows. All support `--once` for one due job. Each plan sets a studio's media limit (Phase 17); `WORKSPACE_MEDIA_QUOTA_BYTES`, when set, caps every studio for the API and all workers; individual uploads are capped at 100 MiB and checked against their media signature. Upload requests are authenticated before the API reads their bodies, while the reverse proxy still needs body, rate and concurrency limits. Keep the API, workers and media directory on storage they can all access. Give the API and every worker the same provider keys through `.env.runtime` or one `EnvironmentFile=` (see Provider keys, processes and logs). Back up PostgreSQL and `instance/media` together. API keys stay server-side; do not put them in the Next.js frontend or Git.
 
-If a worker crashes, preview abandoned temporary files with `python -m app.media_maintenance`:
+Storage quotas, retention and the daily cleanup are described in [docs/STORAGE.md](docs/STORAGE.md). If a worker crashes, preview abandoned temporary files with `python -m app.media_maintenance`:
 
 - `.part` downloads;
 - `.render-tmp`, `.source-tmp` and `.publish-tmp` leftovers;

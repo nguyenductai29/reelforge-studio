@@ -20,9 +20,9 @@ from sqlalchemy import func, select, update
 
 from app import heartbeat
 from app.db import Session
-from app import jobs, media_jobs, usage
+from app import jobs, media_jobs, storage, usage
 from app.logs import log_event, payload_summary
-from app.main import MAX_UPLOAD, media_root, workspace_media_quota
+from app.main import MAX_UPLOAD, media_root
 from app.models import Asset, CreditReconciliation, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
 from app.providers.catalog import PROVIDER_ERRORS, VIDEO_PROVIDERS, dola_max_job_age_seconds, video_provider_config_issue
 from app.providers.errors import error_category
@@ -56,7 +56,7 @@ def _now():
 def video_job_max_age_seconds() -> int:
     """Bound polling and credit holds when a provider never reaches a final state."""
     try:
-        seconds = int(os.environ.get("VIDEO_JOB_MAX_AGE_SECONDS", "21600"))
+        seconds = int(os.environ.get("VIDEO_JOB_MAX_AGE_SECONDS", "").strip() or "21600")
     except ValueError as exc:
         raise RuntimeError("VIDEO_JOB_MAX_AGE_SECONDS must be an integer") from exc
     if not 60 <= seconds <= 86400:
@@ -171,8 +171,7 @@ def _store_result(job_id: str, token: str, result, download):
         if not job:
             return
         VIDEO_PROVIDERS[job.payload["provider"]].module.validate_media_url(result.video_url)
-        root = media_root(db)
-        target = root / job.workspace_id / asset_id
+        target = storage.file_in(media_root(db), job.workspace_id, asset_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(asset_id + ".part")
     started = time.monotonic()
@@ -188,15 +187,15 @@ def _store_result(job_id: str, token: str, result, download):
                 target.unlink(missing_ok=True)
                 return
             run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == job.run_id).with_for_update())
-            db.execute(update(Workspace).where(Workspace.id == job.workspace_id).values(name=Workspace.name))
-            stored_bytes = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(Asset.workspace_id == job.workspace_id))
-            if stored_bytes + size > workspace_media_quota():
+            storage.lock_workspace(db, job.workspace_id)
+            if not storage.has_room(db, job.workspace_id, size):
                 raise ValueError("Workspace media quota reached")
             step = db.get(WorkflowRunStep, job.step_id)
             payload = job.payload
             db.add(Asset(id=asset_id, workspace_id=job.workspace_id, project_id=run.project_id,
                          run_id=run.id, step_id=step.id, provider=payload["provider"], model=payload["model_id"],
-                         filename=f"video-{asset_id[:8]}.mp4", content_type="video/mp4", bytes=size))
+                         filename=f"video-{asset_id[:8]}.mp4", content_type="video/mp4", bytes=size,
+                         kind=storage.kind_for_node(step.node_type)))
             output = _output(step)
             provider_progress(output, stage="completed", status="completed")
             output.pop("submission", None)
@@ -254,9 +253,7 @@ def run_one(*, client=None, download=None, poll_seconds: int = 10, worker_id: st
                 return True
             storage_full = False
             if action == "queued":
-                stored_bytes = db.scalar(select(func.coalesce(func.sum(Asset.bytes), 0)).where(
-                    Asset.workspace_id == job.workspace_id))
-                storage_full = stored_bytes >= workspace_media_quota()
+                storage_full = storage.is_full(db, job.workspace_id)
                 step.status, step.detail = "submitting", "Đang gửi yêu cầu tạo video."
                 _save_output(step, provider_progress(_output(step), stage="preflight"))
             current_output = _output(step)

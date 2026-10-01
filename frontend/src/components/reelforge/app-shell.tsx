@@ -30,6 +30,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { StorageAlert } from "./storage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -499,7 +500,11 @@ export function AppShell({ children }: { children: ReactNode }) {
         {fullBleed ? (
           <main>{children}</main>
         ) : (
-          <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+          <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+            {/* Admin fits the viewport exactly and shows storage in its own tables. */}
+            {!pathname.startsWith("/admin") && <StorageAlert />}
+            {children}
+          </main>
         )}
       </div>
     </div>

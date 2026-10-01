@@ -256,8 +256,13 @@ export function useCalendarPublications(start: string, end: string) {
   });
 }
 
-export function useAdminStorage(enabled: boolean) {
-  return useQuery({ queryKey: keys.adminStorage, queryFn: () => api<AdminStorage>("admin/storage"), enabled });
+export function useAdminStorage(enabled: boolean, offset = 0, limit = 20) {
+  return useQuery({
+    queryKey: [...keys.adminStorage, offset, limit],
+    queryFn: () => adminPage<AdminStorage>("admin/storage", { limit, offset }),
+    enabled,
+    placeholderData: (previous) => previous,
+  });
 }
 
 export function useSettings() {

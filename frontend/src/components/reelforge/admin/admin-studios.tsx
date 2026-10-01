@@ -23,9 +23,11 @@ import type { Dictionary } from "@/lib/i18n/vi";
 import { keys, useAdminWorkspaces } from "@/lib/queries";
 import { formatBytes } from "@/lib/studio";
 import type { AdminWorkspace, AdminWorkspaceDetail, Plan } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { DataTable, useDebounced, type Column } from "../data-table";
 import { FieldLabel, StatusBadge } from "../primitives";
 import { ConfirmDialog, Detail, FilterSelect, type Confirm } from "./shared";
+import { STORAGE_TEXT, StorageBar, StorageMeter } from "../storage";
 
 const LIMIT = 20;
 type Dialogs = { kind: "view" | "plan" | "credits"; workspace: AdminWorkspace } | null;
@@ -66,8 +68,11 @@ function DetailDialog({ workspace, onClose }: { workspace: AdminWorkspace | null
               <Detail label={s.columns.expires}>{data.ends_at ? formatDateTime(data.ends_at) : s.noEnd}</Detail>
               <Detail label={s.projects}>{formatNumber(data.counts.projects)}</Detail>
               <Detail label={s.workflows}>{formatNumber(data.counts.workflows)}</Detail>
-              <Detail label={s.storage}>{formatBytes(data.storage_bytes)}</Detail>
             </dl>
+            <div>
+              <p className="mb-1 text-xs font-medium text-muted-foreground">{s.storage}</p>
+              <StorageMeter info={data.storage} />
+            </div>
             <div>
               <p className="mb-1 text-xs font-medium text-muted-foreground">{s.members}</p>
               <p>{data.members.map((m) => `${m.email} (${m.role})`).join(", ") || "—"}</p>
@@ -273,6 +278,16 @@ export function AdminStudios({ plans }: { plans: Plan[] }) {
       cell: (ws) => <span className="block truncate text-muted-foreground" title={ws.owner_email}>{ws.owner_email}</span> },
     { key: "plan", header: s.columns.plan, cell: (ws) => (ws.plan_code ?? "—").toUpperCase() },
     { key: "credits", header: s.columns.credits, className: "text-right tabular-nums", cell: (ws) => formatNumber(ws.credits) },
+    { key: "storage", header: s.columns.storage, className: "w-36",
+      cell: (ws) =>
+        ws.storage ? (
+          <div className="space-y-1" title={`${formatBytes(ws.storage.used_bytes)} / ${formatBytes(ws.storage.quota_bytes)}`}>
+            <span className={cn("text-xs tabular-nums", STORAGE_TEXT[ws.storage.level])}>{ws.storage.percent}%</span>
+            <StorageBar info={ws.storage} className="h-1.5" />
+          </div>
+        ) : (
+          "—"
+        ) },
     { key: "expires", header: s.columns.expires, className: "whitespace-nowrap text-muted-foreground",
       cell: (ws) => (ws.ends_at ? formatDate(ws.ends_at) : s.noEnd) },
     { key: "status", header: s.columns.status, className: "whitespace-nowrap", cell: (ws) => <StatusBadge status={ws.status} label={statusLabel(ws.status)} /> },
@@ -316,6 +331,7 @@ export function AdminStudios({ plans }: { plans: Plan[] }) {
         loading={studios.isFetching}
         error={studios.isError ? errorText(studios.error, t) : null}
         empty={s.empty}
+        minWidth={960}
         total={studios.data?.total ?? 0}
         limit={LIMIT}
         offset={offset}

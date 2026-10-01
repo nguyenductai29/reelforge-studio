@@ -71,7 +71,7 @@ def video_duration_supported(provider_name: str, model_id: str, duration: str) -
 
 def dola_max_job_age_seconds() -> int:
     try:
-        max_age = int(os.environ.get("DOLA_MAX_JOB_AGE_SECONDS", "7200"))
+        max_age = int(os.environ.get("DOLA_MAX_JOB_AGE_SECONDS", "").strip() or "7200")
     except ValueError as exc:
         raise dola.ProviderError("invalid_config", "Invalid Dola max job age") from exc
     if not 60 <= max_age <= 86400:
@@ -81,7 +81,7 @@ def dola_max_job_age_seconds() -> int:
 
 def video_credit_cost() -> int:
     try:
-        amount = int(os.environ.get("VIDEO_CREDITS_PER_CLIP", "10"))
+        amount = int(os.environ.get("VIDEO_CREDITS_PER_CLIP", "").strip() or "10")
     except ValueError as exc:
         raise RuntimeError("VIDEO_CREDITS_PER_CLIP must be a positive integer") from exc
     if not 1 <= amount <= 100000:

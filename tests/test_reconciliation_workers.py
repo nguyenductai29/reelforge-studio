@@ -93,7 +93,8 @@ run_id, step_id, job_id = new_run()
 with Session.begin() as db:
     db.add(Asset(id="existing", workspace_id="workspace", filename="existing.mp4", content_type="video/mp4", bytes=100))
 fake = Accepted()
-with patch.object(video_worker, "workspace_media_quota", return_value=100):
+# WORKSPACE_MEDIA_QUOTA_BYTES caps every workspace's quota (app/storage.py).
+with patch.dict(os.environ, {"WORKSPACE_MEDIA_QUOTA_BYTES": "100"}):
     assert video_worker.run_one(client=fake, poll_seconds=0)
 state = snapshot(run_id, step_id)
 assert state["status"] == "failed", state

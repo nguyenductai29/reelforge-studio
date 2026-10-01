@@ -2,9 +2,10 @@
 
 Use music you own or are licensed to use. The step calls no provider and costs
 nothing: it checks that the file is an MP3, WAV or OGG upload of this workspace
-and passes ``{asset_id, filename, volume}`` to Render (port type ``music_track``).
-Render loops the track to the video's length, lowers it to ``volume`` percent
-and mixes it under the narration (or under the clips' own sound).
+and passes ``{asset_id, filename, volume, mode}`` to Render (port type ``music_track``).
+Render lowers the track to ``volume`` percent and mixes it under the narration (or under
+the clips' own sound). A track shorter than the video loops (``mode`` ``loop``, the
+default) or plays once and leaves silence (``once``); a longer one is cut at the video's end.
 
 This replaces the earlier placeholder of the same type. Old edges into its
 "mood" input no longer carry data; they keep ordering the run.
@@ -13,13 +14,14 @@ from sqlalchemy import select
 
 from app.media_paths import asset_path
 from app.models import Asset
-from app.workflow.config import ASSET, INTEGER, ConfigField
+from app.workflow.config import ASSET, INTEGER, SELECT, ConfigField
 from app.workflow.nodes.base import NodeHandler
 from app.workflow.ports import MUSIC, OutputPort
 from app.workflow.results import NodeError, NodeExecutionResult, NodeReadiness
 
 MUSIC_TYPES = ("audio/mpeg", "audio/wav", "audio/ogg")
 DEFAULT_VOLUME = 15
+MODES = ("loop", "once")
 MISSING_DETAIL = "Chọn tệp nhạc (MP3, WAV, OGG) đã tải lên."
 UNAVAILABLE_DETAIL = "Không tìm thấy tệp nhạc đã chọn trong kho media."
 DONE_DETAIL = "Đã chọn nhạc nền."
@@ -38,6 +40,7 @@ class MusicNodeHandler(NodeHandler):
         ConfigField("asset_id", ASSET, label="music_file", content_types=MUSIC_TYPES, code="invalid_asset"),
         ConfigField("volume", INTEGER, default=DEFAULT_VOLUME, minimum=1, maximum=100, label="music_volume",
                     code="invalid_volume"),
+        ConfigField("mode", SELECT, default="loop", options=MODES, label="music_mode", code="invalid_mode"),
     )
 
     def _asset(self, context, asset_id):
@@ -55,7 +58,7 @@ class MusicNodeHandler(NodeHandler):
             return NodeExecutionResult.blocked(UNAVAILABLE_DETAIL, NodeError("input_missing", "Music file missing"))
         return NodeExecutionResult.completed(DONE_DETAIL, {"music": {
             "asset_id": asset.id, "filename": asset.filename, "content_type": asset.content_type,
-            "volume": config["volume"]}})
+            "volume": config["volume"], "mode": config["mode"]}})
 
     def readiness(self, context, node):
         config = self.config_values(node.get("config"))

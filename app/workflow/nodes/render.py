@@ -15,7 +15,8 @@ stills, and a Music step's track is mixed under the result.
 from sqlalchemy import select
 
 from app import render, subtitles, usage
-from app.media_paths import asset_path, stored_bytes, workspace_media_quota
+from app import storage
+from app.media_paths import asset_path
 from app.models import Asset
 from app.workflow.nodes.base import INSUFFICIENT_CREDITS_DETAIL, NodeHandler
 from app.workflow.nodes.media import connected_inputs, references
@@ -99,7 +100,7 @@ class RenderNodeHandler(NodeHandler):
             return NodeExecutionResult.blocked(MISSING_FILE_DETAIL, NodeError("input_missing", "Input file missing"))
         if problem := self._problem(subtitle is not None):
             return NodeExecutionResult.blocked(problem[1], NodeError(problem[0], problem[1]))
-        if stored_bytes(db, workspace_id) >= workspace_media_quota():
+        if storage.is_full(db, workspace_id):
             return NodeExecutionResult.blocked(STORAGE_FULL_DETAIL, NodeError("storage_limit_exceeded", "Storage full"))
         step, cost = context.step_for(node), render.render_credit_cost()
         payload = {"kind": "render.generate", "node_type": self.node_type, "node_id": node["id"], "provider": "ffmpeg",
@@ -114,7 +115,8 @@ class RenderNodeHandler(NodeHandler):
                                 "segments": subtitle.get("segments") or []} if subtitle_row else None}
         if music_row is not None:
             volume = music.get("volume") if isinstance(music.get("volume"), int) else 15
-            payload["music"] = {"asset_id": music_row.id, "volume": min(100, max(1, volume))}
+            payload["music"] = {"asset_id": music_row.id, "volume": min(100, max(1, volume)),
+                                "mode": "once" if music.get("mode") == "once" else "loop"}
         metadata = {}
         if cost:
             refs = references("render", step.id, "final")

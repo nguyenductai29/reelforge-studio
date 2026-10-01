@@ -22,7 +22,7 @@ from app.runtime_env import start_process
 def image_job_max_age_seconds() -> int:
     """How long an image job may take before its credits are held for review (default 1 hour)."""
     try:
-        seconds = int(os.environ.get("IMAGE_JOB_MAX_AGE_SECONDS", "3600"))
+        seconds = int(os.environ.get("IMAGE_JOB_MAX_AGE_SECONDS", "").strip() or "3600")
     except ValueError as exc:
         raise RuntimeError("IMAGE_JOB_MAX_AGE_SECONDS must be an integer") from exc
     if not 60 <= seconds <= 86400:

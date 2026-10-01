@@ -54,31 +54,32 @@ Payloads are never returned: they can hold prompts or URLs. The response also ha
 
 ## Storage
 
-- **Settings → Storage** (`GET /api/storage`) shows the workspace's stored bytes against `WORKSPACE_MEDIA_QUOTA_BYTES`, by kind (video, audio, image, document). The dashboard also returns `storage`.
-- `GET /api/admin/storage` lists every workspace's usage, largest first.
+- **Settings → Storage** (`GET /api/storage`) shows the workspace's stored bytes against its plan's quota, by kind (video, audio, image, document), with the intermediate media it can delete now. The dashboard also returns `storage`.
+- Quotas come from each plan's storage limit (Phase 17). The studio sees warnings at 70, 80, 90 and 100 %, and at 100 % nothing new can be stored. See [STORAGE.md](STORAGE.md).
+- `GET /api/admin/storage` lists studios fullest first, one page at a time, with the count at each warning level and the media disk's free space. Admin → Operations shows it.
 - `python -m app.media_maintenance --usage` prints the same from the server.
 
 ## Media cleanup
 
+The full policy is in [STORAGE.md](STORAGE.md). The daily job (a systemd timer at 03:00) is:
+
 ```bash
-python -m app.media_maintenance                  # dry run: lists what would be removed
-python -m app.media_maintenance --apply          # removes it
-python -m app.media_maintenance --orphans        # also lists files with no asset row (reads the asset table)
-python -m app.media_maintenance --orphans --apply
+python -m app.media_maintenance --apply --intermediates   # drop --apply to preview (the default)
 ```
 
-Only files at least 24 hours old are touched (`--older-than-hours`, minimum 24). Links and junctions are never followed. Three kinds of leftovers are handled:
+It handles four kinds of files. Links and junctions are never followed, and nothing younger than 24 hours is touched.
 
-- **`.part` downloads** left by a crashed media worker: exact `<uuid>.part` names directly in a workspace folder.
-- **Worker temp folders**:
+- **`.part` downloads** left by a crashed media worker: exact `<uuid>.part` names directly in a workspace folder (after 1 day).
+- **Worker temp folders**, after 3 days:
   - `<media>/.render-tmp/<job>` (render and clip extraction);
   - `<media>/.source-tmp/<job>` (transcription audio);
   - `<media>/.publish-tmp/<job>.mp4` (the upload copy).
 
   Workers remove these themselves; leftovers mean a worker was killed. A folder that contains any link is skipped whole.
-- **Orphans**: UUID-named files in a workspace folder with no `assets` row, for example when the database was restored from an older backup. The row is checked again just before deleting.
+- **Intermediate media past retention** (`--intermediates`): scene videos, narration, generated images and extracted clips older than 30 days whose run has a final render and that no publication uses. Each is re-checked under a row lock, marked expired (its row stays with 0 bytes) and its file removed. Final renders and uploads are never removed.
+- **Orphans** (`--orphans`, after 3 days): UUID-named files in a workspace folder with no `assets` row, for example when the database was restored from an older backup. The row is checked again just before deleting.
 
-Run a dry run first, and keep a backup of the media folder.
+`--older-than-hours N` (at least 24) sets one age for the file leftovers. `--usage` prints each studio's bytes, quota, percent and warning level. Run a dry run first, and keep a backup of the media folder.
 
 ## Admin console (Phase 15)
 

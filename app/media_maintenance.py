@@ -1,8 +1,10 @@
-"""Conservative cleanup of media files ReelForge left behind, plus a storage usage report.
+"""Daily storage maintenance: files ReelForge left behind, intermediate media past retention, and a usage report.
 
-Run ``python -m app.media_maintenance`` to preview. Only ``--apply`` deletes.
-Everything must be at least 24 hours old, and links or junctions are never
-followed. Three kinds of leftovers are handled:
+Run ``python -m app.media_maintenance`` (or ``--dry-run``) to preview. Only ``--apply``
+deletes. Links or junctions are never followed, and nothing younger than 24 hours is
+touched. Ages come from the retention policy (``app/storage.py``, ``REELFORGE_RETENTION_*``):
+``.part`` files after 1 day, worker temp folders and orphans after 3 days, unless
+``--older-than-hours`` sets one age for all three. File leftovers:
 
 * ``.part`` downloads: the exact UUID4 ``<id>.part`` names written by the media
   workers, directly inside existing workspace directories (always checked);
@@ -12,7 +14,15 @@ followed. Three kinds of leftovers are handled:
 * orphan files: UUID4-named files in a workspace directory with no asset row
   (only with ``--orphans``, which reads the asset table).
 
-``--usage`` prints stored bytes per workspace from the asset table.
+With ``--intermediates`` (reads and writes the asset table): intermediate media past
+``REELFORGE_RETENTION_INTERMEDIATE_DAYS`` (default 30) whose run has a final render and that
+no publication uses (``storage.expirable_query``). Each asset is re-checked under a row
+lock, marked expired (its row stays with 0 bytes), then its file is removed; a file is
+deleted only at ``<root>/<workspace_id>/<asset_id>``, as a regular file reached through no
+link. Expired rows whose file is still present (an interrupted run) are swept again.
+Final renders and uploaded sources are never removed.
+
+``--usage`` prints stored bytes, quota and warning level per workspace.
 """
 
 import argparse
@@ -32,6 +42,8 @@ _WORKSPACE_RE = re.compile(rf"{_UUID4}\Z")
 _PART_RE = re.compile(rf"{_UUID4}\.part\Z")
 _ASSET_RE = re.compile(rf"{_UUID4}\Z")
 _TEMP_ENTRY_RE = re.compile(rf"{_UUID4}(?:\.mp4)?\Z")
+# Asset and workspace IDs as app.storage accepts them: no separator, no dot, nothing that can climb a path.
+_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 TEMP_FOLDERS = (".render-tmp", ".source-tmp", ".publish-tmp")
 
 
@@ -279,6 +291,106 @@ def cleanup_orphans(root: Path, workspace_ids: Iterable[str], asset_exists, *, a
     return CleanupReport(tuple(candidates), tuple(deleted), tuple(skipped))
 
 
+def check_asset_file(root: Path, workspace_id: str, asset_id: str) -> str:
+    """``present``, ``missing`` or ``unsafe`` for ``<root>/<workspace_id>/<asset_id>``.
+
+    ``unsafe``: an ID that could name another path, a linked root, workspace folder or
+    file, something other than a regular file, or a path that resolves outside the root.
+    """
+    if not (isinstance(workspace_id, str) and _SAFE_ID.fullmatch(workspace_id)
+            and isinstance(asset_id, str) and _SAFE_ID.fullmatch(asset_id)):
+        return "unsafe"
+    try:
+        root = _checked_root(root)
+        workspace = root / workspace_id
+        if _is_link(workspace):
+            return "unsafe"
+        if not workspace.is_dir():
+            return "missing"
+        if workspace.resolve(strict=True).parent != root.resolve(strict=True):
+            return "unsafe"
+        path = workspace / asset_id
+        if _is_link(path):
+            return "unsafe"
+        info = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, ValueError):
+        return "unsafe"
+    if not stat.S_ISREG(info.st_mode) or path.resolve(strict=True).parent != workspace.resolve(strict=True):
+        return "unsafe"
+    return "present"
+
+
+def remove_asset_file(root: Path, workspace_id: str, asset_id: str) -> str:
+    """Delete one asset's file if ``check_asset_file`` finds it present; returns ``deleted``, ``missing`` or ``unsafe``."""
+    state = check_asset_file(root, workspace_id, asset_id)
+    if state != "present":
+        return state
+    try:
+        (Path(root) / workspace_id / asset_id).unlink()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    return "deleted"
+
+
+@dataclass(frozen=True)
+class ExpiryReport:
+    candidates: tuple[dict, ...]   # {"id", "workspace_id", "kind", "bytes", "created_at"}
+    expired: tuple[str, ...]
+    skipped: tuple[str, ...]       # changed since the scan (no longer eligible) or an unsafe path
+    freed_bytes: int
+    swept: tuple[str, ...]         # files of assets that had already expired
+
+
+def expire_intermediates(*, apply: bool = False, now: datetime | None = None, policy=None,
+                         session_factory=None) -> ExpiryReport:
+    """List or expire intermediate media past retention (see the module docstring)."""
+    from sqlalchemy import select
+    from app import storage
+    from app.models import Asset
+
+    if session_factory is None:
+        from app.db import Session as session_factory
+    policy = policy or storage.RetentionPolicy.from_environment()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("now must include a timezone")
+    if policy.intermediate_days == 0:
+        return ExpiryReport((), (), (), 0, ())
+    before = storage.cutoff(now, policy.intermediate_days)
+    with session_factory() as db:
+        root = storage.media_root(db)
+        found = tuple({"id": asset.id, "workspace_id": asset.workspace_id, "kind": asset.kind, "bytes": asset.bytes,
+                       "created_at": asset.created_at}
+                      for asset in db.scalars(storage.expirable_query(created_before=before)
+                                              .order_by(Asset.created_at, Asset.id)))
+    if not apply:
+        return ExpiryReport(found, (), (), sum(item["bytes"] for item in found), ())
+    expired, skipped, freed = [], [], 0
+    for item in found:
+        if check_asset_file(root, item["workspace_id"], item["id"]) == "unsafe":
+            skipped.append(item["id"])
+            continue
+        with session_factory.begin() as db:
+            storage.lock_workspace(db, item["workspace_id"])
+            asset = db.scalar(storage.expirable_query(created_before=before).where(Asset.id == item["id"])
+                              .with_for_update())
+            if asset is None:
+                skipped.append(item["id"])
+                continue
+            freed += storage.expire(db, asset, reason="retention", now=now)
+        remove_asset_file(root, item["workspace_id"], item["id"])
+        expired.append(item["id"])
+    with session_factory() as db:
+        gone = list(db.execute(select(Asset.workspace_id, Asset.id).where(Asset.expired_at.is_not(None))))
+    swept = tuple(asset_id for workspace_id, asset_id in gone
+                  if asset_id not in expired and remove_asset_file(root, workspace_id, asset_id) == "deleted")
+    return ExpiryReport(found, tuple(expired), tuple(skipped), freed, swept)
+
+
 def configured_asset_check():
     """``asset_exists(workspace_id, asset_id)`` against the configured database."""
     from sqlalchemy import select
@@ -293,13 +405,17 @@ def configured_asset_check():
 
 
 def storage_usage(db) -> list[dict]:
-    """Stored bytes and file count per workspace, from the asset table (largest first)."""
+    """Stored bytes, live files, quota and warning level per workspace, from the asset table (largest first)."""
     from sqlalchemy import func, select
+    from app import storage
     from app.models import Asset, Workspace
 
     rows = db.execute(select(Workspace.id, Workspace.name, func.count(Asset.id), func.coalesce(func.sum(Asset.bytes), 0))
-                      .outerjoin(Asset, Asset.workspace_id == Workspace.id).group_by(Workspace.id, Workspace.name))
-    usage = [{"workspace_id": workspace_id, "name": name, "files": files, "bytes": int(total)}
+                      .outerjoin(Asset, (Asset.workspace_id == Workspace.id) & (Asset.bytes > 0))
+                      .group_by(Workspace.id, Workspace.name))
+    quotas = storage.usage_by_workspace(db)
+    usage = [{"workspace_id": workspace_id, "name": name, "files": files, "bytes": int(total),
+              **{key: quotas[workspace_id][key] for key in ("quota_bytes", "percent", "level")}}
              for workspace_id, name, files, total in rows]
     return sorted(usage, key=lambda item: (-item["bytes"], item["name"]))
 
@@ -330,7 +446,8 @@ def configured_media_context() -> tuple[Path, list[str]]:
         value = json.loads(setting.value)
         if not isinstance(value, str) or not value.strip():
             raise ValueError("configured storage_dir must be a nonempty path")
-        path = Path(value)
+        # REELFORGE_STORAGE_ROOT wins over the stored setting, as everywhere else (app/storage.py).
+        path = Path(os.environ.get("REELFORGE_STORAGE_ROOT", "").strip() or value).expanduser()
         root = path if path.is_absolute() else ROOT / path
         workspace_ids = list(db.scalars(select(Workspace.id)))
     return root, workspace_ids
@@ -344,35 +461,59 @@ def _print_report(label: str, mode: str, root: Path, report: CleanupReport) -> N
     print(f"deleted: {len(report.deleted)}; skipped: {len(report.skipped)}")
 
 
+def _print_expiry(mode: str, report: ExpiryReport) -> None:
+    print(f"{mode}: {len(report.candidates)} intermediate asset(s) past retention, {report.freed_bytes:,d} bytes")
+    for item in report.candidates:
+        action = ("expired" if item["id"] in report.expired else "skipped" if item["id"] in report.skipped
+                  else "would expire")
+        print(f"{action}: {item['workspace_id']}/{item['id']}  {item['kind']}  {item['bytes']:,d} bytes  "
+              f"created {item['created_at']}")
+    print(f"expired: {len(report.expired)}; skipped: {len(report.skipped)}; "
+          f"files of earlier expiries removed: {len(report.swept)}")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Preview or remove media ReelForge left behind")
-    parser.add_argument("--apply", action="store_true", help="delete eligible files (default: dry-run)")
-    parser.add_argument("--older-than-hours", type=int, default=24,
-                        help="minimum age; must be at least 24 hours (default: 24)")
+    from app.storage import RetentionPolicy
+
+    parser = argparse.ArgumentParser(description="Preview or remove media past retention and files ReelForge left behind")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--apply", action="store_true", help="delete eligible files (default: dry-run)")
+    mode_group.add_argument("--dry-run", action="store_true", help="only list what --apply would delete (default)")
+    parser.add_argument("--older-than-hours", type=int, default=None,
+                        help="one minimum age for partials, temp folders and orphans; at least 24 "
+                             "(default: the retention policy, 1, 3 and 3 days)")
     parser.add_argument("--orphans", action="store_true",
                         help="also remove files with no asset row (reads the asset table)")
-    parser.add_argument("--usage", action="store_true", help="print stored bytes per workspace, then exit")
+    parser.add_argument("--intermediates", action="store_true",
+                        help="also expire intermediate media past REELFORGE_RETENTION_INTERMEDIATE_DAYS "
+                             "(reads and writes the asset table)")
+    parser.add_argument("--usage", action="store_true", help="print storage per workspace, then exit")
     args = parser.parse_args(argv)
-    if args.older_than_hours < 24:
+    if args.older_than_hours is not None and args.older_than_hours < 24:
         parser.error("--older-than-hours must be at least 24")
     if args.usage:
         from app.db import Session
         with Session() as db:
             for item in storage_usage(db):
-                print(f"{item['workspace_id']}  {item['bytes']:>14,d} bytes  {item['files']:>6d} files  {item['name']}")
+                print(f"{item['workspace_id']}  {item['bytes']:>14,d} / {item['quota_bytes']:>14,d} bytes  "
+                      f"{item['percent']:>5.1f}% {item['level']:<8}  {item['files']:>6d} files  {item['name']}")
         return 0
+    policy = RetentionPolicy.from_environment()
+    hours = (lambda days: args.older_than_hours) if args.older_than_hours is not None else (lambda days: max(24, days * 24))
     root, workspace_ids = configured_media_context()
     mode = "apply" if args.apply else "dry-run"
     report = cleanup_stale_parts(root, workspace_ids, apply=args.apply,
-                                 minimum_age_hours=args.older_than_hours)
+                                 minimum_age_hours=hours(policy.partial_days))
     _print_report("stale ReelForge partial(s)", mode, root, report)
     if root.exists():
         _print_report("worker temp folder(s)", mode, root,
-                      cleanup_temp_folders(root, apply=args.apply, minimum_age_hours=args.older_than_hours))
+                      cleanup_temp_folders(root, apply=args.apply, minimum_age_hours=hours(policy.temp_days)))
     if args.orphans:
         _print_report("orphan media file(s)", mode, root,
                       cleanup_orphans(root, workspace_ids, configured_asset_check(), apply=args.apply,
-                                      minimum_age_hours=args.older_than_hours))
+                                      minimum_age_hours=hours(policy.orphan_days)))
+    if args.intermediates:
+        _print_expiry(mode, expire_intermediates(apply=args.apply, policy=policy))
     return 0
 
 

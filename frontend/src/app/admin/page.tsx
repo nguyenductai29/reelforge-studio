@@ -19,6 +19,7 @@ import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { keys, useAdmin, useDashboard } from "@/lib/queries";
+import { GIB, formatBytes } from "@/lib/studio";
 import type { Plan } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -33,6 +34,8 @@ function PlanForm({ plan }: { plan: Plan }) {
   const [active, setActive] = useState(plan.is_active);
   const [busy, setBusy] = useState(false);
   const number = (value: FormDataEntryValue | null) => (value ? Number(value) : null);
+  // Entered in GB (GiB); empty uses the server default.
+  const gigabytes = (value: FormDataEntryValue | null) => (value ? Math.round(Number(value) * GIB) : null);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -45,6 +48,7 @@ function PlanForm({ plan }: { plan: Plan }) {
         workflow_limit: number(form.get("workflow_limit")),
         monthly_credits: Number(form.get("monthly_credits")),
         price_vnd: plan.code === "trial" ? null : number(form.get("price_vnd")),
+        storage_limit_bytes: gigabytes(form.get("storage_limit_gb")),
         is_active: active,
       }));
       await client.invalidateQueries({ queryKey: keys.admin });
@@ -88,6 +92,11 @@ function PlanForm({ plan }: { plan: Plan }) {
           type: "number", min: 1, defaultValue: plan.workflow_limit ?? "", placeholder: t.common.unlimited,
         })}
         {field("monthly_credits", p.monthlyCredits, { type: "number", min: 0, defaultValue: plan.monthly_credits, required: true })}
+        {field("storage_limit_gb", p.storageLimit, {
+          type: "number", min: 0.1, max: 102400, step: 0.1,
+          defaultValue: plan.storage_limit_bytes ? Math.round((plan.storage_limit_bytes / GIB) * 10) / 10 : "",
+          placeholder: p.storageDefault(formatBytes(plan.storage_quota_bytes)),
+        })}
         <div className="flex items-end justify-end">
           <Button type="submit" size="sm" disabled={busy}>
             {busy && <Loader2 className="size-3.5 animate-spin" />}
@@ -123,6 +132,7 @@ export default function AdminPage() {
     [a.stats.plans, counts.plans, false],
     [a.stats.pendingPayments, counts.pending_payments, false],
     [a.stats.pendingReconciliation, counts.pending_reconciliation, counts.pending_reconciliation > 0],
+    [a.stats.storageAlerts, counts.storage_alerts, counts.storage_alerts > 0],
     [a.stats.stuckJobs, counts.stuck_jobs, counts.stuck_jobs > 0],
   ];
 
@@ -163,7 +173,10 @@ export default function AdminPage() {
           <p className="mb-3 text-xs text-muted-foreground">{a.plans.hint}</p>
           <div className="grid gap-3 lg:grid-cols-3">
             {overview.plans.map((plan) => (
-              <PlanForm key={`${plan.code}-${plan.name}-${plan.price_vnd}-${plan.is_active}-${plan.monthly_credits}`} plan={plan} />
+              <PlanForm
+                key={`${plan.code}-${plan.name}-${plan.price_vnd}-${plan.is_active}-${plan.monthly_credits}-${plan.storage_limit_bytes}`}
+                plan={plan}
+              />
             ))}
           </div>
         </TabsContent>

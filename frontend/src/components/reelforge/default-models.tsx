@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
+import { IntermediateCleanup, StorageMeter } from "./storage";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
@@ -103,14 +103,9 @@ export function StorageUsagePanel() {
   const s = t.settings.storage;
   const usage = useStorage().data;
   if (!usage) return <Loader2 className="size-4 animate-spin text-muted-foreground" />;
-  const percent = usage.quota_bytes ? Math.min(100, Math.round((usage.used_bytes / usage.quota_bytes) * 100)) : 0;
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between text-sm">
-        <span>{s.quota(formatBytes(usage.used_bytes), formatBytes(usage.quota_bytes))}</span>
-        <span className="text-muted-foreground">{percent}%</span>
-      </div>
-      <Progress value={percent} />
+    <div className="space-y-4">
+      <StorageMeter info={usage} />
       <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
         {(["video", "audio", "image", "document"] as const).map((kind) => (
           <div key={kind} className="rounded-lg bg-surface-2 p-2">
@@ -119,6 +114,10 @@ export function StorageUsagePanel() {
           </div>
         ))}
       </div>
+      <p className="text-xs text-muted-foreground">
+        {t.storage.retention(usage.retention.intermediate_days, usage.retention.temp_days)}
+      </p>
+      <IntermediateCleanup />
       <p className="text-xs text-muted-foreground">{s.cleanupHint}</p>
     </div>
   );

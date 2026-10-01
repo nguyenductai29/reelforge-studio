@@ -13,7 +13,8 @@ import uuid
 from sqlalchemy import event
 
 from app import subtitles
-from app.media_paths import media_root, stored_bytes, workspace_media_quota
+from app import storage
+from app.media_paths import media_root
 from app.models import Asset
 from app.workflow.config import INTEGER, SELECT, ConfigField
 from app.workflow.nodes.base import NodeHandler
@@ -78,11 +79,12 @@ class SubtitleNodeHandler(NodeHandler):
         content_type, extension = subtitles.FORMATS[config["format"]]
         data = subtitles.render(cues, config["format"])
         db, workspace_id, step = context.db, context.workspace.id, context.step_for(node)
-        if stored_bytes(db, workspace_id) + len(data) > workspace_media_quota():
+        storage.lock_workspace(db, workspace_id)
+        if not storage.has_room(db, workspace_id, len(data)):
             return NodeExecutionResult.blocked(STORAGE_FULL_DETAIL, NodeError("storage_limit_exceeded",
                                                                               "Workspace media quota reached"))
         asset_id = str(uuid.uuid4())
-        folder = media_root(db) / workspace_id
+        folder = storage.file_in(media_root(db), workspace_id)
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / asset_id
         target.write_bytes(data)
@@ -90,7 +92,7 @@ class SubtitleNodeHandler(NodeHandler):
         filename = f"subtitle-{asset_id[:8]}.{extension}"
         db.add(Asset(id=asset_id, workspace_id=workspace_id, project_id=context.project.id if context.project else None,
                      run_id=context.run.id, step_id=step.id, provider="local", model="subtitle", filename=filename,
-                     content_type=content_type, bytes=len(data)))
+                     content_type=content_type, bytes=len(data), kind=storage.SUBTITLE))
         duration = segments[-1].end / 1000
         asset = {"id": asset_id, "asset_id": asset_id, "filename": filename, "content_type": content_type,
                  "format": config["format"], "cue_count": len(cues), "duration": duration, "timing": timing,

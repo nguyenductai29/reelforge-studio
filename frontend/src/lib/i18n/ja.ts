@@ -39,6 +39,39 @@ export const ja: Dictionary = {
     previous: "前へ",
     next: "次へ",
   },
+  storage: {
+    usedOf: (used: string, quota: string) => `${used} / ${quota}`,
+    levels: {
+      ok: "",
+      notice: "ストレージの70%以上を使用しています。",
+      warning: "ストレージの80%以上を使用しています。不要なメディアを削除してください。",
+      critical: "ストレージの90%以上を使用しています。まもなくアップロードや新しいメディアの作成ができなくなります。",
+      full: "ストレージが満杯です。アップロードと新しいメディアの作成は停止中です。既存のメディアは引き続き表示・ダウンロードできます。",
+    },
+    banner: {
+      warning: (percent: string) => `このスタジオはストレージの${percent}%を使用しています。`,
+      critical: (percent: string) => `このスタジオはストレージの${percent}%を使用しています。まもなく新しいメディアを作成できなくなります。`,
+      full: (percent: string) => `ストレージが満杯です (${percent}%)。アップロードと新しいメディアの作成は停止中です。`,
+    },
+    manage: "ストレージを管理",
+    retention: (days: number, tempDays: number) =>
+      days
+        ? `中間メディア (シーン動画、ナレーション、生成画像、元動画から切り出したクリップ) は完成動画ができてから${days}日後に、一時ファイルは${tempDays}日後に削除されます。完成動画とアップロードしたファイルは自動では削除されません。`
+        : `中間メディアは削除するまで保持され、一時ファイルは${tempDays}日後に削除されます。完成動画とアップロードしたファイルは自動では削除されません。`,
+    intermediateTitle: "中間メディア",
+    intermediateHint: (days: number) =>
+      `完成動画のレンダリングが済んだ実行のシーン動画、ナレーション、生成画像、切り出しクリップです${days ? ` (${days}日後に自動削除)` : ""}。投稿で使用中のメディアは保持されます。`,
+    intermediateNow: (count: number, size: string) => `今すぐ削除できるもの: ${count}件 · ${size}`,
+    scope: "対象",
+    allProjects: "すべてのプロジェクト",
+    removeIntermediate: "中間メディアを削除",
+    confirmTitle: "中間メディアを削除しますか?",
+    confirmDescription: (count: number, size: string) =>
+      `${count}件 (${size}) を削除します。完成動画は引き続き再生・ダウンロード・投稿できますが、これらの実行を再レンダリングすることはできなくなります。元に戻せません。`,
+    nothingToRemove: "この対象には削除できる中間メディアがありません。",
+    removeConfirm: "削除",
+    cleaned: (count: number, size: string) => `${count}件を削除し、${size}を解放しました。`,
+  },
   nav: {
     groups: { main: "メイン", ai: "AI", workspace: "スタジオ" },
     home: "ホーム",
@@ -761,6 +794,7 @@ export const ja: Dictionary = {
       facebook_description: "Facebookの説明",
       music_file: "音楽ファイル",
       music_volume: "音楽の音量 (%)",
+      music_mode: "音楽が動画より短いとき",
     } as Record<string, string>,
     hints: {
       brief: "プロンプト入力に何も接続されていない場合に使います。空欄ならプロジェクトのテーマを使います。",
@@ -783,6 +817,7 @@ export const ja: Dictionary = {
       tiktok_caption: "空欄ならメタデータステップの提案を使います。TikTokには下書きとして届き、投稿はアプリで完了します。",
       music_file: "使用権のある MP3・WAV・OGG ファイルをメディアにアップロードしてください。音楽は動画全体でループします。",
       music_volume: "ナレーションに対する音量です。通常は10〜20%が聞きやすい設定です。音楽ポートをレンダリングステップに接続してください。",
+      music_mode: "動画より長い音楽は、動画の終わりで必ずカットされます。",
     } as Record<string, string>,
     placeholders: {
       brief: "例：初心者向けに夜の森を紹介する",
@@ -843,6 +878,7 @@ export const ja: Dictionary = {
       recap_style: { summary: "要約", storytelling: "ストーリー", review: "レビュー", explainer: "解説" },
       spoiler_level: { none: "ネタバレなし", light: "軽いネタバレ", full: "物語全体" },
       cut_mode: { copy_first: "エンコード維持、必要なら再エンコード", reencode: "常に再エンコード（正確）" },
+      music_mode: { loop: "繰り返す", once: "1回だけ再生" },
     } as Record<string, Record<string, string>>,
     errors: {
       invalid_config: "設定が正しくありません。",
@@ -1022,6 +1058,19 @@ export const ja: Dictionary = {
     selectHint: "ファイルを選ぶとプレビューと詳細が表示されます。",
     noProject: "プロジェクトなし",
     attached: "ファイルのプロジェクトを更新しました。",
+    projectFilter: "プロジェクトで絞り込み",
+    allProjects: "すべてのプロジェクト",
+    selectAll: "すべて選択",
+    selectedCount: (n: number) => `${n}件選択中`,
+    pick: (name: string) => `${name}を選択`,
+    delete: "削除",
+    deleteSelected: "選択した項目を削除",
+    deleteTitle: (n: number) => (n === 1 ? "このファイルを削除しますか?" : `${n}件のファイルを削除しますか?`),
+    deleteDescription: (size: string) =>
+      `${size}を解放します。ファイルはサーバーから削除され、実行履歴の記録は残りますが、このファイルから再レンダリングすることはできません。元に戻せません。`,
+    deleted: (n: number, size: string) => `${n}件を削除し、${size}を解放しました。`,
+    inUse: "完了していない投稿で使用中のファイルは削除されませんでした。",
+    unavailable: "ファイルはありません",
   },
   publishing: {
     title: "公開",
@@ -1252,6 +1301,7 @@ export const ja: Dictionary = {
     paymentFailed: "支払いが完了しませんでした。もう一度お試しください。",
     paymentInvalid: "支払い結果を確認できなかったため、注文は記録されていません。「確認」で照会してください。",
     history: { plan: "プラン", method: "支払い方法", amount: "金額", status: "状態", created: "作成日時", paid: "支払日時", reference: "注文番号" },
+    storage: (size: string) => `メディア保存容量 ${size}`,
   },
   settings: {
     title: "設定",
@@ -1311,7 +1361,8 @@ export const ja: Dictionary = {
       pathHint: "メディアデータの移動はサーバー上で行う必要があります。",
       quota: (used: string, quota: string) => `${used} / ${quota}`,
       byType: { video: "動画", audio: "音声", image: "画像", document: "ドキュメント" },
-      cleanupHint: "一時ファイルや孤立ファイルはサーバーで python -m app.media_maintenance を実行して整理します（既定はプレビューのみ）。",
+      cleanupHint: "一時ファイルと期限切れのメディアはサーバーで毎日整理されます。完成動画とアップロードしたファイルは自動では削除されません。",
+      pathFromEnv: "サーバーの REELFORGE_STORAGE_ROOT で設定されています。",
     },
     security: {
       signOut: "このデバイスからログアウト",
@@ -1330,7 +1381,7 @@ export const ja: Dictionary = {
   admin: {
     title: "管理",
     subtitle: "システム全体のアカウント、スタジオ、プラン、クレジット。",
-    stats: { users: "ユーザー", studios: "スタジオ", plans: "プラン", pendingPayments: "保留中の支払い", pendingReconciliation: "照合待ち", stuckJobs: "停止中のジョブ" },
+    stats: { users: "ユーザー", studios: "スタジオ", plans: "プラン", pendingPayments: "保留中の支払い", pendingReconciliation: "照合待ち", stuckJobs: "停止中のジョブ", storageAlerts: "容量90%以上のスタジオ" },
     tabs: { users: "ユーザー", studios: "スタジオとクレジット", plans: "プラン設定", payments: "支払い", reconciliation: "クレジット照合", operations: "運用" },
     reconciliation: {
       description: "結果が不明なリクエストをプロバイダーの記録と照合し、課金の確定または確保済みクレジットの返還を行います。各判断は監査のために記録され、変更できません。",
@@ -1411,7 +1462,7 @@ export const ja: Dictionary = {
       reason: "理由",
       expires: (date: string) => `${date} 終了`,
       owner: "オーナー",
-      columns: { studio: "スタジオ", owner: "オーナー", plan: "プラン", credits: "クレジット", expires: "有効期限", status: "状態", actions: "操作" },
+      columns: { studio: "スタジオ", owner: "オーナー", plan: "プラン", credits: "クレジット", expires: "有効期限", status: "状態", actions: "操作", storage: "ストレージ" },
       noEnd: "期限なし",
       viewDetails: "詳細を表示",
       changePlan: "プラン変更",
@@ -1439,6 +1490,8 @@ export const ja: Dictionary = {
       monthlyCredits: "毎月のクレジット",
       active: "利用可能",
       save: "プランを保存",
+      storageLimit: "ストレージ (GB)",
+      storageDefault: (size: string) => `サーバー既定 (${size})`,
     },
     saved: "変更を保存しました。",
     operations: {
@@ -1458,6 +1511,8 @@ export const ja: Dictionary = {
       files: (n: number) => `${n}ファイル`,
       columns: { worker: "ワーカー", queue: "キュー", state: "状態", attempts: "試行", updated: "更新", error: "エラー" },
       noJobs: "該当するジョブはありません。",
+      disk: (used: string, total: string, free: string) => `メディア用ディスク: ${used} / ${total} (空き ${free})`,
+      storageLevel: { notice: "70%以上", warning: "80%以上", critical: "90%以上", full: "満杯" },
     },
     payments: {
       columns: { order: "注文番号", user: "ユーザー", studio: "スタジオ", plan: "プラン", provider: "決済代行", amount: "金額", status: "状態", created: "作成日時", paid: "支払日時", reference: "取引番号", actions: "操作" },

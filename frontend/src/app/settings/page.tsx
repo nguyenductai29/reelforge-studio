@@ -14,7 +14,7 @@ import { FieldLabel, OptionChips, PageHeader, SettingRow } from "@/components/re
 import { DefaultModelsForm, StorageUsagePanel } from "@/components/reelforge/default-models";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
-import { useDocumentTitle } from "@/lib/hooks";
+import { useDocumentTitle, useSearchParam } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { LOCALES, LOCALE_NAMES, isLocale } from "@/lib/i18n/config";
 import { keys, useDashboard, useSettings } from "@/lib/queries";
@@ -46,6 +46,11 @@ export default function SettingsPage() {
   const [displayName, setDisplayName] = useState("");
   const [tab, setTab] = useState("defaults");
   const [saving, setSaving] = useState<"workspace" | "system" | "profile" | null>(null);
+  // ?tab=storage opens a tab directly (the storage warning links here).
+  const requestedTab = useSearchParam("tab");
+  useEffect(() => {
+    if (requestedTab) setTab(requestedTab);
+  }, [requestedTab]);
 
   useEffect(() => {
     if (settings.data) {
@@ -95,7 +100,7 @@ export default function SettingsPage() {
     if (!system) return;
     setSaving("system");
     try {
-      const { storage_dir: _ignored, ...body } = system;
+      const { storage_dir: _ignored, storage_dir_source: _source, ...body } = system;
       await api("settings/system", jsonRequest("PUT", body));
       await client.invalidateQueries({ queryKey: keys.settings });
       toast.success(s.savedToast);
@@ -314,7 +319,9 @@ export default function SettingsPage() {
               <div>
                 <FieldLabel>{s.storage.path}</FieldLabel>
                 <p className="break-all font-mono text-xs">{system.storage_dir}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{s.storage.pathHint}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {system.storage_dir_source === "environment" ? s.storage.pathFromEnv : s.storage.pathHint}
+                </p>
               </div>
             )}
           </div>

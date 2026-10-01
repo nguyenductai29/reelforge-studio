@@ -71,6 +71,9 @@ export function assetKind(contentType: string): AssetKind {
   return "other";
 }
 
+/** One gigabyte as formatBytes counts it (1024³ bytes); storage limits are entered in it. */
+export const GIB = 1024 ** 3;
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];

@@ -37,10 +37,10 @@ import uuid
 from sqlalchemy import select, update
 
 from app import heartbeat
-from app import jobs, render, subtitles, usage
+from app import jobs, render, storage, subtitles, usage
 from app.db import Session
 from app.logs import log_event
-from app.media_paths import media_root, stored_bytes, workspace_media_quota
+from app.media_paths import media_root
 from app.models import Asset, UsageEvent, WorkflowJob, WorkflowRun, WorkflowRunStep
 from app.provider_progress import step_output
 from app.runtime_env import start_process
@@ -131,7 +131,7 @@ def _fail(claim: Claim, error: render.RenderError, started: float) -> None:
 def _input(claim: Claim, asset_id) -> Path:
     if not isinstance(asset_id, str) or not _ASSET_ID.fullmatch(asset_id):
         raise render.RenderError("input_missing", "An input asset ID is invalid", "invalid_request")
-    path = claim.root / claim.workspace_id / asset_id
+    path = storage.file_in(claim.root, claim.workspace_id, asset_id)
     if not path.is_file():
         raise render.RenderError("input_missing", "An input file is missing from media storage", "invalid_request")
     return path
@@ -170,7 +170,8 @@ def _render(claim: Claim, folder: Path, runner) -> tuple[Path, dict, bool]:
             (folder / render.SUBTITLE_NAME).write_bytes(render.burn_in_file(cues))
             burn, style = True, render.force_style(subtitle.get("style"), render.subtitle_font())
     render.run_ffmpeg(render.build_command(ffmpeg, clips, tracks, subtitles=burn, style=style, music=music_track,
-                                           music_volume=(music.get("volume") or 15) / 100 if music else 0.15),
+                                           music_volume=(music.get("volume") or 15) / 100 if music else 0.15,
+                                           music_loop=not music or music.get("mode") != "once"),
                       folder, render.render_timeout_seconds(), runner)
     output = folder / render.OUTPUT_NAME
     if not output.is_file() or not valid_mp4(output, max_bytes=render.MAX_RENDER_BYTES):
@@ -213,7 +214,7 @@ def _store(claim: Claim, output: Path, facts: dict, burned: bool, started: float
     asset_id = str(uuid.uuid4())
     filename = f"render-{asset_id[:8]}.mp4"
     size = output.stat().st_size
-    target = claim.root / claim.workspace_id / asset_id
+    target = storage.file_in(claim.root, claim.workspace_id, asset_id)
     moved = False
     try:
         with Session.begin() as db:
@@ -221,14 +222,15 @@ def _store(claim: Claim, output: Path, facts: dict, burned: bool, started: float
             if not live or not jobs.complete_job(db, job_id=claim.job_id, lease_token=claim.token):
                 return  # another worker owns the job now
             _, run, step = live
-            if stored_bytes(db, claim.workspace_id) + size > workspace_media_quota():
+            storage.lock_workspace(db, claim.workspace_id)
+            if not storage.has_room(db, claim.workspace_id, size):
                 raise render.RenderError("storage_limit_exceeded", "Workspace media quota reached", "configuration_error")
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(output, target)
             moved = True
             db.add(Asset(id=asset_id, workspace_id=claim.workspace_id, project_id=run.project_id, run_id=run.id,
                          step_id=step.id, provider="ffmpeg", model="local", filename=filename,
-                         content_type="video/mp4", bytes=size))
+                         content_type="video/mp4", bytes=size, kind=storage.FINAL_RENDER))
             credits = claim.payload.get("credits") or 0
             reference = claim.payload.get("usage_reference")
             if credits and reference and not db.scalar(select(UsageEvent.id).where(UsageEvent.reference == reference)):
@@ -304,9 +306,10 @@ def _store_clips(claim: Claim, cut: list[tuple[Path, dict]], started: float) -> 
             if not live or not jobs.complete_job(db, job_id=claim.job_id, lease_token=claim.token):
                 return  # another worker owns the job now
             _, run, step = live
-            if stored_bytes(db, claim.workspace_id) + total > workspace_media_quota():
+            storage.lock_workspace(db, claim.workspace_id)
+            if not storage.has_room(db, claim.workspace_id, total):
                 raise render.RenderError("storage_limit_exceeded", "Workspace media quota reached", "configuration_error")
-            folder = claim.root / claim.workspace_id
+            folder = storage.file_in(claim.root, claim.workspace_id)
             folder.mkdir(parents=True, exist_ok=True)
             for path, facts in cut:
                 asset_id = str(uuid.uuid4())
@@ -317,7 +320,8 @@ def _store_clips(claim: Claim, cut: list[tuple[Path, dict]], started: float) -> 
                 targets.append(target)
                 db.add(Asset(id=asset_id, workspace_id=claim.workspace_id, project_id=run.project_id, run_id=run.id,
                              step_id=step.id, provider="ffmpeg", model="local", filename=filename,
-                             content_type="video/mp4", bytes=size, source_asset_id=facts["source_asset_id"]))
+                             content_type="video/mp4", bytes=size, source_asset_id=facts["source_asset_id"],
+                             kind=storage.EXTRACTED_CLIP))
                 entries.append({"id": asset_id, "asset_id": asset_id, "filename": filename, "content_type": "video/mp4",
                                 "provider": "ffmpeg", "model": "local", **facts})
             entries.sort(key=lambda entry: entry["scene_index"] if isinstance(entry["scene_index"], int) else 0)
