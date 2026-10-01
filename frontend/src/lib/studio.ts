@@ -1,4 +1,4 @@
-import type { Asset, Project, Publication, Run, RunStatus } from "./types";
+import type { Asset, Project, Publication, Run, RunStatus, StorageLevel, StorageLevelInfo } from "./types";
 
 export type ProjectStatus = "draft" | "generating" | "review" | "ready" | "published";
 
@@ -69,6 +69,17 @@ export function assetKind(contentType: string): AssetKind {
   if (contentType.startsWith("image/")) return "image";
   if (contentType.startsWith("audio/")) return "audio";
   return "other";
+}
+
+/** ``percent`` and ``level`` as app/storage.py computes them (70, 80, 90 and 100 %), when the API left them out. */
+export function withStorageLevel<T extends { used_bytes: number; quota_bytes: number }>(
+  info: T & Partial<StorageLevelInfo>,
+): T & StorageLevelInfo {
+  if (info.level && typeof info.percent === "number") return info as T & StorageLevelInfo;
+  const share = info.quota_bytes > 0 ? (info.used_bytes * 100) / info.quota_bytes : 100;
+  const level: StorageLevel =
+    share >= 100 ? "full" : share >= 90 ? "critical" : share >= 80 ? "warning" : share >= 70 ? "notice" : "ok";
+  return { ...info, percent: Math.round(share * 10) / 10, level };
 }
 
 /** One gigabyte as formatBytes counts it (1024³ bytes); storage limits are entered in it. */

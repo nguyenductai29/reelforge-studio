@@ -1381,6 +1381,7 @@ export const en: Dictionary = {
   admin: {
     title: "Admin",
     subtitle: "Accounts, studios, plans and credits across the whole system.",
+    apiOutdated: "The API server runs an older version than this page: run python -m alembic upgrade head, then restart the API and workers.",
     stats: { users: "Users", studios: "Studios", plans: "Plans", pendingPayments: "Pending payments", pendingReconciliation: "Awaiting reconciliation", stuckJobs: "Stuck jobs", storageAlerts: "Studios ≥ 90% storage" },
     tabs: { users: "Users", studios: "Studios & credits", plans: "Plans", payments: "Payments", reconciliation: "Credit reconciliation", operations: "Operations" },
     reconciliation: {

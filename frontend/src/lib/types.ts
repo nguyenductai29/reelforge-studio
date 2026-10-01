@@ -201,8 +201,8 @@ export type Plan = {
   price_vnd: number | null;
   /** Media a workspace on this plan may store; null uses the server default. */
   storage_limit_bytes: number | null;
-  /** The limit in force (the server may cap it). */
-  storage_quota_bytes: number;
+  /** The limit in force (the server may cap it); absent from an API older than Phase 17. */
+  storage_quota_bytes?: number;
 };
 export type PaymentMethod = "vietqr" | "card";
 export type Order = {
@@ -294,9 +294,9 @@ export type StorageLevelInfo = { used_bytes: number; quota_bytes: number; percen
 export type RetentionInfo = { intermediate_days: number; temp_days: number; partial_days: number };
 export type StorageUsage = StorageLevelInfo & {
   by_type: Record<"video" | "audio" | "image" | "document", number>;
-  /** Intermediate media a user may remove now (their run has a final render). */
-  intermediate: { assets: number; bytes: number };
-  retention: RetentionInfo;
+  /** Intermediate media a user may remove now (their run has a final render); null from an older API. */
+  intermediate: { assets: number; bytes: number } | null;
+  retention: RetentionInfo | null;
 };
 export type StorageCleanup = { assets: number; bytes: number; applied: boolean };
 export type MediaDeleteResult = {
@@ -355,7 +355,7 @@ export type AdminStorage = {
   levels: Record<Exclude<StorageLevel, "ok">, number>;
   disk: { total_bytes: number; used_bytes: number; free_bytes: number; percent: number } | null;
   default_quota_bytes: number;
-  retention: RetentionInfo;
+  retention: RetentionInfo | null;
 };
 export type RunStepItem = { node_id: string; node_type: NodeType; status: RunStatus; detail: string; error_code: string | null };
 /** GET /api/workflow-runs/{id}/summary: progress, results, credits and publishing of one run. */
@@ -449,6 +449,8 @@ export type AdminOverview = {
   storage_levels: Record<Exclude<StorageLevel, "ok">, number>;
   plans: Plan[];
   payment_providers: PaymentProviderStatus[];
+  /** Set by the client when the API is older than this page (it has not been restarted after an update). */
+  api_outdated?: boolean;
 };
 export type AdminUser = {
   id: string;
@@ -481,7 +483,7 @@ export type AdminWorkspaceDetail = AdminWorkspace & {
   members: { email: string; role: string }[];
   counts: { projects: number; workflows: number; runs: number };
   storage_bytes: number;
-  storage: StorageLevelInfo;
+  storage?: StorageLevelInfo;
   ledger: { id: string; delta: number; reason: string; created_at: string }[];
   orders: Order[];
 };

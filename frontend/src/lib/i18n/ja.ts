@@ -1381,6 +1381,7 @@ export const ja: Dictionary = {
   admin: {
     title: "管理",
     subtitle: "システム全体のアカウント、スタジオ、プラン、クレジット。",
+    apiOutdated: "API サーバーがこの画面より古いバージョンで動作しています。python -m alembic upgrade head を実行し、API とワーカーを再起動してください。",
     stats: { users: "ユーザー", studios: "スタジオ", plans: "プラン", pendingPayments: "保留中の支払い", pendingReconciliation: "照合待ち", stuckJobs: "停止中のジョブ", storageAlerts: "容量90%以上のスタジオ" },
     tabs: { users: "ユーザー", studios: "スタジオとクレジット", plans: "プラン設定", payments: "支払い", reconciliation: "クレジット照合", operations: "運用" },
     reconciliation: {

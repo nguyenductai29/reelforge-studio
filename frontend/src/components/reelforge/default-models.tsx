@@ -114,10 +114,12 @@ export function StorageUsagePanel() {
           </div>
         ))}
       </div>
-      <p className="text-xs text-muted-foreground">
-        {t.storage.retention(usage.retention.intermediate_days, usage.retention.temp_days)}
-      </p>
-      <IntermediateCleanup />
+      {usage.retention && (
+        <p className="text-xs text-muted-foreground">
+          {t.storage.retention(usage.retention.intermediate_days, usage.retention.temp_days)}
+        </p>
+      )}
+      {usage.intermediate && <IntermediateCleanup />}
       <p className="text-xs text-muted-foreground">{s.cleanupHint}</p>
     </div>
   );

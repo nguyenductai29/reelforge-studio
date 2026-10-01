@@ -142,9 +142,9 @@ export function IntermediateCleanup() {
       <div>
         <p className="text-sm font-medium">{s.intermediateTitle}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          {s.intermediateHint(usage?.retention.intermediate_days ?? 30)}
+          {s.intermediateHint(usage?.retention?.intermediate_days ?? 30)}
         </p>
-        {usage && (
+        {usage?.intermediate && (
           <p className="mt-1 text-xs">{s.intermediateNow(usage.intermediate.assets, formatBytes(usage.intermediate.bytes))}</p>
         )}
       </div>

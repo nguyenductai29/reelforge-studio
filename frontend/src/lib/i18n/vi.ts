@@ -1286,6 +1286,7 @@ export const vi = {
   admin: {
     title: "Quản trị",
     subtitle: "Tài khoản, studio, gói dịch vụ và credits của toàn hệ thống.",
+    apiOutdated: "Máy chủ API đang chạy phiên bản cũ hơn giao diện này: hãy chạy python -m alembic upgrade head rồi khởi động lại API và các worker.",
     stats: { users: "Người dùng", studios: "Studio", plans: "Gói dịch vụ", pendingPayments: "Thanh toán chờ", pendingReconciliation: "Chờ đối soát", stuckJobs: "Tác vụ kẹt", storageAlerts: "Studio ≥ 90% dung lượng" },
     tabs: { users: "Người dùng", studios: "Studio & credits", plans: "Cấu hình gói", payments: "Thanh toán", reconciliation: "Đối soát credits", operations: "Vận hành" },
     reconciliation: {

@@ -2,6 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
+import { withStorageLevel } from "./studio";
 import type {
   AdminJobs,
   AdminOverview,
@@ -24,11 +25,19 @@ import type {
   RunSummary,
   ScriptItem,
   Settings,
+  StorageLevel,
   StorageUsage,
   Usage,
   WorkerHealth,
   YouTubeConnection,
 } from "./types";
+
+/*
+ * After an update, the API may still be the previous version until it is restarted (the API does not
+ * reload by itself). The hooks below fill what newer pages read, so such a page shows less instead of failing.
+ */
+const NO_LEVELS: Record<Exclude<StorageLevel, "ok">, number> = { notice: 0, warning: 0, critical: 0, full: 0 };
+type LegacyAdmin = { users?: { is_active: boolean; is_admin: boolean }[]; workspaces?: unknown[] };
 
 const ACTIVE_RUN = new Set(["running", "queued", "submitting"]);
 const ACTIVE_UPLOAD = new Set(["queued", "uploading"]);
@@ -73,7 +82,14 @@ export function useNodeTypes() {
 }
 
 export function useDashboard() {
-  return useQuery({ queryKey: keys.dashboard, queryFn: () => api<Dashboard>("dashboard") });
+  return useQuery({
+    queryKey: keys.dashboard,
+    queryFn: () =>
+      api<Dashboard>("dashboard").then((data) => ({
+        ...data,
+        storage: data.storage ? withStorageLevel(data.storage) : undefined,
+      })),
+  });
 }
 
 /** Latest runs across all workflows; polls while any of them is still working. */
@@ -125,7 +141,16 @@ export function useUsage() {
 }
 
 export function useBilling() {
-  return useQuery({ queryKey: keys.billing, queryFn: () => api<Billing>("billing") });
+  return useQuery({
+    queryKey: keys.billing,
+    queryFn: () =>
+      api<Billing>("billing").then((data) => ({
+        ...data,
+        methods: data.methods ?? [],
+        orders: data.orders ?? [],
+        orders_total: data.orders_total ?? data.orders?.length ?? 0,
+      })),
+  });
 }
 
 export function useAiTools() {
@@ -161,7 +186,15 @@ export function useDefaultModels() {
 }
 
 export function useStorage() {
-  return useQuery({ queryKey: keys.storage, queryFn: () => api<StorageUsage>("storage") });
+  return useQuery({
+    queryKey: keys.storage,
+    queryFn: () =>
+      api<StorageUsage>("storage").then((data) => ({
+        ...withStorageLevel(data),
+        intermediate: data.intermediate ?? null,
+        retention: data.retention ?? null,
+      })),
+  });
 }
 
 export function useAdminWorkers(enabled: boolean) {
@@ -259,7 +292,18 @@ export function useCalendarPublications(start: string, end: string) {
 export function useAdminStorage(enabled: boolean, offset = 0, limit = 20) {
   return useQuery({
     queryKey: [...keys.adminStorage, offset, limit],
-    queryFn: () => adminPage<AdminStorage>("admin/storage", { limit, offset }),
+    queryFn: () =>
+      adminPage<AdminStorage & { quota_bytes?: number }>("admin/storage", { limit, offset }).then((data) => {
+        // Before Phase 17 every studio shared quota_bytes and items carried only "bytes".
+        const workspaces = data.workspaces.map((item) =>
+          withStorageLevel({ ...item, used_bytes: item.used_bytes ?? (item as { bytes?: number }).bytes ?? 0,
+                             quota_bytes: item.quota_bytes ?? data.quota_bytes ?? 0 }),
+        );
+        const levels = data.levels ?? { ...NO_LEVELS };
+        if (!data.levels) for (const item of workspaces) if (item.level !== "ok") levels[item.level] += 1;
+        return { ...data, workspaces, levels, total: data.total ?? workspaces.length, disk: data.disk ?? null,
+                 retention: data.retention ?? null };
+      }),
     enabled,
     placeholderData: (previous) => previous,
   });
@@ -270,7 +314,34 @@ export function useSettings() {
 }
 
 export function useAdmin(enabled: boolean) {
-  return useQuery({ queryKey: keys.admin, queryFn: () => api<AdminOverview>("admin"), enabled });
+  return useQuery({
+    queryKey: keys.admin,
+    queryFn: () =>
+      api<AdminOverview & LegacyAdmin>("admin").then((data) => {
+        // Before Phase 15 the API sent every user and studio instead of counts.
+        const users = data.users ?? [];
+        const counts = data.counts ?? {
+          users: users.length,
+          active_users: users.filter((user) => user.is_active).length,
+          admins: users.filter((user) => user.is_admin && user.is_active).length,
+          workspaces: data.workspaces?.length ?? 0,
+          plans: data.plans?.length ?? 0,
+          pending_reconciliation: 0,
+          failed_jobs_24h: 0,
+          stuck_jobs: 0,
+          pending_payments: 0,
+          storage_alerts: 0,
+        };
+        return {
+          counts: { ...counts, storage_alerts: counts.storage_alerts ?? 0 },
+          storage_levels: data.storage_levels ?? { ...NO_LEVELS },
+          plans: data.plans ?? [],
+          payment_providers: data.payment_providers ?? [],
+          api_outdated: !data.counts,
+        };
+      }),
+    enabled,
+  });
 }
 
 export function useReconciliation(status: "pending" | "resolved", offset: number, limit = 50) {

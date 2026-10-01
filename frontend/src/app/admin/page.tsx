@@ -95,7 +95,7 @@ function PlanForm({ plan }: { plan: Plan }) {
         {field("storage_limit_gb", p.storageLimit, {
           type: "number", min: 0.1, max: 102400, step: 0.1,
           defaultValue: plan.storage_limit_bytes ? Math.round((plan.storage_limit_bytes / GIB) * 10) / 10 : "",
-          placeholder: p.storageDefault(formatBytes(plan.storage_quota_bytes)),
+          placeholder: plan.storage_quota_bytes ? p.storageDefault(formatBytes(plan.storage_quota_bytes)) : "",
         })}
         <div className="flex items-end justify-end">
           <Button type="submit" size="sm" disabled={busy}>
@@ -143,6 +143,7 @@ export default function AdminPage() {
         <div className="min-w-0">
           <h1 className="text-xl font-semibold">{a.title}</h1>
           <p className="truncate text-xs text-muted-foreground">{a.subtitle}</p>
+          {overview.api_outdated && <p className="text-xs text-warning">{a.apiOutdated}</p>}
         </div>
         <dl className="flex flex-wrap gap-2">
           {stats.map(([label, value, warn]) => (

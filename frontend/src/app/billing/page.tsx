@@ -237,7 +237,7 @@ export default function BillingPage() {
                 <div className="space-y-1 text-sm text-muted-foreground">
                   <p>{t.billing.limits(limitText(p.project_limit), limitText(p.workflow_limit))}</p>
                   <p>{t.billing.monthlyCredits(formatNumber(p.monthly_credits))}</p>
-                  <p>{t.billing.storage(formatBytes(p.storage_quota_bytes))}</p>
+                  {p.storage_quota_bytes ? <p>{t.billing.storage(formatBytes(p.storage_quota_bytes))}</p> : null}
                 </div>
                 {/* Without a configured payment method there is nothing to press; the notice below explains why. */}
                 {canBuy && canPay && (

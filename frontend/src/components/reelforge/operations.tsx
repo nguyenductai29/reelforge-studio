@@ -157,7 +157,7 @@ export function Operations() {
               </li>
             ))}
           </ul>
-          {storage.data && (
+          {storage.data?.retention && (
             <p className="text-[11px] text-muted-foreground">
               {t.storage.retention(storage.data.retention.intermediate_days, storage.data.retention.temp_days)}
             </p>

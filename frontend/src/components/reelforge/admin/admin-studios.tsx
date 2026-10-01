@@ -71,7 +71,7 @@ function DetailDialog({ workspace, onClose }: { workspace: AdminWorkspace | null
             </dl>
             <div>
               <p className="mb-1 text-xs font-medium text-muted-foreground">{s.storage}</p>
-              <StorageMeter info={data.storage} />
+              {data.storage ? <StorageMeter info={data.storage} /> : <p>{formatBytes(data.storage_bytes)}</p>}
             </div>
             <div>
               <p className="mb-1 text-xs font-medium text-muted-foreground">{s.members}</p>
