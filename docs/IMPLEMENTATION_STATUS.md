@@ -16,6 +16,8 @@
 
 > Phase 17 makes local storage safe for many studios: one configurable root (`REELFORGE_STORAGE_ROOT`), per-plan storage limits with warning levels and race-free enforcement, asset kinds, retention of intermediate media once a final video exists, a daily cleanup that only deletes verified files inside the root, and owner-confirmed deletion, with migration 0016; see [Phase 17 changes](#phase-17-changes) and [STORAGE.md](STORAGE.md). Offline tests only.
 
+> Phase 18 adds a system-admin-only payment setup view (field names and configured/missing, never a secret; a read-only check), a realtime notification center (Server-Sent Events with a polling fallback), in-app customer support with an admin console, and a live-verification center (safe readiness checks and a manual checklist), with migration 0017; see [Phase 18 changes](#phase-18-changes), [NOTIFICATIONS.md](NOTIFICATIONS.md), [SUPPORT.md](SUPPORT.md) and [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md). Offline tests only.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -539,6 +541,42 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
 - **Schema**: migration `0016_storage_lifecycle` (`plans.storage_limit_bytes`; `assets.kind`, `expired_at`, `expired_reason`, `expired_bytes`; `ix_assets_kind_created_at`), tested from 0015 and back.
 - **Tests**: `test_storage_lifecycle.py`, `test_storage_migration.py`; `test_reconciliation_workers.py` now sets the quota through `WORKSPACE_MEDIA_QUOTA_BYTES` instead of patching the removed `video_worker.workspace_media_quota`.
 
+### Phase 18 changes
+
+- **Payment setup (18A)** (`app/payment_providers/setup.py`):
+  - `GET /api/admin/payment-config` and `POST /api/admin/payment-config/check`, system admins only.
+  - Shows field names with configured/missing/invalid. Only the payOS client ID and the OnePAY merchant ID are shown, masked.
+  - Also shows OnePAY's mode from the payment URL, the callback URLs, and the last webhook/IPN/query/check times (system setting `payment_activity`).
+  - The check is local. With `remote`, OnePAY receives one QueryDR about `RFCHECK<time>`. payOS remote is "unsupported". Secrets stay in bootstrap/env.
+- **Notifications (18B)** (`app/notifications.py`):
+  - The `notify` helper writes in the caller's transaction, with `ON CONFLICT DO NOTHING` on `(user_id, dedupe_key)`.
+  - Hooks:
+    - run status changes in `executor.advance_run`;
+    - publications (scheduled, succeeded, failed, needs attention, schedule failure);
+    - payments (paid, failed, paid_unapplied → admins);
+    - `usage.post_credit` (admin adjustment, low balance on crossing);
+    - storage 80/90/100 % in `storage.has_room` and uploads;
+    - support.
+  - The list, count, read and read-all endpoints are limited to studios the user still belongs to.
+  - `GET /api/notifications/stream` is Server-Sent Events: cookie auth, `Last-Event-ID` resume, `unread` events, a 15 s ping, a 300 s lifetime, `no-transform` and `X-Accel-Buffering: no`. Re-authorized every pass.
+  - Frontend: `NotificationStream` (one EventSource per tab, backoff, 30 s polling fallback), the bell with a "99+" badge, the popover, `/notifications`, and texts localized from `type` + `params`.
+- **Support (18C)** (`app/support.py`):
+  - Tickets with category, status and priority; append-only messages; validated context IDs.
+  - The creator or the studio owner sees a ticket; admins see all; admin authors are hidden from users.
+  - Admin → Hỗ trợ is a server-side table with a ticket dialog.
+  - Notifications both ways.
+- **Verification (18D)** (`app/readiness.py`):
+  - `GET /api/admin/readiness`: database and migration head, storage write probe, disk and last cleanup, FFmpeg, workers, AI key presence, publishing, payments mode, open streams, open tickets.
+  - The 18-item checklist in `verification_checks`, ticked only by an admin.
+  - Admin → Kiểm định, with a browser stream check.
+  - `media_maintenance --apply --intermediates` records its last run.
+- **Schema:** migration `0017_notify_support_verify`: `notifications`, `support_tickets`, `support_messages`, `verification_checks`. Tested from 0016 and back on SQLite and PostgreSQL 16. Revision IDs must fit `alembic_version.version_num` (32 characters), which a test now enforces.
+- **Tests:**
+  - `test_phase18.py`: notifications and SSE, support, admin payment setup, readiness and checklist; sentinel secrets never leak.
+  - `test_phase18_migration.py`.
+  - `test_product_audit.py` (Phase 18 frontend checks).
+- **Not verified live:** the stream through Cloudflare on the real domain, and payOS/OnePAY activity from real callbacks.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
@@ -553,6 +591,7 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
   - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `IMAGE_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `IMAGE_JOB_MAX_AGE_SECONDS`, `VOICE_CREDITS_PER_GENERATION`, `VOICE_JOB_MAX_AGE_SECONDS`, `RENDER_CREDITS_PER_JOB`, `RENDER_TIMEOUT_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
   - Rendering: `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`, `RENDER_SUBTITLE_FONT`, `RENDER_STILL_SECONDS`.
   - Storage (Phase 17): `REELFORGE_STORAGE_ROOT`, `WORKSPACE_MEDIA_QUOTA_BYTES` (a cap), `REELFORGE_RETENTION_INTERMEDIATE_DAYS`, `REELFORGE_RETENTION_TEMP_DAYS`, `REELFORGE_RETENTION_PARTIAL_DAYS`, `REELFORGE_RETENTION_ORPHAN_DAYS`.
+  - Notifications (Phase 18): `REELFORGE_SSE_POLL_SECONDS`, `REELFORGE_SSE_MAX_SECONDS`, `CREDITS_LOW_THRESHOLD`.
   - Card payments (Phase 14): `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`.
   - YouTube OAuth: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `REELFORGE_TOKEN_ENCRYPTION_KEY`.
   - Runtime file and logs: `REELFORGE_ENV_FILE` (default `.env.runtime`), `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL`.

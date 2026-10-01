@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, MoreHorizontal, Search } from "lucide-react";
+import { KeyRound, Loader2, MoreHorizontal, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -16,6 +16,7 @@ import { keys, useAdminPayments } from "@/lib/queries";
 import type { AdminPayment, PaymentProviderStatus } from "@/lib/types";
 import { DataTable, useDebounced, type Column } from "../data-table";
 import { StatusBadge } from "../primitives";
+import { PaymentSetupDialog } from "./payment-setup";
 import { Detail, FilterSelect } from "./shared";
 
 const LIMIT = 20;
@@ -36,6 +37,7 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
   const [offset, setOffset] = useState(0);
   const [viewing, setViewing] = useState<AdminPayment | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [setupOpen, setSetupOpen] = useState(false);
   const search = useDebounced(q.trim());
   const payments = useAdminPayments({ q: search, provider, status, limit: LIMIT, offset });
   const statusLabel = (value: string) => t.status.order[value as keyof Dictionary["status"]["order"]] ?? value;
@@ -142,9 +144,13 @@ export function AdminPayments({ providers }: { providers: PaymentProviderStatus[
                 </span>
               ))}
             </div>
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setSetupOpen(true)}>
+              <KeyRound className="size-3.5" /> {t.admin.paymentSetup.open}
+            </Button>
           </>
         }
       />
+      <PaymentSetupDialog open={setupOpen} onOpenChange={setSetupOpen} />
       <Dialog open={Boolean(viewing)} onOpenChange={(open) => !open && setViewing(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>

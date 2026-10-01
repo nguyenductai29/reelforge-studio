@@ -8,6 +8,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       className="toaster group"
+      // Sonner sets its own system font; the app font carries every Vietnamese and Japanese glyph.
+      style={{ fontFamily: "var(--font-sans)" }}
       toastOptions={{
         classNames: {
           toast:

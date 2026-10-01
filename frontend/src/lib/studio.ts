@@ -44,6 +44,12 @@ export const statusTone: Record<string, string> = {
   active: "connected",
   paused: "needs attention",
   unavailable: "draft",
+  // Support tickets (Phase 18C).
+  open: "scheduled",
+  waiting_support: "scheduled",
+  waiting_user: "review",
+  resolved: "completed",
+  closed: "draft",
 };
 
 const TINTS = [

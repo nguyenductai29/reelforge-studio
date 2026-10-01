@@ -95,6 +95,54 @@ The frontend proxies `/api/*` to the API, as for the payOS webhook. Restart the 
 - **Refresh provider state** (`POST /api/admin/payments/{id}/refresh`) runs the same provider query as **Check**.
 - There is deliberately no "mark as paid" action. Manual plan changes stay in **Studios & credits** and do not charge anyone.
 - Provider readiness (Configured/Missing) is shown above the table.
+- When an order is paid but cannot be applied (`paid_unapplied`), system admins get a notification ([NOTIFICATIONS.md](NOTIFICATIONS.md)). Owners are notified when their payment succeeds or fails.
+
+## Admin setup view
+
+Admin → Thanh toán → **Cấu hình cổng** (Phase 18A) shows what each provider needs.
+
+**Who can see it.** Only system admins: `GET /api/admin/payment-config` and `POST /api/admin/payment-config/check` answer 403 to anyone else, studio owners included. Owners keep what they had: choose a plan and a method, pay, and see their own orders. `GET /api/billing` still returns only the available `methods`, never configuration.
+
+**Where secrets live.** Credentials stay where they are and are never moved into the database or editable from the browser:
+
+- payOS in the `payos` object of `instance/bootstrap.json`;
+- OnePAY in the `ONEPAY_*` variables of `.env.runtime`.
+
+To change them, edit that file on the server and restart the API.
+
+| Provider | Field (where it is set) | Shown as |
+| --- | --- | --- |
+| payOS | `payos.client_id` (bootstrap) | Masked (`abcd…wxyz`) |
+| payOS | `payos.api_key`, `payos.checksum_key` (bootstrap) | Configured / missing |
+| OnePAY | `ONEPAY_MERCHANT_ID` | Masked |
+| OnePAY | `ONEPAY_ACCESS_CODE`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD` | Configured / missing |
+| OnePAY | `ONEPAY_HASH_KEY` | Configured / missing / invalid (not hex) |
+| OnePAY | `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` | In full (they are not secret), marked when the default is used |
+
+**Also shown:**
+
+- OnePAY's mode, from the payment URL:
+  - **Sandbox:** `mtf.onepay.vn`;
+  - **Production:** `onepay.vn`;
+  - **Custom:** any other host.
+- Whether QueryDR is configured.
+- The addresses to register with the provider, each with a copy button:
+  - payOS webhook `…/api/webhooks/payos`;
+  - OnePAY IPN `…/api/webhooks/onepay`;
+  - OnePAY return `…/api/billing/onepay/return`.
+
+  They come from System Settings → `frontend_origin`.
+- Activity: when the last verified payOS webhook, OnePAY IPN, status query and successful check arrived. This is kept in the system setting `payment_activity`, timestamps only.
+
+The response never contains a key, access code, hash key, password, the bootstrap file or the runtime environment. The tests plant sentinel secrets and assert that none of them appears.
+
+**Kiểm tra cấu hình** (`POST /api/admin/payment-config/check` with `{provider, remote}`) never charges and never creates a checkout:
+
+- **On the server** (`remote: false`): validates the configuration locally, as the checkout would. For OnePAY this covers the required fields, hex hash key and https URLs; missing QueryDR credentials are a warning.
+- **With OnePAY** (`remote: true`, OnePAY only): sends one signed QueryDR about the reference `RFCHECK<time>`, which no checkout ever used. A signed "no such transaction" answer proves the endpoint, credentials and hash key. Nothing is read or written for any real order.
+- **payOS** has no read-only call that proves its keys without creating a payment link, so its remote check is reported as unsupported. Verify payOS with one small real payment (Admin → Kiểm định checklist).
+
+Each check is logged as `payment_config_checked` with the statuses only.
 
 ## Tests
 
@@ -109,6 +157,14 @@ The frontend proxies `/api/*` to the API, as for the payOS webhook. Restart the 
 - cross-provider evidence;
 - renewal, upgrade, admin refresh and history pagination.
 
+`tests/test_phase18.py` covers the admin setup view:
+
+- only system admins can read it or run checks;
+- masked identifiers, and no secret anywhere in the response;
+- OnePAY's sandbox/production mode;
+- the read-only QueryDR check against a mocked client;
+- the activity timestamp after a successful check.
+
 Live payments have not been verified. See [Live verification](#live-verification).
 
 ## Live verification
@@ -122,3 +178,11 @@ Before accepting customers, an operator must check, with the OnePAY sandbox and 
 5. The credits appear once in **Gói & credits**.
 
 Repeat steps 1, 3 and 5 for payOS if its configuration changed.
+
+Before the sandbox test, open **Cấu hình cổng**:
+
+1. Check that the mode reads **Sandbox**.
+2. Run **Kiểm tra cấu hình** with OnePAY.
+3. After the payment, confirm that the IPN time appears under activity.
+
+Record the results in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).

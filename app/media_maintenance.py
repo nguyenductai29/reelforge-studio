@@ -388,6 +388,9 @@ def expire_intermediates(*, apply: bool = False, now: datetime | None = None, po
         gone = list(db.execute(select(Asset.workspace_id, Asset.id).where(Asset.expired_at.is_not(None))))
     swept = tuple(asset_id for workspace_id, asset_id in gone
                   if asset_id not in expired and remove_asset_file(root, workspace_id, asset_id) == "deleted")
+    # The admin readiness view shows when the daily job last ran.
+    from app.readiness import record_maintenance
+    record_maintenance(session_factory, expired=len(expired), freed_bytes=freed)
     return ExpiryReport(found, tuple(expired), tuple(skipped), freed, swept)
 
 

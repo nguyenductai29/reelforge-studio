@@ -9,6 +9,7 @@ created it: a card callback can never pay a VietQR order, or the reverse.
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from app.models import PaymentOrder, Subscription, Workspace
+from app import notifications
 from app.usage import post_credit
 
 OPEN_STATUSES = ("pending", "expired", "failed", "cancelled")
@@ -30,6 +31,7 @@ def apply_paid(db, order_code: int, amount: int, reference: str = "", provider: 
     subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == order.workspace_id).with_for_update())
     if not subscription or subscription.starts_at.replace(tzinfo=timezone.utc) > order.created_at.replace(tzinfo=timezone.utc):
         order.status = "paid_unapplied"
+        notifications.payment_settled(db, order, order.status)
         return order.status
     previous_plan = subscription.plan_code
     old_end = subscription.ends_at.replace(tzinfo=timezone.utc) if subscription.ends_at else None
@@ -41,6 +43,7 @@ def apply_paid(db, order_code: int, amount: int, reference: str = "", provider: 
     if order.credits_award:
         post_credit(db, order.workspace_id, order.credits_award, "subscription", f"payment:{order.id}")
     order.status = "paid"
+    notifications.payment_settled(db, order, order.status)
     return order.status
 
 
@@ -60,4 +63,5 @@ def settle(db, provider: str, evidence) -> str:
         return "unknown"
     if order.provider == provider and order.status == "pending" and evidence.status in ("failed", "cancelled", "expired"):
         order.status = evidence.status
+        notifications.payment_settled(db, order, order.status)
     return order.status

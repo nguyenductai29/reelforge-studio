@@ -11,6 +11,12 @@ import type {
   AdminUser,
   AdminWorkspace,
   AiTool,
+  NotificationPage,
+  PaymentSetup,
+  SupportTicket,
+  SystemReadiness,
+  SupportTicketDetail,
+  VerificationItem,
   Billing,
   ChannelStatus,
   Dashboard,
@@ -45,6 +51,13 @@ const POLL_MS = 5000;
 
 export const keys = {
   dashboard: ["dashboard"] as const,
+  notifications: ["notifications"] as const,
+  unread: ["notifications", "unread"] as const,
+  support: ["support"] as const,
+  adminSupport: ["admin", "support"] as const,
+  paymentSetup: ["admin", "payment-config"] as const,
+  systemReadiness: ["admin", "readiness"] as const,
+  verification: ["admin", "verification"] as const,
   runs: ["runs"] as const,
   workflowRuns: (id: string) => ["workflow-runs", id] as const,
   run: (id: string) => ["run", id] as const,
@@ -363,4 +376,76 @@ export function useRefreshStudio() {
       client.invalidateQueries({ queryKey: ["readiness"] }),
       client.invalidateQueries({ queryKey: keys.usage }),
     ]);
+}
+
+// --- Phase 18 -------------------------------------------------------------------------------------------
+
+/** One page of the user's notifications (newest first); ``fallback`` polls while the live stream is down. */
+export function useNotifications(offset = 0, limit = 20, unread = false, fallback = false) {
+  return useQuery({
+    queryKey: [...keys.notifications, "page", offset, limit, unread],
+    queryFn: () => adminPage<NotificationPage>("notifications", { limit, offset, unread: unread ? "true" : undefined }),
+    placeholderData: (previous) => previous,
+    refetchInterval: fallback ? 30000 : false,
+  });
+}
+
+export function useUnreadCount(fallback = false) {
+  return useQuery({
+    queryKey: keys.unread,
+    queryFn: () => api<{ unread: number }>("notifications/unread-count").then((data) => data.unread),
+    refetchInterval: fallback ? 30000 : false,
+  });
+}
+
+export function useSupportTickets(offset = 0, limit = 20) {
+  return useQuery({
+    queryKey: [...keys.support, "list", offset, limit],
+    queryFn: () => adminPage<Page<SupportTicket>>("support/tickets", { limit, offset }),
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function useSupportTicket(id: string | null) {
+  return useQuery({
+    queryKey: [...keys.support, "ticket", id],
+    queryFn: () => api<SupportTicketDetail>(`support/tickets/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useAdminSupport(filters: AdminFilters) {
+  return useQuery({
+    queryKey: [...keys.adminSupport, filters],
+    queryFn: () => adminPage<Page<SupportTicket>>("admin/support", filters),
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function useAdminSupportTicket(id: string | null) {
+  return useQuery({
+    queryKey: [...keys.adminSupport, "ticket", id],
+    queryFn: () => api<SupportTicketDetail>(`admin/support/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  });
+}
+
+export function usePaymentSetup(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.paymentSetup,
+    queryFn: () => api<{ providers: PaymentSetup[] }>("admin/payment-config").then((data) => data.providers),
+    enabled,
+  });
+}
+
+export function useSystemReadiness(enabled: boolean) {
+  return useQuery({ queryKey: keys.systemReadiness, queryFn: () => api<SystemReadiness>("admin/readiness"), enabled });
+}
+
+export function useVerification(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.verification,
+    queryFn: () => api<{ items: VerificationItem[] }>("admin/verification").then((data) => data.items),
+    enabled,
+  });
 }

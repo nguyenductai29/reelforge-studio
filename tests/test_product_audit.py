@@ -178,5 +178,39 @@ class PagesTest(unittest.TestCase):
         self.assertIn("jsonRequest(\"PATCH\", { project_id: projectId })", source("app/media/page.tsx"))
 
 
+class Phase18FrontendTest(unittest.TestCase):
+    def test_header_has_the_notification_bell_between_generation_and_account(self):
+        shell = source("components/reelforge/app-shell.tsx")
+        order = [shell.index(tag) for tag in ("<GenerationCenter />", "<NotificationCenter />", "<AccountMenu />")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("<NotificationStream>", shell)
+        center = source("components/reelforge/notifications.tsx")
+        self.assertIn('new EventSource("/api/notifications/stream")', center)
+        self.assertIn('"99+"', center)
+        self.assertIn("refetchInterval: fallback ? 30000 : false", source("lib/queries.ts"))
+
+    def test_support_and_notification_pages_exist(self):
+        for path in ("app/support/page.tsx", "app/support/[ticketId]/page.tsx", "app/notifications/page.tsx"):
+            with self.subTest(path=path):
+                self.assertTrue((FRONTEND / path).is_file())
+        self.assertIn('href="/support"', source("components/reelforge/app-shell.tsx"))
+
+    def test_admin_keeps_its_fixed_height_with_support_and_verification_tabs(self):
+        admin = source("app/admin/page.tsx")
+        self.assertIn("h-[calc(100dvh-6.5rem)] min-h-0 flex-col gap-3 overflow-hidden", admin)
+        self.assertIn('"support", "reconciliation", "operations", "verification"', admin)
+        for tab in ("support", "verification"):
+            with self.subTest(tab=tab):
+                self.assertIn(f'<TabsContent value="{tab}" className="mt-3 flex min-h-0 flex-1 flex-col">', admin)
+        self.assertIn("grid min-h-0 flex-1", source("components/reelforge/admin/admin-verification.tsx"))
+
+    def test_payment_setup_lives_only_in_admin(self):
+        users_pages = [path for path in frontend_files() if "admin" not in path.as_posix()]
+        offenders = [str(path.relative_to(FRONTEND)) for path in users_pages
+                     if "payment-config" in path.read_text(encoding="utf-8") and path.name != "queries.ts"]
+        self.assertEqual(offenders, [])
+        self.assertIn("PaymentSetupDialog", source("components/reelforge/admin/admin-payments.tsx"))
+
+
 if __name__ == "__main__":
     unittest.main()

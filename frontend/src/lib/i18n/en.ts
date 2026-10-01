@@ -1,5 +1,11 @@
 import type { Dictionary } from "./vi";
 
+const channelName = (channel: unknown) =>
+  channel === "youtube" ? "YouTube" : channel === "tiktok" ? "TikTok" : channel === "facebook" ? "Facebook" : String(channel ?? "");
+const vnd = (value: unknown) => `${Number(value ?? 0).toLocaleString("en-US")} VND`;
+
+const SUPPORT_STATUS: Record<string, string> = {open: "New", waiting_support: "Waiting for support", waiting_user: "Waiting for you", resolved: "Resolved", closed: "Closed"};
+
 export const en: Dictionary = {
   meta: {
     title: (page: string) => `${page} · ReelForge Studio`,
@@ -71,6 +77,131 @@ export const en: Dictionary = {
     nothingToRemove: "There is no intermediate media to delete in this scope.",
     removeConfirm: "Delete",
     cleaned: (count: number, size: string) => `Deleted ${count} files, freeing ${size}.`,
+  },
+  notifications: {
+    title: "Notifications",
+    subtitle: "Workflow results, publishing, payments, credits, storage and support.",
+    markAllRead: "Mark all as read",
+    empty: "No notifications yet.",
+    emptyHint: "New notifications appear as soon as something happens.",
+    viewAll: "View all notifications",
+    unread: "Unread",
+    all: "All",
+    unreadCount: (n: number) => `Unread (${n})`,
+    kinds: {
+      "run.completed": {
+        title: (p) => "Workflow completed",
+        message: (p) => String(p.workflow ?? ""),
+      },
+      "run.failed": {
+        title: (p) => (p.node_type === "render" ? "Video render failed" : "Workflow failed"),
+        message: (p) => `${p.workflow ?? ""}${p.node_type ? ` · ${p.node_type} step` : ""}`,
+      },
+      "run.needs_attention": {
+        title: (p) => "Workflow needs attention",
+        message: (p) => `${p.workflow ?? ""}${p.node_type ? ` · ${p.node_type} step` : ""}`,
+      },
+      "run.awaiting_review": {
+        title: (p) => (p.rendered ? "Video ready for review" : "Waiting for your review"),
+        message: (p) => String(p.workflow ?? ""),
+      },
+      "publish.scheduled": {
+        title: (p) => "Post scheduled",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.succeeded": {
+        title: (p) => "Upload succeeded",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.failed": {
+        title: (p) => "Publishing failed",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.needs_attention": {
+        title: (p) => "Publishing needs attention",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "payment.succeeded": {
+        title: (p) => "Payment completed",
+        message: (p) => `${String(p.plan ?? "").toUpperCase()} plan is active · ${vnd(p.amount)}`,
+      },
+      "payment.failed": {
+        title: (p) => "Payment failed",
+        message: (p) => `${String(p.plan ?? "").toUpperCase()} plan was not paid.`,
+      },
+      "payment.unapplied": {
+        title: (p) => "Payment needs review",
+        message: (p) => "A paid order could not be applied to its plan.",
+      },
+      "credits.low": {
+        title: (p) => "Credits running low",
+        message: (p) => `${p.balance ?? 0} credits left.`,
+      },
+      "credits.adjusted": {
+        title: (p) => "An administrator adjusted your credits",
+        message: (p) => `${Number(p.delta) > 0 ? "+" : ""}${p.delta ?? 0} credits · balance ${p.balance ?? 0}`,
+      },
+      "storage.warning": {
+        title: (p) => "Storage at 80%",
+        message: (p) => "Delete media you no longer need in Settings → Storage.",
+      },
+      "storage.critical": {
+        title: (p) => "Storage at 90%",
+        message: (p) => "Uploads and new media will soon be blocked.",
+      },
+      "storage.full": {
+        title: (p) => "Storage is full",
+        message: (p) => "Uploads and new media are blocked.",
+      },
+      "support.new": {
+        title: (p) => "New support request",
+        message: (p) => `${p.subject ?? ""}${p.email ? ` · ${p.email}` : ""}`,
+      },
+      "support.reply": {
+        title: (p) => "New support reply",
+        message: (p) => String(p.subject ?? ""),
+      },
+      "support.status": {
+        title: (p) => "Support request updated",
+        message: (p) => `${p.subject ?? ""} · ${SUPPORT_STATUS[String(p.status)] ?? p.status}`,
+      },
+    },
+  },
+  support: {
+    title: "Support",
+    subtitle: "Send a request to the ReelForge team and follow the replies.",
+    newRequest: "New request",
+    newRequestHint: "Describe the problem; support replies right here in the app.",
+    subject: "Subject",
+    category: "Category",
+    description: "Description",
+    privacyHint: "Never send passwords, API keys or card details.",
+    attached: "Attached",
+    contextLabels: { run_id: "run", project_id: "project", payment_order_id: "payment order", publication_id: "post" },
+    submit: "Send request",
+    empty: "No support requests yet.",
+    emptyHint: "A problem with payment, credits, generation or publishing? Send a new request.",
+    categories: {
+      billing: "Billing / payment",
+      credits: "Credits",
+      generation: "AI generation",
+      publishing: "Publishing",
+      account: "Account",
+      storage: "Storage",
+      bug: "Bug / technical issue",
+      other: "Other",
+    },
+    statuses: { open: "New", waiting_support: "Waiting for support", waiting_user: "Waiting for you", resolved: "Resolved", closed: "Closed" },
+    supportTeam: "ReelForge support",
+    you: "You",
+    replyPlaceholder: "Write a reply…",
+    send: "Send",
+    closedHint: "This request is closed. Create a new one if you need more help.",
+    close: "Close request",
+    closed: "Request closed.",
+    back: "All requests",
+    notFound: "This request was not found.",
+    closedAt: (date: string) => `Closed ${date}`,
   },
   nav: {
     groups: { main: "Main", ai: "AI", workspace: "Workspace" },
@@ -1382,8 +1513,8 @@ export const en: Dictionary = {
     title: "Admin",
     subtitle: "Accounts, studios, plans and credits across the whole system.",
     apiOutdated: "The API server runs an older version than this page: run python -m alembic upgrade head, then restart the API and workers.",
-    stats: { users: "Users", studios: "Studios", plans: "Plans", pendingPayments: "Pending payments", pendingReconciliation: "Awaiting reconciliation", stuckJobs: "Stuck jobs", storageAlerts: "Studios ≥ 90% storage" },
-    tabs: { users: "Users", studios: "Studios & credits", plans: "Plans", payments: "Payments", reconciliation: "Credit reconciliation", operations: "Operations" },
+    stats: { users: "Users", studios: "Studios", plans: "Plans", pendingPayments: "Pending payments", pendingReconciliation: "Awaiting reconciliation", stuckJobs: "Stuck jobs", storageAlerts: "Studios ≥ 90% storage", supportOpen: "Support awaiting reply" },
+    tabs: { users: "Users", studios: "Studios & credits", plans: "Plans", payments: "Payments", reconciliation: "Credit reconciliation", operations: "Operations", support: "Support", verification: "Verification" },
     reconciliation: {
       description: "Review uncertain provider requests against provider records, then confirm the charge or refund the reserved credits. Each decision is permanent and recorded for audit.",
       pending: "Pending review",
@@ -1528,6 +1659,76 @@ export const en: Dictionary = {
       view: "View details",
       detailTitle: "Payment details",
       empty: "No matching payment orders.",
+    },
+    support: {
+      columns: { ticket: "Request", user: "User", studio: "Studio", category: "Category", status: "Status", updated: "Updated", priority: "Priority", actions: "Actions" },
+      priorities: { normal: "Normal", high: "High" },
+      empty: "No matching requests.",
+      searchPlaceholder: "Search ID, subject, email or studio",
+      allStatuses: "All statuses",
+      allCategories: "All categories",
+      allPriorities: "All priorities",
+      open: "Open",
+      markResolved: "Mark resolved when sending",
+    },
+    paymentSetup: {
+      open: "Provider setup",
+      title: "Payment provider setup",
+      description: "System admins only. Secret keys stay on the server and are never shown; you only see whether each is configured.",
+      copy: "Copy",
+      default: "default",
+      fieldStatus: { configured: "Configured", missing: "Missing", invalid: "Invalid format" },
+      modes: { sandbox: "Sandbox (test)", production: "Production (live)", custom: "Custom endpoint" },
+      payosWhere: "Set in instance/bootstrap.json (the payos object) on the API server, then restart the API.",
+      onepayWhere: "Set in /etc/reelforge/runtime.env (or .env.runtime), then restart the API and workers.",
+      endpoints: { webhook: "Webhook (register with payOS)", ipn: "IPN (register with OnePAY)", return: "Return URL" },
+      activity: (kind: string, date: string) => `${kind}: ${date}`,
+      activityKinds: { webhook: "Last webhook", ipn: "Last IPN", query: "Last status query", check: "Last check" },
+      noActivity: "No activity recorded yet.",
+      check: "Check configuration",
+      checkRemote: "Check with OnePAY (QueryDR, no charge)",
+      localResult: "On the server",
+      remoteResult: "With the provider",
+      checkStatus: { ok: "OK", warning: "Attention", error: "Error", skipped: "Skipped", unsupported: "Not supported" },
+    },
+    verification: {
+      readiness: "Readiness",
+      checkedAt: (date: string) => `Checked ${date}`,
+      checkStream: "Check notification stream",
+      recheck: "Check again",
+      streamOk: "The notification stream works (an event arrived).",
+      streamFailed: "No event within 10 seconds; check the proxy (buffering, timeouts).",
+      sections: { database: "Database", storage: "Storage", ffmpeg: "FFmpeg", workers: "Workers", ai: "AI providers", publishing: "Publishing", payments: "Payments", realtime: "Realtime notifications", support: "Support" },
+      checks: {
+        connection: "Connection", migration: "Migration", root: "Storage root", writable: "Writable", disk: "Disk", maintenance: "Daily cleanup",
+        ffmpeg: "ffmpeg / ffprobe", subtitle_font: "Subtitle font",
+        text_worker: "Text worker", image_worker: "Image worker", video_worker: "Video worker", voice_worker: "Voice worker", render_worker: "Render worker",
+        source_worker: "Source worker", youtube_worker: "YouTube worker", social_worker: "Social worker", scheduler_worker: "Scheduler worker",
+        gemini: "Gemini", runway: "Runway", openai: "OpenAI", anthropic: "Anthropic", fal: "fal", runware: "Runware", replicate: "Replicate",
+        youtube: "YouTube OAuth", tiktok: "TikTok", facebook: "Facebook", token_encryption: "Token encryption key",
+        payos: "payOS", onepay: "OnePAY", stream: "SSE stream", tickets: "Requests awaiting reply",
+      },
+      statuses: { ok: "OK", warning: "Attention", error: "Error", missing: "Missing", off: "Off" },
+      details: {
+        not_postgresql: "not PostgreSQL", behind: "not upgraded", unreachable: "unreachable", default_or_setting: "REELFORGE_STORAGE_ROOT not set",
+        not_created: "not created yet", not_writable: "not writable", unavailable: "unreadable", low_space: "under 10% free", never_run: "never run",
+        stale: "not run for over 36 hours", ffmpeg_missing: "not installed", font_unavailable: "font missing", missing: "never started", error: "error", key_missing: "key missing",
+        not_configured: "not configured", invalid_or_missing: "missing or invalid",
+      },
+      checklist: "Manual verification checklist",
+      checklistHint: (done: number, total: number) => `${done}/${total} confirmed. Tick an item only after checking it yourself; nothing is ticked automatically.`,
+      items: {
+        migration_upgraded: "Migration upgraded", storage_on_hdd: "Storage root moved to the HDD", ffmpeg_verified: "FFmpeg verified",
+        gemini_tts_live: "Gemini TTS live test", final_render_live: "Final render live test", movie_recap_live: "Movie Recap live test",
+        article_video_live: "Article → Video live test", product_video_live: "Product Video live test", youtube_upload: "YouTube upload",
+        tiktok_upload: "TikTok upload", facebook_reel: "Facebook Reel", scheduled_publishing: "Scheduled publishing",
+        payos_payment: "payOS / VietQR payment", onepay_sandbox_payment: "OnePAY sandbox payment", notification_realtime: "Realtime notification delivery",
+        support_round_trip: "Support: user → admin → user reply", cleanup_dry_run: "Daily media cleanup dry-run", maintenance_timer: "Daily maintenance timer enabled",
+      },
+      paid: "Paid",
+      verifiedBy: (who: string, when: string) => `Verified by ${who} · ${when}`,
+      notePlaceholder: "Note (optional)",
+      saveNote: "Save note",
     },
   },
   youtube: {

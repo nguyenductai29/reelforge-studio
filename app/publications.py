@@ -36,7 +36,7 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app import jobs
+from app import jobs, notifications
 from app.models import Asset, Base, WorkflowJob, WorkflowRun, WorkflowRunStep
 from app.publishers import channel_oauth, google_oauth
 from app.publishers.youtube import MAX_TAGS_LENGTH, PRIVACY_STATUSES, tags_length
@@ -411,6 +411,8 @@ def queue_publication(
         if state == "queued":
             _enqueue_upload(db, cancelled, review, connection_generation_value)
         db.flush()
+        if state == "scheduled":
+            notifications.publication_changed(db, cancelled, "scheduled", reference=scheduled_for.isoformat())
         return cancelled
     values = dict(id=str(uuid4()), workspace_id=workspace_id, run_id=run_id,
                   asset_id=asset_id, channel=channel, title=title, description=description,
@@ -433,6 +435,8 @@ def queue_publication(
          publication.privacy_status) != (asset_id, title, description, tags, privacy_status)):
         raise ValueError("publication already exists with different input")
     if publication.state == "scheduled":
+        notifications.publication_changed(db, publication, "scheduled",
+                                          reference=publication.scheduled_for.isoformat())
         return publication
     if publication.job_id is None and publication.state != "queued":
         raise ValueError("publication is not queued; retry it instead")
@@ -644,6 +648,7 @@ def finish_publication(
         publication.remote_privacy = privacy_status
     publication.updated_at, publication.finished_at = now, now
     publication.published_at = now if published else None
+    notifications.publication_changed(db, publication, "succeeded", reference=job_id)
     return True
 
 
@@ -671,6 +676,8 @@ def fail_publication(
                          "needs_attention" if needs_attention else "failed")
     publication.last_error, publication.updated_at = error[:1000], now
     publication.finished_at = None if retry_delay_seconds is not None else now
+    if publication.state in ("failed", "needs_attention"):
+        notifications.publication_changed(db, publication, publication.state, reference=job_id)
     return True
 
 
@@ -711,6 +718,7 @@ def dispatch_due(db: Session, *, now: datetime | None = None, limit: int = 20) -
             reason = "connection_required" if "connection" in str(exc) else "not_approved"
             publication.state, publication.last_error = "failed", f"schedule:{reason}"
             publication.updated_at = publication.finished_at = now
+            notifications.publication_changed(db, publication, "failed", reference="schedule")
             outcomes.append((publication.id, publication.last_error))
             continue
         _enqueue_upload(db, publication, review, generation)

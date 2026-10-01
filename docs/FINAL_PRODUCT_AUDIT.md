@@ -1,6 +1,6 @@
-# Final product audit (Phases 14–17)
+# Final product audit (Phases 14–18)
 
-> Snapshot: branch `feat/studio-foundation`, after Phases 14–17, 2026-10-01. Database head: `0016_storage_lifecycle`.
+> Snapshot: branch `feat/studio-foundation`, after Phases 14–18, 2026-10-01. Database head: `0017_notify_support_verify`.
 
 **Rule applied:** every control in the production interface works. An unfinished feature was either built now, when it reuses existing capabilities cheaply, or removed from the interface. No "coming soon" badge, banner, disabled placeholder switch or preview-only template remains.
 
@@ -73,18 +73,30 @@
 - Paginated order history: plan, method, amount, status, created, paid, order code.
 - Plan cards show their storage.
 
+**Notifications and support** (Phase 18)
+
+- **Notification bell** in the header, between the generation center and the account menu:
+  - an unread badge (up to "99+");
+  - the latest notifications, mark read, mark all read;
+  - `/notifications` with All/Unread and pagination.
+- **What it reports:** runs that complete, fail, need attention or wait for review; publishing (scheduled, published, failed, needs attention); payments; low credits and admin adjustments; storage at 80/90/100 %; support replies.
+- **Realtime:** Server-Sent Events, with polling as the fallback. See [NOTIFICATIONS.md](NOTIFICATIONS.md).
+- **Support:** account menu → **Hỗ trợ**: the user's requests, a new request with a category, and a thread with replies from "ReelForge support". See [SUPPORT.md](SUPPORT.md).
+
 **Administration**
 
-The console fits the window and never scrolls; each table body scrolls inside it, with sticky headers and pagination always visible. It has six tabs:
+The console fits the window and never scrolls; each table body scrolls inside it, with sticky headers and pagination always visible. It has eight tabs:
 
 | Tab | What it shows and does |
 | --- | --- |
 | Users | Search, role and status filters; create account in a dialog; view, lock, unlock |
 | Studios & credits | Search, plan and status filters, a **storage** column; view, change plan, adjust credits, pause, activate |
 | Plans | Name, price, limits, monthly credits and **storage limit** |
-| Payments | Search, provider and status filters; view; refresh provider state |
+| Payments | Search, provider and status filters; view; refresh provider state; **Cấu hình cổng**: each provider's fields as configured/missing, masked IDs, sandbox/production, callback URLs, last webhook/IPN/query, a safe check |
+| Support | Search, status, category and priority filters; open a ticket, reply, change status or priority, resolve, close |
 | Credit reconciliation | The Phase 3.7 review of held credits |
 | Operations | Worker heartbeats, the job table, the stuck-work audit, and storage: disk free space, studios per warning level, fullest studios |
+| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support), a browser stream check, and the 18-item manual live checklist |
 
 **Publishing and scheduling**: see § 5 and § 6.
 
@@ -127,7 +139,8 @@ They are not shown anywhere in the production interface.
 
 - A browser return never pays an order. Only OnePAY's signed IPN, or a server-side QueryDR check, can.
 - No admin "mark paid" action exists.
-- Credentials are never returned; Admin shows each provider as Configured or Missing.
+- Credentials are never returned. Admin shows each provider as Configured or Missing. **Cấu hình cổng** shows field names and statuses, with only the payOS client ID and the OnePAY merchant ID masked. It is system-admin only, enforced by the API.
+- The admin check never charges: a local validation, and for OnePAY one QueryDR about a reference that cannot exist.
 
 See [PAYMENTS.md](PAYMENTS.md).
 
@@ -140,7 +153,9 @@ See [PAYMENTS.md](PAYMENTS.md).
   - `/api/admin/payments`;
   - `/api/admin/jobs`;
   - `/api/admin/storage`;
-  - `/api/admin/reconciliation`.
+  - `/api/admin/reconciliation`;
+  - `/api/admin/support` (Phase 18).
+- Phase 18 adds `/api/admin/payment-config` (and `/check`), `/api/admin/readiness` and `/api/admin/verification`. They are system-admin only and never return a secret.
 - `q` is a case-insensitive literal substring (`LIKE` with `%`, `_` and `\` escaped).
 - List responses are `{items, total, limit, offset}`, with `limit` 20 by default and at most 100.
 - The frontend's `DataTable` (`frontend/src/components/reelforge/data-table.tsx`) provides the toolbar, loading and empty states, sticky header, internal scroll, pagination and horizontal scroll.
@@ -249,7 +264,7 @@ python -m app.media_maintenance --apply --intermediates
 | `python -m app.scheduler_worker` | Scheduled publications |
 | `reelforge-media-maintenance.timer` | Daily cleanup at 03:00 |
 
-Payments need no worker. Admin → Operations shows each worker's heartbeat.
+Payments, notifications and support need no worker: the API serves the notification stream. Admin → Operations shows each worker's heartbeat.
 
 ## 11. Required environment variables
 
@@ -267,20 +282,22 @@ All of them go in one runtime file (`/etc/reelforge/runtime.env` in production, 
 | Facebook | `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `FACEBOOK_REDIRECT_URI` |
 | Token encryption | `REELFORGE_TOKEN_ENCRYPTION_KEY` (back it up; never change it) |
 | Card payments | `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` |
+| Notifications | `REELFORGE_SSE_POLL_SECONDS` (3), `REELFORGE_SSE_MAX_SECONDS` (300), `CREDITS_LOW_THRESHOLD` (20) |
 | Logs | `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL` |
 
 The database URL and payOS keys stay in `instance/bootstrap.json`.
 
 ## 12. DB migration head
 
-`0016_storage_lifecycle`. Migrations 0001–0014 are unchanged.
+`0017_notify_support_verify`. Migrations 0001–0016 are unchanged.
 
 | Migration | Adds | Test |
 | --- | --- | --- |
 | `0015_admin_payments_profiles` | `user_profiles` (display name); indexes for the admin and payment pages | `tests/test_admin_payments_migration.py`: 0014 → 0015 and back |
 | `0016_storage_lifecycle` | `plans.storage_limit_bytes` (Trial 1, Standard 10, Pro 30 GiB); `assets.kind` (back-filled from each asset's step); `assets.expired_at`, `expired_reason`, `expired_bytes`; index `ix_assets_kind_created_at` | `tests/test_storage_migration.py`: 0015 → 0016 and back |
+| `0017_notify_support_verify` | `notifications` (integer IDs, which are also the stream's event IDs; unique `(user_id, dedupe_key)`; indexes `(user_id, created_at)` and `(user_id, read_at)`); `support_tickets` and `support_messages` (categories, statuses, priorities and author types checked); `verification_checks` | `tests/test_phase18_migration.py`: 0016 → 0017 and back (SQLite, and PostgreSQL 16 with `REELFORGE_TEST_DATABASE_URL`); every revision ID fits PostgreSQL's 32-character version column |
 
-Both tests keep every existing row. Set `REELFORGE_TEST_DATABASE_URL` to also run them on PostgreSQL. Apply with `python -m alembic upgrade head` before restarting the services.
+The tests keep every existing row. Set `REELFORGE_TEST_DATABASE_URL` to also run them on PostgreSQL. Apply with `python -m alembic upgrade head` before restarting the services.
 
 ## 13. FFmpeg requirements
 
@@ -311,7 +328,7 @@ See [home-server-deployment.md](home-server-deployment.md) § 11.
 
 ## 15. Live verification requirements
 
-All Phase 14–17 tests are offline; no paid or live API was called. An operator must verify the following.
+All Phase 14–18 tests are offline; no paid or live API was called. An operator must verify the following, then tick it in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
 
 **Payments**
 
@@ -347,12 +364,26 @@ All Phase 14–17 tests are offline; no paid or live API was called. An operator
 - Real TikTok inbox and Facebook Reel uploads.
 - Scheduled publishing on time.
 
+**Notifications and support**
+
+- **Kiểm tra luồng thông báo** passes through the public domain (Cloudflare Tunnel, and nginx if used).
+- A notification arrives without reloading.
+- One support round trip between a user and an admin.
+
 **UI**
 
 The Admin layout, card checkout and storage screens were checked in headless Chromium on an isolated stack:
 
 - Admin at 1366×768, 1680×1050 and 390×844: the page never scrolls, table bodies scroll inside it, headers stay sticky, pagination stays visible.
 - Card checkout against a fake gateway that was never reached.
+- Phase 18, against an isolated API and Next.js server:
+  - a notification reached the bell through the Next.js proxy in under a second;
+  - the support round trip worked;
+  - the payment setup showed no secret;
+  - the stream check passed;
+  - the checklist persisted;
+  - none of the eight Admin tabs scrolled at 1366×768;
+  - the bell did not overflow at 360 px.
 
 Real devices remain to be checked.
 
@@ -384,6 +415,12 @@ Real devices remain to be checked.
 - Plan limits can add up to more than the disk. Watch the disk line in Admin → Operations, and use `WORKSPACE_MEDIA_QUOTA_BYTES` as a ceiling.
 - A run whose intermediates expired cannot be re-rendered; start a new run.
 
+**Notifications and support**
+
+- In-app only: no email or push notifications.
+- Each open stream checks the database every few seconds, which is fine for a home server and would need a pub/sub channel for thousands of concurrent users.
+- Support has no attachments and no assignment to a particular admin.
+
 **Admin**
 
 - User search matches email only.
@@ -392,6 +429,7 @@ Real devices remain to be checked.
 **Scope**
 
 - No team collaboration, 2FA, password recovery or email delivery.
+- payOS keys cannot be proven without a real payment link; verify them with one small payment.
 - TikTok uploads are inbox drafts.
 - YouTube uploads from an unverified Google project stay private.
 

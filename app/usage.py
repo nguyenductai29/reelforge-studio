@@ -2,6 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import select
+from app import notifications
 from app.models import CreditAccount, CreditLedger, UsageEvent
 
 
@@ -15,9 +16,12 @@ def post_credit(db, workspace_id: str, delta: int, reason: str, reference: str) 
         return account.balance
     if not 0 <= account.balance + delta <= 2_000_000_000:
         raise ValueError("Insufficient credits or balance limit reached")
+    before = account.balance
     account.balance += delta
     db.add(CreditLedger(id=str(uuid.uuid4()), workspace_id=workspace_id, delta=delta,
                         reason=reason, reference=reference, created_at=datetime.now(timezone.utc)))
+    # An admin adjustment, or a debit that crosses the low-balance threshold, tells the studio's owners.
+    notifications.credits_changed(db, workspace_id, before, account.balance, reference, reason)
     return account.balance
 
 

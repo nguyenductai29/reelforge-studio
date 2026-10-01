@@ -239,6 +239,14 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 - **User cleanup**: owners delete media on the Media page, or a project's intermediate media in Settings → Storage, after a confirmation.
 - Migration `0016_storage_lifecycle`. See [docs/STORAGE.md](docs/STORAGE.md).
 
+### Notifications, support and live verification (Phase 18)
+
+- **Notification bell** with live updates (Server-Sent Events, polling as a fallback) for runs, publishing, payments, credits, storage and support. Behind nginx, turn buffering off for `/api/notifications/stream`; Cloudflare Tunnel needs nothing. See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
+- **Support**: account menu → Hỗ trợ for users; Admin → Hỗ trợ for system admins. See [docs/SUPPORT.md](docs/SUPPORT.md).
+- **Payment setup** (system admins): Admin → Payments → Cấu hình cổng shows which payOS/OnePAY fields are set, the mode and the callback URLs, never a secret, and runs a check that never charges. See [docs/PAYMENTS.md](docs/PAYMENTS.md#admin-setup-view).
+- **Admin → Kiểm định**: safe readiness checks and the manual live-verification checklist. See [docs/LIVE_VERIFICATION.md](docs/LIVE_VERIFICATION.md).
+- Migration `0017_notify_support_verify`.
+
 ### Voice, subtitles and the final render (Phases 6–8)
 
 - **Voice** reads a script as one narration, or each scene's text as its own narration, with Google Gemini TTS (AI tool task **Voice**, `GEMINI_API_KEY`). Each narration is a job with its own reservation of `VOICE_CREDITS_PER_GENERATION` credits (default 1), and is stored as a checked WAV file by `python -m app.voice_worker`. See [docs/VOICE_GENERATION.md](docs/VOICE_GENERATION.md).

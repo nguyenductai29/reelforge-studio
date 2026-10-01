@@ -1,5 +1,11 @@
 import type { Dictionary } from "./vi";
 
+const channelName = (channel: unknown) =>
+  channel === "youtube" ? "YouTube" : channel === "tiktok" ? "TikTok" : channel === "facebook" ? "Facebook" : String(channel ?? "");
+const vnd = (value: unknown) => `${Number(value ?? 0).toLocaleString("ja-JP")} VND`;
+
+const SUPPORT_STATUS: Record<string, string> = {open: "新規", waiting_support: "サポート対応待ち", waiting_user: "お客様の返信待ち", resolved: "解決済み", closed: "クローズ"};
+
 export const ja: Dictionary = {
   meta: {
     title: (page: string) => `${page} · ReelForge Studio`,
@@ -71,6 +77,131 @@ export const ja: Dictionary = {
     nothingToRemove: "この対象には削除できる中間メディアがありません。",
     removeConfirm: "削除",
     cleaned: (count: number, size: string) => `${count}件を削除し、${size}を解放しました。`,
+  },
+  notifications: {
+    title: "通知",
+    subtitle: "ワークフロー結果、投稿、支払い、クレジット、ストレージ、サポートのお知らせ。",
+    markAllRead: "すべて既読にする",
+    empty: "通知はまだありません。",
+    emptyHint: "出来事があるとすぐに新しい通知が表示されます。",
+    viewAll: "すべての通知を見る",
+    unread: "未読",
+    all: "すべて",
+    unreadCount: (n: number) => `未読 (${n})`,
+    kinds: {
+      "run.completed": {
+        title: (p) => "ワークフローが完了しました",
+        message: (p) => String(p.workflow ?? ""),
+      },
+      "run.failed": {
+        title: (p) => (p.node_type === "render" ? "動画のレンダリングに失敗しました" : "ワークフローが失敗しました"),
+        message: (p) => `${p.workflow ?? ""}${p.node_type ? ` · ${p.node_type} ステップ` : ""}`,
+      },
+      "run.needs_attention": {
+        title: (p) => "ワークフローの対応が必要です",
+        message: (p) => `${p.workflow ?? ""}${p.node_type ? ` · ${p.node_type} ステップ` : ""}`,
+      },
+      "run.awaiting_review": {
+        title: (p) => (p.rendered ? "動画のレビュー準備ができました" : "レビュー待ちです"),
+        message: (p) => String(p.workflow ?? ""),
+      },
+      "publish.scheduled": {
+        title: (p) => "投稿を予約しました",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.succeeded": {
+        title: (p) => "アップロードに成功しました",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.failed": {
+        title: (p) => "投稿に失敗しました",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.needs_attention": {
+        title: (p) => "投稿の対応が必要です",
+        message: (p) => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "payment.succeeded": {
+        title: (p) => "支払いが完了しました",
+        message: (p) => `${String(p.plan ?? "").toUpperCase()} プランが有効になりました · ${vnd(p.amount)}`,
+      },
+      "payment.failed": {
+        title: (p) => "支払いが完了しませんでした",
+        message: (p) => `${String(p.plan ?? "").toUpperCase()} プランは支払われていません。`,
+      },
+      "payment.unapplied": {
+        title: (p) => "支払いの確認が必要です",
+        message: (p) => "支払い済みの注文をプランに適用できませんでした。",
+      },
+      "credits.low": {
+        title: (p) => "クレジットが残りわずかです",
+        message: (p) => `残り ${p.balance ?? 0} クレジット`,
+      },
+      "credits.adjusted": {
+        title: (p) => "管理者がクレジットを調整しました",
+        message: (p) => `${Number(p.delta) > 0 ? "+" : ""}${p.delta ?? 0} クレジット · 残高 ${p.balance ?? 0}`,
+      },
+      "storage.warning": {
+        title: (p) => "ストレージ使用率 80%",
+        message: (p) => "設定 → ストレージで不要なメディアを削除してください。",
+      },
+      "storage.critical": {
+        title: (p) => "ストレージ使用率 90%",
+        message: (p) => "まもなくアップロードと新しいメディアの作成が停止します。",
+      },
+      "storage.full": {
+        title: (p) => "ストレージが満杯です",
+        message: (p) => "アップロードと新しいメディアの作成は停止中です。",
+      },
+      "support.new": {
+        title: (p) => "新しいサポートリクエスト",
+        message: (p) => `${p.subject ?? ""}${p.email ? ` · ${p.email}` : ""}`,
+      },
+      "support.reply": {
+        title: (p) => "サポートから返信がありました",
+        message: (p) => String(p.subject ?? ""),
+      },
+      "support.status": {
+        title: (p) => "サポートリクエストが更新されました",
+        message: (p) => `${p.subject ?? ""} · ${SUPPORT_STATUS[String(p.status)] ?? p.status}`,
+      },
+    },
+  },
+  support: {
+    title: "サポート",
+    subtitle: "ReelForge チームに問い合わせ、返信を確認できます。",
+    newRequest: "新しいリクエスト",
+    newRequestHint: "問題を説明してください。サポートはアプリ内で返信します。",
+    subject: "件名",
+    category: "カテゴリー",
+    description: "内容",
+    privacyHint: "パスワード、APIキー、カード情報は送らないでください。",
+    attached: "添付",
+    contextLabels: { run_id: "実行", project_id: "プロジェクト", payment_order_id: "支払い注文", publication_id: "投稿" },
+    submit: "送信する",
+    empty: "サポートリクエストはまだありません。",
+    emptyHint: "支払い、クレジット、生成、投稿で問題がありますか？新しいリクエストを送ってください。",
+    categories: {
+      billing: "請求 / 支払い",
+      credits: "クレジット",
+      generation: "AI生成",
+      publishing: "投稿",
+      account: "アカウント",
+      storage: "ストレージ",
+      bug: "不具合 / 技術的な問題",
+      other: "その他",
+    },
+    statuses: { open: "新規", waiting_support: "サポート対応待ち", waiting_user: "お客様の返信待ち", resolved: "解決済み", closed: "クローズ" },
+    supportTeam: "ReelForge サポート",
+    you: "あなた",
+    replyPlaceholder: "返信を書く…",
+    send: "送信",
+    closedHint: "このリクエストはクローズされています。追加のサポートが必要な場合は新しいリクエストを作成してください。",
+    close: "リクエストをクローズ",
+    closed: "リクエストをクローズしました。",
+    back: "すべてのリクエスト",
+    notFound: "このリクエストは見つかりません。",
+    closedAt: (date: string) => `${date} にクローズ`,
   },
   nav: {
     groups: { main: "メイン", ai: "AI", workspace: "スタジオ" },
@@ -1382,8 +1513,8 @@ export const ja: Dictionary = {
     title: "管理",
     subtitle: "システム全体のアカウント、スタジオ、プラン、クレジット。",
     apiOutdated: "API サーバーがこの画面より古いバージョンで動作しています。python -m alembic upgrade head を実行し、API とワーカーを再起動してください。",
-    stats: { users: "ユーザー", studios: "スタジオ", plans: "プラン", pendingPayments: "保留中の支払い", pendingReconciliation: "照合待ち", stuckJobs: "停止中のジョブ", storageAlerts: "容量90%以上のスタジオ" },
-    tabs: { users: "ユーザー", studios: "スタジオとクレジット", plans: "プラン設定", payments: "支払い", reconciliation: "クレジット照合", operations: "運用" },
+    stats: { users: "ユーザー", studios: "スタジオ", plans: "プラン", pendingPayments: "保留中の支払い", pendingReconciliation: "照合待ち", stuckJobs: "停止中のジョブ", storageAlerts: "容量90%以上のスタジオ", supportOpen: "返信待ちのサポート" },
+    tabs: { users: "ユーザー", studios: "スタジオとクレジット", plans: "プラン設定", payments: "支払い", reconciliation: "クレジット照合", operations: "運用", support: "サポート", verification: "検証" },
     reconciliation: {
       description: "結果が不明なリクエストをプロバイダーの記録と照合し、課金の確定または確保済みクレジットの返還を行います。各判断は監査のために記録され、変更できません。",
       pending: "確認待ち",
@@ -1528,6 +1659,76 @@ export const ja: Dictionary = {
       view: "詳細を表示",
       detailTitle: "支払いの詳細",
       empty: "該当する支払い注文はありません。",
+    },
+    support: {
+      columns: { ticket: "リクエスト", user: "ユーザー", studio: "スタジオ", category: "カテゴリー", status: "状態", updated: "更新", priority: "優先度", actions: "操作" },
+      priorities: { normal: "通常", high: "高" },
+      empty: "該当するリクエストはありません。",
+      searchPlaceholder: "ID・件名・メール・スタジオで検索",
+      allStatuses: "すべての状態",
+      allCategories: "すべてのカテゴリー",
+      allPriorities: "すべての優先度",
+      open: "開く",
+      markResolved: "送信時に解決済みにする",
+    },
+    paymentSetup: {
+      open: "決済代行の設定",
+      title: "決済代行の設定",
+      description: "システム管理者のみ表示されます。秘密鍵はサーバーにあり表示されません。設定済みかどうかのみ確認できます。",
+      copy: "コピー",
+      default: "既定",
+      fieldStatus: { configured: "設定済み", missing: "未設定", invalid: "形式が不正" },
+      modes: { sandbox: "サンドボックス (テスト)", production: "本番", custom: "カスタムURL" },
+      payosWhere: "API サーバーの instance/bootstrap.json (payos オブジェクト) に設定し、API を再起動します。",
+      onepayWhere: "/etc/reelforge/runtime.env (または .env.runtime) に設定し、API とワーカーを再起動します。",
+      endpoints: { webhook: "Webhook (payOS に登録)", ipn: "IPN (OnePAY に登録)", return: "戻り先 URL" },
+      activity: (kind: string, date: string) => `${kind}: ${date}`,
+      activityKinds: { webhook: "最新の Webhook", ipn: "最新の IPN", query: "最新の状態照会", check: "最新のチェック" },
+      noActivity: "まだ記録はありません。",
+      check: "設定をチェック",
+      checkRemote: "OnePAY でチェック (QueryDR、課金なし)",
+      localResult: "サーバー",
+      remoteResult: "決済代行",
+      checkStatus: { ok: "OK", warning: "要確認", error: "エラー", skipped: "スキップ", unsupported: "非対応" },
+    },
+    verification: {
+      readiness: "稼働準備",
+      checkedAt: (date: string) => `${date} にチェック`,
+      checkStream: "通知ストリームをチェック",
+      recheck: "再チェック",
+      streamOk: "通知ストリームは動作しています (イベントを受信)。",
+      streamFailed: "10 秒以内にイベントがありません。プロキシ (バッファリング、タイムアウト) を確認してください。",
+      sections: { database: "データベース", storage: "ストレージ", ffmpeg: "FFmpeg", workers: "ワーカー", ai: "AI プロバイダー", publishing: "投稿", payments: "支払い", realtime: "リアルタイム通知", support: "サポート" },
+      checks: {
+        connection: "接続", migration: "マイグレーション", root: "保存先", writable: "書き込み", disk: "ディスク", maintenance: "毎日の整理",
+        ffmpeg: "ffmpeg / ffprobe", subtitle_font: "字幕フォント",
+        text_worker: "テキストワーカー", image_worker: "画像ワーカー", video_worker: "動画ワーカー", voice_worker: "音声ワーカー", render_worker: "レンダーワーカー",
+        source_worker: "ソースワーカー", youtube_worker: "YouTube ワーカー", social_worker: "ソーシャルワーカー", scheduler_worker: "スケジューラー",
+        gemini: "Gemini", runway: "Runway", openai: "OpenAI", anthropic: "Anthropic", fal: "fal", runware: "Runware", replicate: "Replicate",
+        youtube: "YouTube OAuth", tiktok: "TikTok", facebook: "Facebook", token_encryption: "トークン暗号化キー",
+        payos: "payOS", onepay: "OnePAY", stream: "SSE ストリーム", tickets: "返信待ちのリクエスト",
+      },
+      statuses: { ok: "OK", warning: "要確認", error: "エラー", missing: "未設定", off: "無効" },
+      details: {
+        not_postgresql: "PostgreSQL ではありません", behind: "未アップグレード", unreachable: "接続できません", default_or_setting: "REELFORGE_STORAGE_ROOT 未設定",
+        not_created: "未作成", not_writable: "書き込み不可", unavailable: "読み取れません", low_space: "空き 10% 未満", never_run: "未実行",
+        stale: "36 時間以上未実行", ffmpeg_missing: "未インストール", font_unavailable: "フォントなし", missing: "未起動", error: "エラー", key_missing: "キーなし",
+        not_configured: "未設定", invalid_or_missing: "未設定または不正",
+      },
+      checklist: "手動検証チェックリスト",
+      checklistHint: (done: number, total: number) => `${done}/${total} 件確認済み。自分で確認した後にのみチェックしてください。自動ではチェックされません。`,
+      items: {
+        migration_upgraded: "マイグレーション適用済み", storage_on_hdd: "保存先を HDD に移動", ffmpeg_verified: "FFmpeg 確認済み",
+        gemini_tts_live: "Gemini TTS 本番テスト", final_render_live: "完成動画レンダリング本番テスト", movie_recap_live: "Movie Recap 本番テスト",
+        article_video_live: "記事 → 動画 本番テスト", product_video_live: "商品動画 本番テスト", youtube_upload: "YouTube アップロード",
+        tiktok_upload: "TikTok アップロード", facebook_reel: "Facebook リール", scheduled_publishing: "予約投稿",
+        payos_payment: "payOS / VietQR 支払い", onepay_sandbox_payment: "OnePAY サンドボックス支払い", notification_realtime: "リアルタイム通知の配信",
+        support_round_trip: "サポート: ユーザー → 管理者 → ユーザー", cleanup_dry_run: "毎日のメディア整理 (ドライラン)", maintenance_timer: "毎日の整理タイマー有効",
+      },
+      paid: "有料",
+      verifiedBy: (who: string, when: string) => `${who} が確認 · ${when}`,
+      notePlaceholder: "メモ (任意)",
+      saveNote: "メモを保存",
     },
   },
   youtube: {

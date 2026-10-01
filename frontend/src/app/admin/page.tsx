@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -10,20 +10,22 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, FieldLabel } from "@/components/reelforge/primitives";
 import { AdminPayments } from "@/components/reelforge/admin/admin-payments";
+import { AdminSupport } from "@/components/reelforge/admin/admin-support";
+import { AdminVerification } from "@/components/reelforge/admin/admin-verification";
 import { AdminStudios } from "@/components/reelforge/admin/admin-studios";
 import { AdminUsers } from "@/components/reelforge/admin/admin-users";
 import { Operations } from "@/components/reelforge/operations";
 import { Reconciliation } from "@/components/reelforge/reconciliation";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
-import { useDocumentTitle } from "@/lib/hooks";
+import { useDocumentTitle, useSearchParam } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { keys, useAdmin, useDashboard } from "@/lib/queries";
 import { GIB, formatBytes } from "@/lib/studio";
 import type { Plan } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const TABS = ["users", "studios", "plans", "payments", "reconciliation", "operations"] as const;
+const TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification"] as const;
 type Tab = (typeof TABS)[number];
 
 function PlanForm({ plan }: { plan: Plan }) {
@@ -118,6 +120,12 @@ export default function AdminPage() {
   const { data: dashboard } = useDashboard();
   const admin = useAdmin(Boolean(dashboard?.is_admin));
   const [tab, setTab] = useState<Tab>("users");
+  // Notifications link here with ?tab=support&ticket=…
+  const requestedTab = useSearchParam("tab");
+  const requestedTicket = useSearchParam("ticket");
+  useEffect(() => {
+    if (requestedTab && (TABS as readonly string[]).includes(requestedTab)) setTab(requestedTab as Tab);
+  }, [requestedTab]);
   const a = t.admin;
 
   if (!dashboard?.is_admin) {
@@ -133,6 +141,7 @@ export default function AdminPage() {
     [a.stats.pendingPayments, counts.pending_payments, false],
     [a.stats.pendingReconciliation, counts.pending_reconciliation, counts.pending_reconciliation > 0],
     [a.stats.storageAlerts, counts.storage_alerts, counts.storage_alerts > 0],
+    [a.stats.supportOpen, counts.support_open ?? 0, (counts.support_open ?? 0) > 0],
     [a.stats.stuckJobs, counts.stuck_jobs, counts.stuck_jobs > 0],
   ];
 
@@ -155,7 +164,15 @@ export default function AdminPage() {
         </dl>
       </header>
 
-      <Tabs value={tab} onValueChange={(value) => setTab(value as Tab)} className="flex min-h-0 flex-1 flex-col">
+      <Tabs
+        value={tab}
+        onValueChange={(value) => {
+          setTab(value as Tab);
+          // A ?tab=… link is applied once; switching tabs drops it so a reload keeps the tab you chose.
+          if (window.location.search) window.history.replaceState(null, "", window.location.pathname);
+        }}
+        className="flex min-h-0 flex-1 flex-col"
+      >
         <TabsList className="scrollbar-thin h-auto w-full shrink-0 justify-start overflow-x-auto sm:w-fit">
           {TABS.map((key) => (
             <TabsTrigger key={key} value={key}>
@@ -184,11 +201,17 @@ export default function AdminPage() {
         <TabsContent value="payments" className="mt-3 flex min-h-0 flex-1 flex-col">
           <AdminPayments providers={overview.payment_providers} />
         </TabsContent>
+        <TabsContent value="support" className="mt-3 flex min-h-0 flex-1 flex-col">
+          <AdminSupport initialTicket={requestedTicket} />
+        </TabsContent>
         <TabsContent value="reconciliation" className="mt-3 flex min-h-0 flex-1 flex-col">
           <Reconciliation />
         </TabsContent>
         <TabsContent value="operations" className="mt-3 flex min-h-0 flex-1 flex-col">
           <Operations />
+        </TabsContent>
+        <TabsContent value="verification" className="mt-3 flex min-h-0 flex-1 flex-col">
+          <AdminVerification />
         </TabsContent>
       </Tabs>
     </div>

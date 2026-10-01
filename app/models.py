@@ -274,3 +274,75 @@ class WorkerHeartbeat(Base):
     detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Notification(Base):
+    """One in-app notification for one user (migration 0017, app/notifications.py)."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedupe_key", name="uq_notifications_user_dedupe"),
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+        Index("ix_notifications_user_read", "user_id", "read_at"),
+    )
+    # An increasing integer: it orders a user's notifications and is the SSE event id clients resume from.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("workspaces.id"), nullable=True)
+    type: Mapped[str] = mapped_column(String(40))
+    title: Mapped[str] = mapped_column(String(200))
+    message: Mapped[str] = mapped_column(Text, default="")
+    link: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SupportTicket(Base):
+    """A customer support request of one workspace (migration 0017, app/support.py)."""
+
+    __tablename__ = "support_tickets"
+    __table_args__ = (
+        Index("ix_support_tickets_workspace", "workspace_id", "updated_at"),
+        Index("ix_support_tickets_status", "status", "updated_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"))
+    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    subject: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(24))
+    priority: Mapped[str] = mapped_column(String(12), default="normal")
+    # Optional context the user attached: IDs only, checked to belong to the workspace.
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    payment_order_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    publication_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SupportMessage(Base):
+    """One message of a support ticket's thread; messages are never edited or deleted."""
+
+    __tablename__ = "support_messages"
+    __table_args__ = (Index("ix_support_messages_ticket", "ticket_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("support_tickets.id"))
+    author_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    author_type: Mapped[str] = mapped_column(String(8))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class VerificationCheck(Base):
+    """One item of the system admin's manual live-verification checklist (migration 0017)."""
+
+    __tablename__ = "verification_checks"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

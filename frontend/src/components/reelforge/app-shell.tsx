@@ -14,6 +14,7 @@ import {
   Home,
   Languages,
   Layers,
+  LifeBuoy,
   LibraryBig,
   LogOut,
   Menu,
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { StorageAlert } from "./storage";
+import { NotificationCenter, NotificationStream } from "./notifications";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -402,6 +404,12 @@ function AccountMenu() {
             {t.nav.settings}
           </Link>
         </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href="/support">
+            <LifeBuoy className="size-4" />
+            {t.support.title}
+          </Link>
+        </DropdownMenuItem>
         {data?.is_admin && (
           <DropdownMenuItem asChild>
             <Link href="/admin">
@@ -428,85 +436,88 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [mobileNav, setMobileNav] = useState(false);
 
   return (
-    <div className="min-h-screen bg-background">
-      <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar lg:flex",
-          collapsed ? "w-[68px]" : "w-64",
-        )}
-      >
-        <div
+    <NotificationStream>
+      <div className="min-h-screen bg-background">
+        <aside
           className={cn(
-            "flex h-14 items-center border-b border-sidebar-border px-3",
-            collapsed ? "justify-center" : "justify-between",
+            "fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar lg:flex",
+            collapsed ? "w-[68px]" : "w-64",
           )}
         >
-          <Logo collapsed={collapsed} />
-          {!collapsed && (
-            <Button variant="ghost" size="icon" onClick={() => setCollapsed(true)} aria-label={t.shell.collapse}>
-              <PanelLeftClose className="size-4" />
+          <div
+            className={cn(
+              "flex h-14 items-center border-b border-sidebar-border px-3",
+              collapsed ? "justify-center" : "justify-between",
+            )}
+          >
+            <Logo collapsed={collapsed} />
+            {!collapsed && (
+              <Button variant="ghost" size="icon" onClick={() => setCollapsed(true)} aria-label={t.shell.collapse}>
+                <PanelLeftClose className="size-4" />
+              </Button>
+            )}
+          </div>
+          {collapsed && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="mx-auto mt-2"
+              onClick={() => setCollapsed(false)}
+              aria-label={t.shell.expand}
+            >
+              <PanelLeftOpen className="size-4" />
             </Button>
           )}
-        </div>
-        {collapsed && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="mx-auto mt-2"
-            onClick={() => setCollapsed(false)}
-            aria-label={t.shell.expand}
-          >
-            <PanelLeftOpen className="size-4" />
-          </Button>
-        )}
-        <NavList collapsed={collapsed} />
-        <CreditsFooter collapsed={collapsed} />
-      </aside>
+          <NavList collapsed={collapsed} />
+          <CreditsFooter collapsed={collapsed} />
+        </aside>
 
-      <Sheet open={mobileNav} onOpenChange={setMobileNav}>
-        <SheetContent side="left" className="w-72 bg-sidebar p-0 [&>button]:hidden">
-          <SheetTitle className="sr-only">{t.shell.navigation}</SheetTitle>
-          <div className="flex h-14 items-center justify-between border-b border-sidebar-border px-3">
-            <Logo />
-            <Button variant="ghost" size="icon" onClick={() => setMobileNav(false)} aria-label={t.shell.closeNav}>
-              <X className="size-4" />
+        <Sheet open={mobileNav} onOpenChange={setMobileNav}>
+          <SheetContent side="left" className="w-72 bg-sidebar p-0 [&>button]:hidden">
+            <SheetTitle className="sr-only">{t.shell.navigation}</SheetTitle>
+            <div className="flex h-14 items-center justify-between border-b border-sidebar-border px-3">
+              <Logo />
+              <Button variant="ghost" size="icon" onClick={() => setMobileNav(false)} aria-label={t.shell.closeNav}>
+                <X className="size-4" />
+              </Button>
+            </div>
+            <div className="flex h-[calc(100%-3.5rem)] flex-col">
+              <NavList onNavigate={() => setMobileNav(false)} />
+              <CreditsFooter />
+            </div>
+          </SheetContent>
+        </Sheet>
+
+        <div className={cn(collapsed ? "lg:pl-[68px]" : "lg:pl-64")}>
+          <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="lg:hidden"
+              onClick={() => setMobileNav(true)}
+              aria-label={t.shell.openNav}
+            >
+              <Menu className="size-4" />
             </Button>
-          </div>
-          <div className="flex h-[calc(100%-3.5rem)] flex-col">
-            <NavList onNavigate={() => setMobileNav(false)} />
-            <CreditsFooter />
-          </div>
-        </SheetContent>
-      </Sheet>
+            <SearchBox />
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              <GenerationCenter />
+              <NotificationCenter />
+              <AccountMenu />
+            </div>
+          </header>
 
-      <div className={cn(collapsed ? "lg:pl-[68px]" : "lg:pl-64")}>
-        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="lg:hidden"
-            onClick={() => setMobileNav(true)}
-            aria-label={t.shell.openNav}
-          >
-            <Menu className="size-4" />
-          </Button>
-          <SearchBox />
-          <div className="ml-auto flex items-center gap-1.5">
-            <GenerationCenter />
-            <AccountMenu />
-          </div>
-        </header>
-
-        {fullBleed ? (
-          <main>{children}</main>
-        ) : (
-          <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
-            {/* Admin fits the viewport exactly and shows storage in its own tables. */}
-            {!pathname.startsWith("/admin") && <StorageAlert />}
-            {children}
-          </main>
-        )}
+          {fullBleed ? (
+            <main>{children}</main>
+          ) : (
+            <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+              {/* Admin fits the viewport exactly and shows storage in its own tables. */}
+              {!pathname.startsWith("/admin") && <StorageAlert />}
+              {children}
+            </main>
+          )}
+        </div>
       </div>
-    </div>
+    </NotificationStream>
   );
 }

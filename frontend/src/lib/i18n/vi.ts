@@ -2,6 +2,13 @@
  * Vietnamese is the source dictionary: its shape is the `Dictionary` type that
  * every other locale must satisfy, so a missing translation fails typecheck.
  */
+const channelName = (channel: unknown) =>
+  channel === "youtube" ? "YouTube" : channel === "tiktok" ? "TikTok" : channel === "facebook" ? "Facebook" : String(channel ?? "");
+type NotificationParams = Record<string, string | number | boolean | null>;
+const vnd = (value: unknown) => `${Number(value ?? 0).toLocaleString("vi-VN")} ₫`;
+
+const SUPPORT_STATUS: Record<string, string> = {open: "Mới", waiting_support: "Chờ hỗ trợ", waiting_user: "Chờ bạn phản hồi", resolved: "Đã giải quyết", closed: "Đã đóng"};
+
 export const vi = {
   meta: {
     title: (page: string) => `${page} · ReelForge Studio`,
@@ -73,6 +80,131 @@ export const vi = {
     nothingToRemove: "Không có media trung gian nào có thể xoá trong phạm vi này.",
     removeConfirm: "Xoá",
     cleaned: (count: number, size: string) => `Đã xoá ${count} tệp, giải phóng ${size}.`,
+  },
+  notifications: {
+    title: "Thông báo",
+    subtitle: "Kết quả workflow, đăng tải, thanh toán, credits, dung lượng và hỗ trợ.",
+    markAllRead: "Đánh dấu đã đọc tất cả",
+    empty: "Chưa có thông báo.",
+    emptyHint: "Thông báo mới sẽ xuất hiện ngay khi có sự kiện.",
+    viewAll: "Xem tất cả thông báo",
+    unread: "Chưa đọc",
+    all: "Tất cả",
+    unreadCount: (n: number) => `Chưa đọc (${n})`,
+    kinds: {
+      "run.completed": {
+        title: (p: NotificationParams): string => "Workflow đã hoàn tất",
+        message: (p: NotificationParams): string => String(p.workflow ?? ""),
+      },
+      "run.failed": {
+        title: (p: NotificationParams): string => (p.node_type === "render" ? "Render video thất bại" : "Workflow thất bại"),
+        message: (p: NotificationParams): string => `${p.workflow ?? ""}${p.node_type ? ` · bước ${p.node_type}` : ""}`,
+      },
+      "run.needs_attention": {
+        title: (p: NotificationParams): string => "Workflow cần xử lý",
+        message: (p: NotificationParams): string => `${p.workflow ?? ""}${p.node_type ? ` · bước ${p.node_type}` : ""}`,
+      },
+      "run.awaiting_review": {
+        title: (p: NotificationParams): string => (p.rendered ? "Video đã sẵn sàng để duyệt" : "Đang chờ bạn duyệt"),
+        message: (p: NotificationParams): string => String(p.workflow ?? ""),
+      },
+      "publish.scheduled": {
+        title: (p: NotificationParams): string => "Đã lên lịch đăng",
+        message: (p: NotificationParams): string => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.succeeded": {
+        title: (p: NotificationParams): string => "Đăng tải thành công",
+        message: (p: NotificationParams): string => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.failed": {
+        title: (p: NotificationParams): string => "Đăng tải thất bại",
+        message: (p: NotificationParams): string => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "publish.needs_attention": {
+        title: (p: NotificationParams): string => "Bài đăng cần xử lý",
+        message: (p: NotificationParams): string => `${channelName(p.channel)}: ${p.title ?? ""}`,
+      },
+      "payment.succeeded": {
+        title: (p: NotificationParams): string => "Thanh toán thành công",
+        message: (p: NotificationParams): string => `Gói ${String(p.plan ?? "").toUpperCase()} đã được kích hoạt · ${vnd(p.amount)}`,
+      },
+      "payment.failed": {
+        title: (p: NotificationParams): string => "Thanh toán không thành công",
+        message: (p: NotificationParams): string => `Gói ${String(p.plan ?? "").toUpperCase()} chưa được thanh toán.`,
+      },
+      "payment.unapplied": {
+        title: (p: NotificationParams): string => "Thanh toán cần kiểm tra",
+        message: (p: NotificationParams): string => "Một đơn đã thanh toán chưa áp dụng được vào gói.",
+      },
+      "credits.low": {
+        title: (p: NotificationParams): string => "Credits sắp hết",
+        message: (p: NotificationParams): string => `Còn ${p.balance ?? 0} credits.`,
+      },
+      "credits.adjusted": {
+        title: (p: NotificationParams): string => "Quản trị viên đã điều chỉnh credits",
+        message: (p: NotificationParams): string => `${Number(p.delta) > 0 ? "+" : ""}${p.delta ?? 0} credits · số dư ${p.balance ?? 0}`,
+      },
+      "storage.warning": {
+        title: (p: NotificationParams): string => "Đã dùng 80% dung lượng",
+        message: (p: NotificationParams): string => "Xoá media không cần dùng trong Cài đặt → Lưu trữ.",
+      },
+      "storage.critical": {
+        title: (p: NotificationParams): string => "Đã dùng 90% dung lượng",
+        message: (p: NotificationParams): string => "Sắp không thể tải lên hoặc tạo media mới.",
+      },
+      "storage.full": {
+        title: (p: NotificationParams): string => "Đã hết dung lượng lưu trữ",
+        message: (p: NotificationParams): string => "Tải lên và tạo media mới đang bị chặn.",
+      },
+      "support.new": {
+        title: (p: NotificationParams): string => "Yêu cầu hỗ trợ mới",
+        message: (p: NotificationParams): string => `${p.subject ?? ""}${p.email ? ` · ${p.email}` : ""}`,
+      },
+      "support.reply": {
+        title: (p: NotificationParams): string => "Có phản hồi hỗ trợ mới",
+        message: (p: NotificationParams): string => String(p.subject ?? ""),
+      },
+      "support.status": {
+        title: (p: NotificationParams): string => "Yêu cầu hỗ trợ đã được cập nhật",
+        message: (p: NotificationParams): string => `${p.subject ?? ""} · ${SUPPORT_STATUS[String(p.status)] ?? p.status}`,
+      },
+    },
+  },
+  support: {
+    title: "Hỗ trợ",
+    subtitle: "Gửi yêu cầu cho đội ngũ ReelForge và theo dõi phản hồi.",
+    newRequest: "Yêu cầu mới",
+    newRequestHint: "Mô tả vấn đề; đội hỗ trợ sẽ trả lời ngay trong ứng dụng.",
+    subject: "Tiêu đề",
+    category: "Danh mục",
+    description: "Mô tả",
+    privacyHint: "Đừng gửi mật khẩu, khoá API hay thông tin thẻ.",
+    attached: "Đính kèm",
+    contextLabels: { run_id: "lượt chạy", project_id: "dự án", payment_order_id: "đơn thanh toán", publication_id: "bài đăng" },
+    submit: "Gửi yêu cầu",
+    empty: "Chưa có yêu cầu hỗ trợ.",
+    emptyHint: "Gặp vấn đề với thanh toán, credits, tạo video hay đăng tải? Gửi yêu cầu mới.",
+    categories: {
+      billing: "Thanh toán",
+      credits: "Credits",
+      generation: "Tạo nội dung AI",
+      publishing: "Đăng tải",
+      account: "Tài khoản",
+      storage: "Lưu trữ",
+      bug: "Lỗi kỹ thuật",
+      other: "Khác",
+    },
+    statuses: { open: "Mới", waiting_support: "Chờ hỗ trợ", waiting_user: "Chờ bạn phản hồi", resolved: "Đã giải quyết", closed: "Đã đóng" },
+    supportTeam: "Đội hỗ trợ ReelForge",
+    you: "Bạn",
+    replyPlaceholder: "Viết phản hồi…",
+    send: "Gửi",
+    closedHint: "Yêu cầu đã đóng. Hãy tạo yêu cầu mới nếu cần hỗ trợ thêm.",
+    close: "Đóng yêu cầu",
+    closed: "Đã đóng yêu cầu.",
+    back: "Tất cả yêu cầu",
+    notFound: "Không tìm thấy yêu cầu này.",
+    closedAt: (date: string) => `Đóng lúc ${date}`,
   },
   nav: {
     groups: { main: "Chính", ai: "AI", workspace: "Studio" },
@@ -1287,8 +1419,8 @@ export const vi = {
     title: "Quản trị",
     subtitle: "Tài khoản, studio, gói dịch vụ và credits của toàn hệ thống.",
     apiOutdated: "Máy chủ API đang chạy phiên bản cũ hơn giao diện này: hãy chạy python -m alembic upgrade head rồi khởi động lại API và các worker.",
-    stats: { users: "Người dùng", studios: "Studio", plans: "Gói dịch vụ", pendingPayments: "Thanh toán chờ", pendingReconciliation: "Chờ đối soát", stuckJobs: "Tác vụ kẹt", storageAlerts: "Studio ≥ 90% dung lượng" },
-    tabs: { users: "Người dùng", studios: "Studio & credits", plans: "Cấu hình gói", payments: "Thanh toán", reconciliation: "Đối soát credits", operations: "Vận hành" },
+    stats: { users: "Người dùng", studios: "Studio", plans: "Gói dịch vụ", pendingPayments: "Thanh toán chờ", pendingReconciliation: "Chờ đối soát", stuckJobs: "Tác vụ kẹt", storageAlerts: "Studio ≥ 90% dung lượng", supportOpen: "Hỗ trợ chờ trả lời" },
+    tabs: { users: "Người dùng", studios: "Studio & credits", plans: "Cấu hình gói", payments: "Thanh toán", reconciliation: "Đối soát credits", operations: "Vận hành", support: "Hỗ trợ", verification: "Kiểm định" },
     reconciliation: {
       description: "Kiểm tra các yêu cầu chưa rõ kết quả với dữ liệu của provider, sau đó xác nhận tính phí hoặc hoàn credits đã giữ. Mỗi quyết định là cố định và được lưu để kiểm tra sau này.",
       pending: "Chờ đối soát",
@@ -1433,6 +1565,76 @@ export const vi = {
       view: "Xem chi tiết",
       detailTitle: "Chi tiết thanh toán",
       empty: "Không có đơn thanh toán phù hợp.",
+    },
+    support: {
+      columns: { ticket: "Yêu cầu", user: "Người dùng", studio: "Studio", category: "Danh mục", status: "Trạng thái", updated: "Cập nhật", priority: "Ưu tiên", actions: "Thao tác" },
+      priorities: { normal: "Thường", high: "Cao" },
+      empty: "Không có yêu cầu phù hợp.",
+      searchPlaceholder: "Tìm theo mã, tiêu đề, email hoặc studio",
+      allStatuses: "Mọi trạng thái",
+      allCategories: "Mọi danh mục",
+      allPriorities: "Mọi mức ưu tiên",
+      open: "Mở",
+      markResolved: "Đánh dấu đã giải quyết khi gửi",
+    },
+    paymentSetup: {
+      open: "Cấu hình cổng",
+      title: "Cấu hình cổng thanh toán",
+      description: "Chỉ quản trị hệ thống xem được. Khoá bí mật nằm trên máy chủ và không bao giờ hiển thị; chỉ thấy đã cấu hình hay chưa.",
+      copy: "Sao chép",
+      default: "mặc định",
+      fieldStatus: { configured: "Đã cấu hình", missing: "Thiếu", invalid: "Sai định dạng" },
+      modes: { sandbox: "Sandbox (thử nghiệm)", production: "Production (thật)", custom: "Địa chỉ tuỳ chỉnh" },
+      payosWhere: "Đặt trong instance/bootstrap.json (object payos) trên máy chủ API, rồi khởi động lại API.",
+      onepayWhere: "Đặt trong /etc/reelforge/runtime.env (hoặc .env.runtime), rồi khởi động lại API và các worker.",
+      endpoints: { webhook: "Webhook (đăng ký với payOS)", ipn: "IPN (đăng ký với OnePAY)", return: "Return URL" },
+      activity: (kind: string, date: string) => `${kind}: ${date}`,
+      activityKinds: { webhook: "Webhook gần nhất", ipn: "IPN gần nhất", query: "Truy vấn trạng thái gần nhất", check: "Kiểm tra gần nhất" },
+      noActivity: "Chưa ghi nhận hoạt động nào.",
+      check: "Kiểm tra cấu hình",
+      checkRemote: "Kiểm tra với OnePAY (QueryDR, không thu tiền)",
+      localResult: "Trên máy chủ",
+      remoteResult: "Với cổng",
+      checkStatus: { ok: "Đạt", warning: "Cần lưu ý", error: "Lỗi", skipped: "Bỏ qua", unsupported: "Không hỗ trợ" },
+    },
+    verification: {
+      readiness: "Sẵn sàng vận hành",
+      checkedAt: (date: string) => `Kiểm tra lúc ${date}`,
+      checkStream: "Kiểm tra luồng thông báo",
+      recheck: "Kiểm tra lại",
+      streamOk: "Luồng thông báo hoạt động (đã nhận sự kiện).",
+      streamFailed: "Không nhận được sự kiện trong 10 giây; kiểm tra proxy (buffering, timeout).",
+      sections: { database: "Cơ sở dữ liệu", storage: "Lưu trữ", ffmpeg: "FFmpeg", workers: "Worker", ai: "Nhà cung cấp AI", publishing: "Đăng tải", payments: "Thanh toán", realtime: "Thông báo realtime", support: "Hỗ trợ" },
+      checks: {
+        connection: "Kết nối", migration: "Migration", root: "Thư mục gốc", writable: "Ghi được", disk: "Ổ đĩa", maintenance: "Dọn dẹp hằng ngày",
+        ffmpeg: "ffmpeg / ffprobe", subtitle_font: "Font phụ đề",
+        text_worker: "Text worker", image_worker: "Image worker", video_worker: "Video worker", voice_worker: "Voice worker", render_worker: "Render worker",
+        source_worker: "Source worker", youtube_worker: "YouTube worker", social_worker: "Social worker", scheduler_worker: "Scheduler worker",
+        gemini: "Gemini", runway: "Runway", openai: "OpenAI", anthropic: "Anthropic", fal: "fal", runware: "Runware", replicate: "Replicate",
+        youtube: "YouTube OAuth", tiktok: "TikTok", facebook: "Facebook", token_encryption: "Khoá mã hoá token",
+        payos: "payOS", onepay: "OnePAY", stream: "Luồng SSE", tickets: "Yêu cầu chờ trả lời",
+      },
+      statuses: { ok: "Đạt", warning: "Cần lưu ý", error: "Lỗi", missing: "Thiếu", off: "Chưa bật" },
+      details: {
+        not_postgresql: "không phải PostgreSQL", behind: "chưa nâng cấp", unreachable: "không kết nối được", default_or_setting: "chưa đặt REELFORGE_STORAGE_ROOT",
+        not_created: "chưa tạo", not_writable: "không ghi được", unavailable: "không đọc được", low_space: "còn dưới 10% trống", never_run: "chưa chạy lần nào",
+        stale: "quá 36 giờ chưa chạy", ffmpeg_missing: "chưa cài", font_unavailable: "chưa có font", missing: "chưa chạy", error: "lỗi", key_missing: "thiếu khoá",
+        not_configured: "chưa cấu hình", invalid_or_missing: "thiếu hoặc sai",
+      },
+      checklist: "Danh sách kiểm định thủ công",
+      checklistHint: (done: number, total: number) => `${done}/${total} mục đã xác nhận. Chỉ đánh dấu sau khi tự kiểm tra; hệ thống không tự đánh dấu.`,
+      items: {
+        migration_upgraded: "Đã nâng cấp migration", storage_on_hdd: "Thư mục lưu trữ đã chuyển sang HDD", ffmpeg_verified: "Đã kiểm tra FFmpeg",
+        gemini_tts_live: "Gemini TTS chạy thật", final_render_live: "Render video hoàn chỉnh chạy thật", movie_recap_live: "Movie Recap chạy thật",
+        article_video_live: "Article → Video chạy thật", product_video_live: "Product Video chạy thật", youtube_upload: "Đăng YouTube",
+        tiktok_upload: "Đăng TikTok", facebook_reel: "Đăng Facebook Reel", scheduled_publishing: "Đăng theo lịch",
+        payos_payment: "Thanh toán payOS/VietQR", onepay_sandbox_payment: "Thanh toán OnePAY sandbox", notification_realtime: "Thông báo realtime",
+        support_round_trip: "Hỗ trợ: người dùng → admin → người dùng", cleanup_dry_run: "Chạy thử dọn dẹp (dry-run)", maintenance_timer: "Đã bật timer dọn dẹp hằng ngày",
+      },
+      paid: "Tốn phí",
+      verifiedBy: (who: string, when: string) => `Đã xác nhận bởi ${who} · ${when}`,
+      notePlaceholder: "Ghi chú (không bắt buộc)",
+      saveNote: "Lưu ghi chú",
     },
   },
   youtube: {

@@ -1,5 +1,6 @@
 """ReelForge Studio: small, self-hosted first slice."""
 from contextlib import asynccontextmanager
+import asyncio
 import hashlib
 import json
 import math
@@ -7,6 +8,7 @@ import os
 import re
 import logging
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,18 +17,19 @@ from urllib.parse import parse_qsl
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import case, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
-from app.models import UserProfile
+from app.models import Notification, SupportMessage, SupportTicket, UserProfile, VerificationCheck
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import (auth_security, billing, heartbeat, jobs, media_maintenance, payment_providers, payments, publications,
-                 reconciliation, run_summary, sources, storage, usage)
+from app import (auth_security, billing, heartbeat, jobs, media_maintenance, notifications, payment_providers, payments,
+                 publications, readiness, reconciliation, run_summary, sources, storage, support, usage)
 from app.payment_providers import onepay
+from app.payment_providers import setup as payment_setup
 from app.models import CreditReconciliation
 # Re-exported: existing callers import video_provider_config_issue from app.main.
 from app.providers.catalog import video_provider_config_issue  # noqa: F401
@@ -834,6 +837,7 @@ async def payos_webhook(request: Request):
                                 provider="payos")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    payment_setup.record_activity("payos", "webhook")
     return {"ok": True}
 
 
@@ -865,7 +869,9 @@ def refresh_order(order_id: str, workspace_id: str | None = None):
             payments.settle(db, name, evidence)
         except ValueError as exc:
             raise HTTPException(502, "Payment amount mismatch") from exc
-        return order_data(db.get(PaymentOrder, order_id))
+        result = order_data(db.get(PaymentOrder, order_id))
+    payment_setup.record_activity(name, "query")
+    return result
 
 
 @app.post("/api/billing/orders/{order_id}/refresh")
@@ -940,6 +946,7 @@ async def onepay_ipn(request: Request):
         return fail("amount-mismatch")
     if status == "unknown" or (evidence.status == "paid" and status not in ("paid", "paid_unapplied")):
         return fail("order-not-found")
+    payment_setup.record_activity("onepay", "ipn")
     return PlainTextResponse("responsecode=1&desc=confirm-success")
 
 
@@ -1044,6 +1051,8 @@ def admin_overview(request: Request):
                 "pending_payments": count_of(db, select(PaymentOrder.id).where(PaymentOrder.status == "pending")),
                 # Studios at 90 % of their storage or more (the levels below come from one grouped query).
                 "storage_alerts": sum(levels[name] for name in ("critical", "full")),
+                "support_open": count_of(db, select(SupportTicket.id).where(
+                    SupportTicket.status.in_(support.AWAITING_SUPPORT))),
             },
             "storage_levels": levels,
             "plans": [plan_data(p) for p in db.scalars(select(Plan).order_by(Plan.code))],
@@ -1317,6 +1326,194 @@ def admin_storage(request: Request, limit: int = ADMIN_LIMIT, offset: int = ADMI
         return {"workspaces": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset,
                 "levels": levels, "disk": storage.disk_usage(db), "default_quota_bytes": storage.default_quota(),
                 "retention": retention_data(storage.RetentionPolicy.from_environment())}
+
+
+# --- Phase 18A: payment provider setup (system admins only) ---------------------------------------------
+
+class PaymentCheckInput(BaseModel):
+    provider: Literal["payos", "onepay"]
+    # Remote: one read-only OnePAY QueryDR about a reference that cannot exist; never a charge.
+    remote: bool = False
+
+
+@app.get("/api/admin/payment-config")
+def admin_payment_config(request: Request):
+    """What each provider needs and whether it is set; identifiers masked, secrets only as configured/missing."""
+    with Session() as db:
+        admin_for(request, db)
+        return {"providers": payment_setup.overview(setting(db, "frontend_origin"), payment_setup.activity(db))}
+
+
+@app.post("/api/admin/payment-config/check")
+def admin_payment_check(data: PaymentCheckInput, request: Request):
+    same_origin(request)
+    with Session() as db:
+        admin_for(request, db)
+    result = payment_setup.check(data.provider, remote=data.remote)
+    if result["local"]["status"] == "ok" and result["remote"]["status"] in ("ok", "skipped"):
+        payment_setup.record_activity(data.provider, "check")
+    log_event(logger, "payment_config_checked", provider=data.provider, remote=data.remote,
+              local=result["local"]["status"], remote_status=result["remote"]["status"])
+    return {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+# --- Phase 18D: readiness and the manual live-verification checklist (system admins only) ----------------
+
+class VerificationInput(BaseModel):
+    verified: bool
+    note: str | None = Field(default=None, max_length=1000)
+
+
+@app.get("/api/admin/readiness")
+def admin_readiness(request: Request):
+    """Local, safe checks only: nothing paid, nothing published, no secret value."""
+    with Session() as db:
+        admin_for(request, db)
+        return readiness.report(db, streams=_open_streams, poll_seconds=_sse_settings()[0])
+
+
+@app.get("/api/admin/verification")
+def admin_verification(request: Request):
+    with Session() as db:
+        admin_for(request, db)
+        rows = {row.key: row for row in db.scalars(select(VerificationCheck))}
+        emails = dict(db.execute(select(User.id, User.email).where(
+            User.id.in_([row.verified_by_user_id for row in rows.values() if row.verified_by_user_id]))).all())
+        return {"items": [{"key": key, "paid": paid, "how": how,
+                           "verified": bool(rows.get(key) and rows[key].verified_at),
+                           "verified_at": _iso_or_none(rows[key].verified_at) if key in rows else None,
+                           "verified_by": emails.get(rows[key].verified_by_user_id) if key in rows else None,
+                           "note": rows[key].note if key in rows else None}
+                          for key, paid, how in readiness.CHECKLIST]}
+
+
+@app.put("/api/admin/verification/{key}")
+def update_verification(key: str, data: VerificationInput, request: Request):
+    """Record (or clear) a manual check; it is never marked verified by the server itself."""
+    same_origin(request)
+    if key not in readiness.CHECKLIST_KEYS:
+        raise HTTPException(404, "Unknown check")
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        now = datetime.now(timezone.utc)
+        row = db.get(VerificationCheck, key) or VerificationCheck(key=key, updated_at=now)
+        row.verified_at, row.verified_by_user_id = (now, admin.id) if data.verified else (None, None)
+        row.note = (data.note or "").strip() or None
+        row.updated_at = now
+        db.add(row)
+        return {"key": key, "verified": data.verified, "verified_at": _iso_or_none(row.verified_at),
+                "verified_by": admin.email if data.verified else None, "note": row.note}
+
+
+# --- Phase 18C: support, admin side ------------------------------------------------------------------------
+
+class SupportAdminUpdate(BaseModel):
+    status: Literal["open", "waiting_support", "waiting_user", "resolved", "closed"] | None = None
+    priority: Literal["normal", "high"] | None = None
+
+
+class SupportReplyInput(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+    # An admin may set the status with the reply (for example "resolved").
+    status: Literal["open", "waiting_support", "waiting_user", "resolved", "closed"] | None = None
+
+
+def support_error(exc: support.SupportError):
+    raise HTTPException(409 if exc.code == "ticket_closed" else 422, {"code": exc.code, "message": str(exc)}) from exc
+
+
+def _ticket_detail(db, ticket, *, for_admin: bool) -> dict:
+    creator = db.get(User, ticket.created_by_user_id)
+    workspace = db.get(Workspace, ticket.workspace_id)
+    rows = db.execute(select(SupportMessage, User.email).join(User, User.id == SupportMessage.author_user_id)
+                      .where(SupportMessage.ticket_id == ticket.id)
+                      .order_by(SupportMessage.created_at, SupportMessage.id)).all()
+    # Users see "support" for admin messages, never the admin's own account.
+    messages = [support.message_data(message, email if for_admin or message.author_type == "user" else None)
+                for message, email in rows]
+    return {**support.ticket_data(ticket, creator_email=creator.email if creator else None,
+                                  workspace_name=workspace.name if workspace else None, messages=len(messages)),
+            "thread": messages}
+
+
+@app.get("/api/admin/support")
+def admin_support(request: Request, q: str | None = Query(default=None, max_length=255),
+                  status: Literal["open", "waiting_support", "waiting_user", "resolved", "closed"] | None = None,
+                  category: str | None = None, priority: Literal["normal", "high"] | None = None,
+                  limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
+    """Support requests one page at a time; ``q`` matches the ticket ID, subject, user email or studio."""
+    with Session() as db:
+        admin_for(request, db)
+        query = (select(SupportTicket, User.email, Workspace.name)
+                 .join(User, User.id == SupportTicket.created_by_user_id)
+                 .join(Workspace, Workspace.id == SupportTicket.workspace_id))
+        if q and q.strip():
+            pattern = like_pattern(q)
+            query = query.where(or_(func.lower(SupportTicket.subject).like(pattern, escape="\\"),
+                                    func.lower(User.email).like(pattern, escape="\\"),
+                                    func.lower(Workspace.name).like(pattern, escape="\\"),
+                                    SupportTicket.id.like(pattern[1:], escape="\\")))
+        if status:
+            query = query.where(SupportTicket.status == status)
+        if category:
+            query = query.where(SupportTicket.category == category)
+        if priority:
+            query = query.where(SupportTicket.priority == priority)
+        total = count_of(db, query)
+        rows = db.execute(query.order_by(SupportTicket.updated_at.desc(), SupportTicket.id)
+                          .limit(limit).offset(offset)).all()
+        return {"items": [support.ticket_data(ticket, creator_email=email, workspace_name=name)
+                          for ticket, email, name in rows], "total": total, "limit": limit, "offset": offset}
+
+
+def _admin_ticket(db, ticket_id: str) -> SupportTicket:
+    ticket = db.scalar(select(SupportTicket).where(SupportTicket.id == ticket_id).with_for_update())
+    if ticket is None:
+        raise HTTPException(404, "Ticket not found")
+    return ticket
+
+
+@app.get("/api/admin/support/{ticket_id}")
+def admin_support_ticket(ticket_id: str, request: Request):
+    with Session() as db:
+        admin_for(request, db)
+        ticket = db.get(SupportTicket, ticket_id)
+        if ticket is None:
+            raise HTTPException(404, "Ticket not found")
+        return _ticket_detail(db, ticket, for_admin=True)
+
+
+@app.post("/api/admin/support/{ticket_id}/messages", status_code=201)
+def admin_support_reply(ticket_id: str, data: SupportReplyInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        admin = admin_for(request, db)
+        ticket = _admin_ticket(db, ticket_id)
+        try:
+            support.add_message(db, ticket, admin, data.body, as_admin=True)
+            if data.status:
+                support.set_status(db, ticket, data.status, by_admin=True)
+        except support.SupportError as exc:
+            support_error(exc)
+        db.flush()
+        return _ticket_detail(db, ticket, for_admin=True)
+
+
+@app.patch("/api/admin/support/{ticket_id}")
+def admin_support_update(ticket_id: str, data: SupportAdminUpdate, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        admin_for(request, db)
+        ticket = _admin_ticket(db, ticket_id)
+        try:
+            if data.priority:
+                support.set_priority(ticket, data.priority)
+            if data.status:
+                support.set_status(db, ticket, data.status, by_admin=True)
+        except support.SupportError as exc:
+            support_error(exc)
+        db.flush()
+        return _ticket_detail(db, ticket, for_admin=True)
 
 
 @app.post("/api/admin/accounts", status_code=201)
@@ -2342,6 +2539,7 @@ def upload_asset(request: Request, file: UploadFile = File(...)):
             asset = Asset(id=asset_id, workspace_id=ws.id, filename=filename, bytes=size, content_type=content_type,
                           kind=storage.SOURCE)
             db.add(asset)
+            notifications.storage_crossed(db, ws.id, stored_bytes, stored_bytes + size, quota)
         except Exception:
             target.unlink(missing_ok=True)
             raise
@@ -2425,6 +2623,229 @@ def delete_asset(asset_id: str, request: Request):
 @app.post("/api/assets/delete")
 def delete_assets(data: MediaDeleteInput, request: Request):
     return delete_media(request, data.asset_ids)
+
+
+# --- Phase 18B: notifications ----------------------------------------------------------------------------
+
+def _sse_settings() -> tuple[float, float]:
+    """(seconds between checks, seconds before the server ends a stream so the client reconnects)."""
+    def number(name, default, low, high):
+        try:
+            return min(high, max(low, float(os.environ.get(name, "").strip() or default)))
+        except ValueError:
+            return default
+    return number("REELFORGE_SSE_POLL_SECONDS", 3, 0.1, 30), number("REELFORGE_SSE_MAX_SECONDS", 300, 1, 3600)
+
+
+_open_streams = 0
+SSE_HEARTBEAT_SECONDS = 15
+
+
+@app.get("/api/notifications")
+def list_notifications(request: Request, limit: int = Query(default=20, ge=1, le=100),
+                       offset: int = Query(default=0, ge=0), unread: bool = False):
+    with Session() as db:
+        user = authorize(request, db)
+        query = select(Notification).where(notifications.visible(user.id))
+        if unread:
+            query = query.where(Notification.read_at.is_(None))
+        total = count_of(db, query)
+        rows = db.scalars(query.order_by(Notification.id.desc()).limit(limit).offset(offset)).all()
+        return {"items": [notifications.public(row) for row in rows], "total": total, "limit": limit,
+                "offset": offset, "unread": notifications.unread_count(db, user.id)}
+
+
+@app.get("/api/notifications/unread-count")
+def notifications_unread(request: Request):
+    with Session() as db:
+        return {"unread": notifications.unread_count(db, authorize(request, db).id)}
+
+
+@app.post("/api/notifications/read-all")
+def notifications_read_all(request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        updated = notifications.mark_read(db, user.id)
+        return {"updated": updated, "unread": notifications.unread_count(db, user.id)}
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def notification_read(notification_id: int, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        if not db.scalar(select(Notification.id).where(Notification.id == notification_id,
+                                                       notifications.visible(user.id))):
+            raise HTTPException(404, "Notification not found")
+        notifications.mark_read(db, user.id, notification_id)
+        return {"id": notification_id, "unread": notifications.unread_count(db, user.id)}
+
+
+def _stream_start(request: Request) -> tuple[str, int]:
+    with Session() as db:
+        user = authorize(request, db)
+        return user.id, notifications.latest_id(db, user.id)
+
+
+def _stream_poll(request: Request, last_id: int) -> tuple[list[dict], int]:
+    # The session is checked on every pass: signing out (or being locked) ends the stream.
+    with Session() as db:
+        user = authorize(request, db)
+        return ([notifications.public(row) for row in notifications.newer_than(db, user.id, last_id)],
+                notifications.unread_count(db, user.id))
+
+
+@app.get("/api/notifications/stream")
+async def notification_stream(request: Request):
+    """Server-Sent Events: ``notification`` events (with an ``id`` to resume from) and ``unread`` counts.
+
+    Authenticated by the session cookie like every other request. A ``Last-Event-ID``
+    header (sent by the browser when it reconnects) replays what was missed; a new
+    stream starts from now. A ``: ping`` comment keeps idle proxies from closing it,
+    and the server ends each stream after ``REELFORGE_SSE_MAX_SECONDS`` so clients
+    reconnect (``retry: 5000``) through restarts and proxy timeouts.
+    """
+    user_id, latest = await asyncio.to_thread(_stream_start, request)
+    resume = request.headers.get("last-event-id", "").strip()
+    start = int(resume) if resume.isdigit() else latest
+    poll, lifetime = _sse_settings()
+
+    async def events():
+        global _open_streams
+        _open_streams += 1
+        last_id, unread, began = start, None, time.monotonic()
+        quiet_since = began
+        try:
+            yield "retry: 5000\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    rows, count = await asyncio.to_thread(_stream_poll, request, last_id)
+                except HTTPException:
+                    yield 'event: end\ndata: {"reason": "signed_out"}\n\n'
+                    break
+                for row in rows:
+                    last_id = row["id"]
+                    yield f"id: {row['id']}\nevent: notification\ndata: {json.dumps(row, ensure_ascii=False)}\n\n"
+                if count != unread or rows:
+                    unread, quiet_since = count, time.monotonic()
+                    yield f'event: unread\ndata: {{"unread": {count}}}\n\n'
+                elif time.monotonic() - quiet_since >= SSE_HEARTBEAT_SECONDS:
+                    quiet_since = time.monotonic()
+                    yield ": ping\n\n"
+                if time.monotonic() - began >= lifetime:
+                    break
+                await asyncio.sleep(poll)
+        finally:
+            _open_streams -= 1
+
+    log_event(logger, "notification_stream_opened", user_id=user_id, resumed=bool(resume.isdigit()))
+    # no-transform keeps proxies (and Next.js) from compressing, which would buffer the events.
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+
+
+# --- Phase 18C: support, user side -----------------------------------------------------------------------
+
+class SupportTicketInput(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    category: Literal["billing", "credits", "generation", "publishing", "account", "storage", "bug", "other"]
+    description: str = Field(min_length=1, max_length=5000)
+    run_id: str | None = Field(default=None, max_length=36)
+    project_id: str | None = Field(default=None, max_length=36)
+    payment_order_id: str | None = Field(default=None, max_length=36)
+    publication_id: str | None = Field(default=None, max_length=36)
+
+
+class SupportMessageInput(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
+def _support_scope(request: Request, db):
+    """The user, their workspace, and whether they own it (owners see every ticket of the studio)."""
+    user = authorize(request, db)
+    ws = workspace_for(request, db)
+    membership = db.get(Membership, (user.id, ws.id))
+    return user, ws, bool(membership and membership.role == "owner")
+
+
+def _visible_tickets(user, ws, owner: bool):
+    condition = SupportTicket.workspace_id == ws.id
+    return condition if owner else condition & (SupportTicket.created_by_user_id == user.id)
+
+
+def _user_ticket(db, request: Request, ticket_id: str, *, lock: bool = False):
+    user, ws, owner = _support_scope(request, db)
+    query = select(SupportTicket).where(SupportTicket.id == ticket_id, _visible_tickets(user, ws, owner))
+    ticket = db.scalar(query.with_for_update() if lock else query)
+    if ticket is None:
+        raise HTTPException(404, "Ticket not found")
+    return user, ticket
+
+
+@app.get("/api/support/tickets")
+def list_support_tickets(request: Request, limit: int = Query(default=20, ge=1, le=100),
+                         offset: int = Query(default=0, ge=0)):
+    with Session() as db:
+        user, ws, owner = _support_scope(request, db)
+        query = select(SupportTicket).where(_visible_tickets(user, ws, owner))
+        total = count_of(db, query)
+        rows = db.scalars(query.order_by(SupportTicket.updated_at.desc(), SupportTicket.id)
+                          .limit(limit).offset(offset)).all()
+        counts = dict(db.execute(select(SupportMessage.ticket_id, func.count(SupportMessage.id))
+                                 .where(SupportMessage.ticket_id.in_([row.id for row in rows]))
+                                 .group_by(SupportMessage.ticket_id)).all())
+        return {"items": [support.ticket_data(row, messages=int(counts.get(row.id, 0))) for row in rows],
+                "total": total, "limit": limit, "offset": offset}
+
+
+@app.post("/api/support/tickets", status_code=201)
+def create_support_ticket(data: SupportTicketInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, ws, _ = _support_scope(request, db)
+        try:
+            ticket = support.create_ticket(db, workspace_id=ws.id, user=user, subject=data.subject,
+                                           category=data.category, body=data.description,
+                                           context={key: getattr(data, key) for key in
+                                                    ("run_id", "project_id", "payment_order_id", "publication_id")})
+        except support.SupportError as exc:
+            support_error(exc)
+        db.flush()
+        log_event(logger, "support_ticket_created", workspace_id=ws.id, ticket_id=ticket.id, category=data.category)
+        return _ticket_detail(db, ticket, for_admin=False)
+
+
+@app.get("/api/support/tickets/{ticket_id}")
+def support_ticket(ticket_id: str, request: Request):
+    with Session() as db:
+        _, ticket = _user_ticket(db, request, ticket_id)
+        return _ticket_detail(db, ticket, for_admin=False)
+
+
+@app.post("/api/support/tickets/{ticket_id}/messages", status_code=201)
+def reply_support_ticket(ticket_id: str, data: SupportMessageInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, ticket = _user_ticket(db, request, ticket_id, lock=True)
+        try:
+            support.add_message(db, ticket, user, data.body, as_admin=False)
+        except support.SupportError as exc:
+            support_error(exc)
+        db.flush()
+        return _ticket_detail(db, ticket, for_admin=False)
+
+
+@app.post("/api/support/tickets/{ticket_id}/close")
+def close_support_ticket(ticket_id: str, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        _, ticket = _user_ticket(db, request, ticket_id, lock=True)
+        support.set_status(db, ticket, "closed", by_admin=False)
+        db.flush()
+        return _ticket_detail(db, ticket, for_admin=False)
 
 
 @app.post("/api/storage/cleanup")

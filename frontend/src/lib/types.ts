@@ -445,6 +445,8 @@ export type AdminOverview = {
     pending_payments: number;
     /** Studios at 90 % of their storage or more. */
     storage_alerts: number;
+    /** Support requests awaiting an answer (Phase 18C); absent from an older API. */
+    support_open?: number;
   };
   storage_levels: Record<Exclude<StorageLevel, "ok">, number>;
   plans: Plan[];
@@ -500,4 +502,89 @@ export type ScriptItem = {
   words: number;
   truncated: boolean;
   created_at: string;
+};
+
+/** Phase 18B: one in-app notification; the frontend localizes it from ``type`` and ``params``. */
+export type AppNotification = {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  link: string | null;
+  params: Record<string, string | number | boolean | null>;
+  workspace_id: string | null;
+  read_at: string | null;
+  created_at: string | null;
+};
+export type NotificationPage = Page<AppNotification> & { unread: number };
+
+/** Phase 18C: support. */
+export type SupportCategory = "billing" | "credits" | "generation" | "publishing" | "account" | "storage" | "bug" | "other";
+export type SupportStatus = "open" | "waiting_support" | "waiting_user" | "resolved" | "closed";
+export type SupportPriority = "normal" | "high";
+export type SupportTicket = {
+  id: string;
+  subject: string;
+  category: SupportCategory;
+  status: SupportStatus;
+  priority: SupportPriority;
+  workspace_id: string;
+  workspace_name: string | null;
+  created_by_email: string | null;
+  messages: number | null;
+  context: Partial<Record<"run_id" | "project_id" | "payment_order_id" | "publication_id", string>>;
+  created_at: string | null;
+  updated_at: string | null;
+  closed_at: string | null;
+};
+export type SupportMessage = {
+  id: string;
+  author_type: "user" | "admin";
+  /** null for support replies seen by a user. */
+  author_email: string | null;
+  body: string;
+  created_at: string | null;
+};
+export type SupportTicketDetail = SupportTicket & { thread: SupportMessage[] };
+
+/** Phase 18A: payment provider setup as a system admin sees it (never a secret value). */
+export type PaymentSetupField = {
+  name: string;
+  source: "bootstrap" | "environment";
+  status: "configured" | "missing" | "invalid";
+  /** A masked identifier, or a full endpoint URL; never a key. */
+  value?: string;
+  default?: boolean;
+};
+export type PaymentSetup = {
+  provider: "payos" | "onepay";
+  method: PaymentMethod;
+  configured: boolean;
+  fields: PaymentSetupField[];
+  mode: "sandbox" | "production" | "custom" | null;
+  setup_file: string | null;
+  query_configured?: boolean;
+  endpoints: { key: "webhook" | "ipn" | "return"; url: string }[];
+  activity: Partial<Record<"webhook" | "ipn" | "query" | "check", string>>;
+};
+export type PaymentCheckStatus = "ok" | "warning" | "error" | "skipped" | "unsupported";
+export type PaymentCheck = {
+  provider: "payos" | "onepay";
+  local: { status: PaymentCheckStatus; code?: string };
+  remote: { status: PaymentCheckStatus; code?: string };
+  checked_at: string;
+};
+
+/** Phase 18D: readiness checks and the manual checklist. */
+export type SystemCheckStatus = "ok" | "warning" | "error" | "missing" | "off";
+export type SystemCheck = { key: string; status: SystemCheckStatus; detail?: string } & Record<string, unknown>;
+export type SystemReadiness = { checked_at: string; sections: { key: string; checks: SystemCheck[] }[] };
+export type VerificationItem = {
+  key: string;
+  paid: boolean;
+  how: string;
+  verified: boolean;
+  verified_at: string | null;
+  verified_by: string | null;
+  note: string | null;
 };

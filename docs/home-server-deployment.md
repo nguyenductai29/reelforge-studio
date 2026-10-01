@@ -1014,6 +1014,51 @@ Test:
 curl -I https://studio.imokome-cloud.com
 ```
 
+### Realtime notifications (Server-Sent Events)
+
+The notification bell keeps one long-lived request open per browser tab: `GET /api/notifications/stream`. It needs no new route, port or process. It travels Cloudflare → `localhost:3001` (Next.js) → `127.0.0.1:8000` (FastAPI), like every other `/api/*` request, and authenticates with the session cookie.
+
+**What keeps it working through each hop:**
+
+- **The FastAPI response**
+  - It sends `Cache-Control: no-cache, no-transform`, so neither Next.js nor Cloudflare compresses it. Compression would hold events back.
+  - It sends `X-Accel-Buffering: no` for nginx.
+- **Next.js**
+  - The rewrite proxy drops a connection that stays silent for 30 s.
+  - The stream writes a `: ping` after 15 s of silence, which also keeps Cloudflare's idle limit of about 100 s away.
+  - Tested: a stream through `next start` stayed open past 30 s, with pings every 15 s.
+- **Reconnecting**
+  - The API ends each stream after 5 minutes (`REELFORGE_SSE_MAX_SECONDS`).
+  - The browser reconnects after 5 s and resumes from the last event (`Last-Event-ID`), so nothing is missed across a reconnect, a tunnel restart or an API restart.
+  - While the stream is down, the bell polls every 30 s.
+
+Cloudflare Tunnel needs no setting for this. If you put **nginx** in front of Next.js or the API, give the stream its own unbuffered location:
+
+```nginx
+location /api/notifications/stream {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_buffering off;
+    proxy_cache off;
+    gzip off;
+    proxy_read_timeout 1h;
+}
+```
+
+**Check it:**
+
+1. Open **Admin → Kiểm định → Kiểm tra luồng thông báo** from a browser on the public domain. It passes when the first event arrives.
+2. From the server:
+
+   ```bash
+   # Sign in with a real account first, then stream for 40 s; expect "event: unread" at once and ": ping" every 15 s.
+   curl -sN -b cookies.txt --max-time 40 https://studio.imokome-cloud.com/api/notifications/stream
+   ```
+
+Each open stream checks the database every `REELFORGE_SSE_POLL_SECONDS` (default 3) with small indexed queries. Readiness in Admin → Kiểm định shows how many are open. See [NOTIFICATIONS.md](NOTIFICATIONS.md).
+
 ---
 
 ## 15. Optional payOS configuration
@@ -1063,11 +1108,22 @@ IPN:    https://studio.imokome-cloud.com/api/webhooks/onepay
 Return: https://studio.imokome-cloud.com/api/billing/onepay/return
 ```
 
-Restart `reelforge-api` after changing them. **Admin → Payments** shows payOS and OnePAY as Configured or Missing, never their values. A browser return alone never marks an order paid: the IPN or a QueryDR check must confirm it. Test with OnePAY's sandbox, then one small real payment, before accepting customers.
+Restart `reelforge-api` after changing them. **Admin → Payments** shows payOS and OnePAY as Configured or Missing, never their values. **Admin → Payments → Cấu hình cổng** lists every field by name with its status (identifiers masked), OnePAY's mode (Sandbox for `mtf.onepay.vn`), the webhook/IPN/return URLs to copy, and when the last webhook, IPN or query arrived. **Kiểm tra cấu hình** validates without charging; for OnePAY it can also send one read-only QueryDR about a reference that does not exist. A browser return alone never marks an order paid: the IPN or a QueryDR check must confirm it. Test with OnePAY's sandbox, then one small real payment, before accepting customers.
 
 Migration `0015_admin_payments_profiles` (display names and indexes for the paginated admin tables) is applied by `python -m alembic upgrade head`, as usual; card orders need no other schema change.
 
 Migration `0016_storage_lifecycle` (plan storage limits, asset kinds and expiry) is applied the same way. Set up the storage root and the daily cleanup timer in section 11 when you upgrade.
+
+Migration `0017_notify_support_verify` (notifications, support tickets and messages, and the live-verification checklist) is applied the same way. It only adds tables; no existing row changes.
+
+**After upgrading to Phase 18:**
+
+- Restart the API, the frontend and every worker. Workers create the run, publishing and payment notifications, so a worker still on old code would stay silent.
+- Optional variables, in `/etc/reelforge/runtime.env`:
+  - `REELFORGE_SSE_POLL_SECONDS` (3);
+  - `REELFORGE_SSE_MAX_SECONDS` (300);
+  - `CREDITS_LOW_THRESHOLD` (20).
+- Then open **Admin → Kiểm định**: readiness should show Migration ok. Work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
 
 ---
 

@@ -32,6 +32,7 @@ import shutil
 from sqlalchemy import exists, func, inspect, select, update
 from sqlalchemy.orm import aliased
 
+from app import notifications
 from app.models import Asset, Plan, Subscription, SystemSetting, Workspace
 from app.runtime_env import ROOT
 
@@ -159,7 +160,13 @@ def lock_workspace(db, workspace_id: str) -> None:
 
 
 def has_room(db, workspace_id: str, adding: int) -> bool:
-    return stored_bytes(db, workspace_id) + max(0, adding) <= quota_bytes(db, workspace_id)
+    """Whether ``adding`` bytes fit; called just before storing them, so it also tells the studio when this
+    write passes 80, 90 or 100 % of its quota."""
+    used, quota = stored_bytes(db, workspace_id), quota_bytes(db, workspace_id)
+    fits = used + max(0, adding) <= quota
+    if fits:
+        notifications.storage_crossed(db, workspace_id, used, used + max(0, adding), quota)
+    return fits
 
 
 def is_full(db, workspace_id: str) -> bool:

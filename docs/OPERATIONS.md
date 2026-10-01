@@ -94,7 +94,27 @@ The Admin page fits the window and never scrolls itself. Each tab is one table w
 | `POST /api/admin/payments/{id}/refresh` | — | Asks the order's provider server to server; there is no "mark paid" action |
 | `GET /api/admin/payment-providers` | — | `{provider, method, configured}` only |
 
+Phase 18 adds two tabs. All eight tabs (Người dùng, Studio & credits, Cấu hình gói, Thanh toán, Hỗ trợ, Đối soát credits, Vận hành, Kiểm định) still fit the window with no page scroll.
+
+| Endpoint (system admins) | Filters | Notes |
+| --- | --- | --- |
+| `GET /api/admin/support`, `/support/{id}` | `q` (ticket ID prefix, subject, email, studio), `status`, `category`, `priority` | **Hỗ trợ** tab. `POST …/{id}/messages` replies; `PATCH …/{id}` sets status or priority. See [SUPPORT.md](SUPPORT.md) |
+| `GET /api/admin/payment-config` | — | Thanh toán → **Cấu hình cổng**. Field names, masked identifiers and configured/missing, never a secret. `POST …/check` validates; see [PAYMENTS.md](PAYMENTS.md#admin-setup-view) |
+| `GET /api/admin/readiness` | — | **Kiểm định** tab: safe local checks of the database, storage, FFmpeg, workers, AI keys, publishing, payments, realtime and support |
+| `GET /api/admin/verification`, `PUT …/{key}` | — | The manual live-verification checklist, ticked only by an admin. See [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) |
+
+`GET /api/admin` adds `counts.support_open`: tickets waiting for support, shown in the summary row.
+
 List responses are `{items, total, limit, offset}` (`limit` 20 by default, at most 100). `q` is matched with `LIKE` after escaping `%`, `_` and `\`, so it is always a literal substring. Account creation (`POST /api/admin/accounts`), locking (`PUT /api/admin/users/{id}`; an admin cannot lock themselves or the last active admin), plan and status changes and credit adjustments (an append-only ledger entry with a reason) are unchanged. Migration 0015 adds indexes on `workspaces.owner_id` and on `payment_orders (created_at)` and `(provider, status)` for these pages.
+
+## Notifications and support (Phase 18)
+
+- **Bell.** It tells users about finished, failed or blocked runs, publishing, payments, credits, storage and support replies, live over Server-Sent Events. It falls back to polling every 30 s.
+- **Admins** also get new support tickets, user replies and payments that could not be applied.
+- **Behind a proxy**, the stream needs buffering off on nginx and works through Cloudflare Tunnel; see [NOTIFICATIONS.md](NOTIFICATIONS.md#proxies).
+- **To check it,** use Admin → Kiểm định → **Kiểm tra luồng thông báo**. The readiness view also shows how many streams are open.
+- **Storage.** Notifications fire at 80, 90 and 100 % of a studio's quota (once a day per level). This is on top of the 70 % warning on the Storage page.
+- **Media cleanup.** `media_maintenance --apply --intermediates` records its last run, which readiness shows. A warning after 36 h means the daily timer is not running.
 
 ## Never logged or returned
 
