@@ -18,6 +18,8 @@ A key is never generated implicitly. ``python -m app.master_key init`` writes on
 (chmod 600): it copies the legacy key when one is set, generates a new one only
 when the database holds no encrypted data, and otherwise refuses.
 ``python -m app.master_key status`` reports where the key comes from, never the key.
+``python -m app.master_key encrypted`` says whether the database already holds
+encrypted data (``deploy/ensure-master-key.sh`` uses it before creating a key).
 """
 import argparse
 import os
@@ -159,13 +161,29 @@ def init(path: Path, *, out=print) -> int:
         _write(Path(path), legacy)
         out(f"Copied {LEGACY_ENV} into {path} (chmod 600). Keep it backed up; the variable can now be removed.")
         return 0
-    if encrypted_data_exists():
+    try:
+        found_encrypted = encrypted_data_exists()
+    except Exception as exc:  # noqa: BLE001 - unknown means no new key
+        out(f"Cannot check the database ({type(exc).__name__}); no key generated. Fix the database connection first.")
+        return 2
+    if found_encrypted:
         out("The database already holds encrypted data. Restore the original key file (or set "
             f"{LEGACY_ENV}) instead of generating a new key: a new key would make that data unreadable.")
         return 1
     _write(Path(path), Fernet.generate_key().decode("ascii"))
     out(f"Generated a new master key at {path} (chmod 600). Back it up separately from the database.")
     return 0
+
+
+def report_encrypted(out=print) -> int:
+    """Whether PostgreSQL already holds encrypted data: 0 none, 1 yes (a new key would lose it), 2 unknown."""
+    try:
+        found = encrypted_data_exists()
+    except Exception as exc:  # noqa: BLE001 - the database could not be read
+        out(f"error: cannot check the database ({type(exc).__name__}); treat it as holding encrypted data.")
+        return 2
+    out("encrypted data: yes" if found else "encrypted data: none")
+    return 1 if found else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -175,7 +193,11 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("--path", type=Path, default=None,
                         help=f"default: ${FILE_ENV}, else {PRODUCTION_FILE} on Linux, else {DEVELOPMENT_FILE}")
     commands.add_parser("status", help="where the key comes from (never prints the key)")
+    commands.add_parser("encrypted", help="whether the database already holds encrypted data "
+                                          "(exit 0: none, 1: yes, 2: cannot tell)")
     args = parser.parse_args(argv)
+    if args.command == "encrypted":
+        return report_encrypted()
     from app.runtime_env import load_runtime_env
 
     load_runtime_env()  # a legacy key may still live in the runtime file

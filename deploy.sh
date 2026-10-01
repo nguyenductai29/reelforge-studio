@@ -22,13 +22,9 @@ if [ ! -f instance/bootstrap.json ] && [ -z "${REELFORGE_DATABASE_URL:-}" ]; the
   echo "instance/bootstrap.json is missing (database URL). See docs/PRODUCTION_BOOTSTRAP.md." >&2
   exit 1
 fi
-# Prints where the key comes from and any warning; never the key. Stops the deploy without a usable key.
-if ! python -m app.master_key status; then
-  echo >&2
-  echo "No usable master key: restore /etc/reelforge/master.key from backup, or on a new installation run" >&2
-  echo "  python -m app.master_key init" >&2
-  exit 1
-fi
+# A usable key: continue. No key: stop if PostgreSQL already holds encrypted data (restore the old key),
+# otherwise create one (python -m app.master_key init), verify it, and continue. Never prints the key.
+bash deploy/ensure-master-key.sh
 
 echo "== 5. Run database migrations =="
 python -m alembic upgrade head

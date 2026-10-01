@@ -191,9 +191,128 @@ class DeploymentFilesTest(unittest.TestCase):
 
     def test_deploy_checks_the_master_key_before_restarting(self):
         script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
-        self.assertLess(script.index("python -m app.master_key status"), script.index("systemctl restart reelforge-api"))
+        self.assertLess(script.index("bash deploy/ensure-master-key.sh"), script.index("systemctl restart reelforge-api"))
+        self.assertLess(script.index("bash deploy/ensure-master-key.sh"), script.index("alembic upgrade head"))
         self.assertIn('"reelforge-worker@${worker}"', script)
         self.assertNotIn("runtime.env", script.split("set -euo pipefail", 1)[1].replace("/etc/reelforge/runtime.env is", ""))
+
+
+class EncryptedReportTest(unittest.TestCase):
+    def test_exit_codes_say_none_yes_or_unknown(self):
+        for found, code, text in ((False, 0, "encrypted data: none"), (True, 1, "encrypted data: yes")):
+            lines = []
+            with patch.object(master_key, "encrypted_data_exists", lambda found=found: found):
+                self.assertEqual(master_key.report_encrypted(out=lines.append), code)
+            self.assertEqual(lines, [text])
+
+        def unreachable():
+            raise OSError("database down")
+        lines = []
+        with patch.object(master_key, "encrypted_data_exists", unreachable):
+            self.assertEqual(master_key.report_encrypted(out=lines.append), 2)
+            with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(master_key.LEGACY_ENV, None)
+                os.environ[master_key.FILE_ENV] = str(Path(directory) / "absent.key")
+                self.assertEqual(master_key.init(Path(directory) / "master.key", out=lines.append), 2)
+                self.assertFalse((Path(directory) / "master.key").exists())
+
+
+BASH = shutil.which("bash")
+
+
+@unittest.skipUnless(BASH, "bash is needed to run deploy/ensure-master-key.sh")
+class EnsureMasterKeyScriptTest(unittest.TestCase):
+    """deploy/ensure-master-key.sh on a disposable copy of the app (SQLite), never the real server paths."""
+
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        for folder in ("app", "migrations", "deploy"):
+            shutil.copytree(ROOT / folder, self.directory / folder, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy(ROOT / "alembic.ini", self.directory / "alembic.ini")
+        (self.directory / "instance").mkdir()
+        self.database = self.directory / "instance" / "test.db"
+        (self.directory / "instance" / "bootstrap.json").write_text(json.dumps({"database_url": f"sqlite:///{self.database}"}))
+        self.key = self.directory / "etc" / "reelforge" / "master.key"
+        self.legacy_file = self.directory / "etc" / "reelforge" / "runtime.env"
+        env = self.env()
+        migrated = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=self.directory, env=env,
+                                  capture_output=True, text=True)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr[-3000:])
+
+    def env(self):
+        env = {name: value for name, value in os.environ.items()
+               if name not in (master_key.LEGACY_ENV, master_key.FILE_ENV, "REELFORGE_ENV_FILE")}
+        return {**env, "PYTHONPATH": str(self.directory), "PYTHON": sys.executable.replace("\\", "/"),
+                "REELFORGE_MASTER_KEY_FILE": self.key.as_posix(), "REELFORGE_LEGACY_ENV_FILE": self.legacy_file.as_posix()}
+
+    def run_script(self):
+        return subprocess.run([BASH, "deploy/ensure-master-key.sh"], cwd=self.directory,
+                              env={**self.env(), "PYTHONIOENCODING": "utf-8"}, capture_output=True,
+                              encoding="utf-8", errors="replace", timeout=120)
+
+    def store_encrypted_row(self):
+        import sqlite3
+
+        with sqlite3.connect(self.database) as connection:
+            connection.execute("INSERT INTO system_config (key, ciphertext, updated_at) "
+                               "VALUES ('ai.openai.api_key', 'gAAAA-ciphertext', '2026-10-01')")
+
+    def test_a_new_installation_gets_a_key_and_a_second_run_changes_nothing(self):
+        first = self.run_script()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        key = self.key.read_text().strip()
+        Fernet(key.encode())
+        self.assertIn("encrypted data: none", first.stdout)
+        self.assertIn("source: file", first.stdout)
+        self.assertNotIn(key, first.stdout + first.stderr)
+        second = self.run_script()
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(self.key.read_text().strip(), key)
+        self.assertNotIn("creating the master key", second.stdout)
+
+    def test_existing_encrypted_data_stops_the_deploy(self):
+        self.store_encrypted_row()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("encrypted data: yes", result.stdout)
+        self.assertIn("STOP", result.stderr)
+        self.assertIn("Restore the original key file", result.stderr)
+        self.assertFalse(self.key.exists())
+
+    def test_a_legacy_key_in_the_runtime_file_is_moved_into_the_file_never_replaced(self):
+        # Encrypted data exists, and the key still lives in the legacy runtime file the services load:
+        # the script copies that same key into the key file instead of stopping or generating another.
+        self.store_encrypted_row()
+        legacy = Fernet.generate_key().decode()
+        self.legacy_file.parent.mkdir(parents=True)
+        self.legacy_file.write_text(f"REELFORGE_TOKEN_ENCRYPTION_KEY={legacy}\n")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("moving it into", result.stdout)
+        self.assertEqual(self.key.read_text().strip(), legacy)
+        self.assertIn("source: file", result.stdout)
+        self.assertNotIn(legacy, result.stdout + result.stderr)
+
+    def test_with_the_default_path_a_legacy_key_simply_keeps_working(self):
+        legacy = Fernet.generate_key().decode()
+        self.legacy_file.parent.mkdir(parents=True)
+        self.legacy_file.write_text(f"REELFORGE_TOKEN_ENCRYPTION_KEY={legacy}\n")
+        env = {**self.env(), "PYTHONIOENCODING": "utf-8"}
+        env.pop("REELFORGE_MASTER_KEY_FILE")  # the production default: /etc/reelforge/master.key, absent here
+        result = subprocess.run([BASH, "deploy/ensure-master-key.sh"], cwd=self.directory, env=env,
+                                capture_output=True, encoding="utf-8", errors="replace", timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("source: legacy_env", result.stdout)
+        self.assertNotIn("creating the master key", result.stdout)
+
+    def test_an_invalid_key_file_is_never_overwritten(self):
+        self.key.parent.mkdir(parents=True)
+        self.key.write_text("not a key")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("never overwritten", result.stderr)
+        self.assertEqual(self.key.read_text(), "not a key")
 
 
 MIGRATION = r'''

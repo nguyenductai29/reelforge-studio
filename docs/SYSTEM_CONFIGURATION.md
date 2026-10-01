@@ -66,7 +66,7 @@ Restoring the key file brings everything back.
 - **Permissions.** The file is expected to be chmod 600, owned by the account the services run as. Readiness and `status` warn when other users can read it (POSIX only).
 - **Logs.** The key's value is scrubbed from every log line, like environment secrets.
 - **Reads.** The file is read again only when it changes.
-- **Deploys.** `deploy.sh` runs `master_key status` before restarting anything and stops without a usable key.
+- **Deploys.** `deploy.sh` runs `deploy/ensure-master-key.sh` before migrating or restarting anything. It keeps a usable key, and moves a legacy key into the file. It stops when the database already holds encrypted data and no key is found. It creates a key only on a new installation, then verifies it with `status`. `python -m app.master_key encrypted` answers "is there encrypted data?": exit 0 none, 1 yes, 2 cannot tell.
 
 **Back up the key file separately from the database dumps**, for example on another machine or a password manager. Losing it means:
 

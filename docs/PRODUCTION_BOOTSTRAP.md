@@ -111,7 +111,16 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
 `./deploy.sh` does the following:
 
 1. pulls the source and installs the dependencies;
-2. **stops if there is no usable master key**;
+2. makes sure there is a master key (`deploy/ensure-master-key.sh`):
+   - **A usable key** (the key file, or the legacy key the services still load from `/etc/reelforge/runtime.env`): continue.
+   - **No key file, but the legacy key exists:** copy that same key into `/etc/reelforge/master.key`.
+   - **No key at all:** check PostgreSQL (`python -m app.master_key encrypted`).
+     - **Encrypted data exists** (OAuth tokens, payment or provider secrets): **STOP**, and ask for the old key file to be restored. A new key would make that data unreadable.
+     - **The database cannot be read:** STOP.
+     - **None (a new installation):** run `python -m app.master_key init`.
+   - **Then:** verify with `python -m app.master_key status`, remind you to back the key up, and continue.
+
+   `/etc/reelforge` belongs to root, so a new key is created as the service account in a private staging directory and installed with `sudo install` (owner `tai`, 600). Run `deploy.sh` as the account the services run as.
 3. migrates and builds;
 4. restarts the API, the frontend and every enabled worker (`reelforge-<name>-worker` or `reelforge-worker@<name>`).
 

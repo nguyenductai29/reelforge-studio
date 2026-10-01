@@ -1300,7 +1300,18 @@ cd ~/apps/reelforge-studio
 
 1. `git pull`.
 2. `pip install -r requirements.txt`.
-3. **Checks the bootstrap:** `instance/bootstrap.json` (or `REELFORGE_DATABASE_URL`) exists, and `python -m app.master_key status` finds a usable key. **Without one it stops before touching any service**, and says how to restore or create it.
+3. **Checks the bootstrap.**
+   - `instance/bootstrap.json` (or `REELFORGE_DATABASE_URL`) must exist.
+   - `deploy/ensure-master-key.sh` makes sure there is a master key, before migrations and before any service is touched:
+   - **A usable key** (the key file, or the legacy key the services still load from `/etc/reelforge/runtime.env`): continue.
+     - **No key file, but the legacy key exists:** copy that same key into `/etc/reelforge/master.key`.
+     - **No key at all:** check PostgreSQL (`python -m app.master_key encrypted`).
+       - **Encrypted data exists** (OAuth tokens, payment or provider secrets): **STOP**, and ask for the old key file to be restored. A new key would make that data unreadable.
+       - **The database cannot be read:** STOP.
+       - **None (a new installation):** run `python -m app.master_key init`.
+     - **Then:** verify with `python -m app.master_key status`, remind you to back the key up, and continue.
+
+     `/etc/reelforge` belongs to root, so a new key is created as the service account in a private staging directory and installed with `sudo install` (owner `tai`, 600). Run `deploy.sh` as the account the services run as.
 4. `alembic upgrade head`.
 5. `npm ci && npm run build`.
 6. Restarts the API, the frontend and every enabled worker, in both forms (`reelforge-<name>-worker` and `reelforge-worker@<name>`).
