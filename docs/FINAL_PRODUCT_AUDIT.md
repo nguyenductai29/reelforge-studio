@@ -1,6 +1,15 @@
-# Final product audit (Phases 14–20)
+# Final product audit (Phases 14–21)
 
-> Snapshot: branch `feat/studio-foundation`, after Phases 14–20, 2026-10-01. Database head: `0019_system_configuration`.
+> Snapshot: branch `feat/studio-foundation`, after Phases 14–21, 2026-10-01. Database head: `0020_manual_payment_statuses`.
+
+**Production readiness (Phase 21).**
+
+- **Bootstrap:** a fresh installation runs with only the database URL and `/etc/reelforge/master.key`; no `.env.runtime`.
+- **Environment variables:** every one the backend still reads is classified (bootstrap, legacy fallback, experimental, dev) and enforced by a test.
+- **No restarts:** a running worker picks up a changed provider key, VietQR mode or card switch without a restart.
+- **Services:** systemd units (`deploy/systemd/`) need no provider secret, and `deploy.sh` refuses to restart without a usable master key.
+
+See [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) and [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md).
 
 **Rule applied:** every control in the production interface works. An unfinished feature was either built now, when it reuses existing capabilities cheaply, or removed from the interface. No "coming soon" badge, banner, disabled placeholder switch or preview-only template remains.
 
@@ -96,7 +105,7 @@ The console fits the window and never scrolls; each table body scrolls inside it
 | Support | Search, status, category and priority filters; open a ticket, reply, change status or priority, resolve, close |
 | Credit reconciliation | The Phase 3.7 review of held credits |
 | Operations | Worker heartbeats, the job table, the stuck-work audit, and storage: disk free space, studios per warning level, fullest studios |
-| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security: the master key), a browser stream check, and the 31-item manual live checklist, grouped (payments split per gateway) |
+| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security: the master key, configuration: settings still from the environment and a loaded runtime file), a browser stream check, and the 31-item manual live checklist, grouped (payments split per gateway) |
 | System settings (Phase 20) | Security (master key status), General, AI providers (switch, write-only key, connection test), Social OAuth (app credentials, derived redirect URLs), Storage (validated root, no silent moves, ceiling, retention), Runtime, Credit pricing, Notifications; every value's source (Admin / Environment / Default) |
 
 **Publishing and scheduling**: see § 5 and § 6.
@@ -312,7 +321,7 @@ The database URL stays in `instance/bootstrap.json`; payOS keys there are a lega
 
 ## 12. DB migration head
 
-`0019_system_configuration`. Migrations 0001–0018 are unchanged.
+`0020_manual_payment_statuses`. Migrations 0001–0019 are unchanged.
 
 | Migration | Adds | Test |
 | --- | --- | --- |
@@ -321,6 +330,7 @@ The database URL stays in `instance/bootstrap.json`; payOS keys there are a lega
 | `0017_notify_support_verify` | `notifications` (integer IDs, which are also the stream's event IDs; unique `(user_id, dedupe_key)`; indexes `(user_id, created_at)` and `(user_id, read_at)`); `support_tickets` and `support_messages` (categories, statuses, priorities and author types checked); `verification_checks` | `tests/test_phase18_migration.py`: 0016 → 0017 and back (SQLite, and PostgreSQL 16 with `REELFORGE_TEST_DATABASE_URL`); every revision ID fits PostgreSQL's 32-character version column |
 | `0018_admin_payment_config` | `payment_provider_configs` (one row per provider: `enabled`, `mode`, `config_ciphertext`, who and when; no secret column); `payment_config_audit` (action, admin, time, field names) | `tests/test_phase19_migration.py`: 0017 → 0018 and back, keeping orders, subscriptions, ledger and `payment_activity` (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
 | `0019_system_configuration` | `system_config` (one row per admin-managed setting: JSON value or ciphertext, never both); `system_config_audit`; `payment_orders.transfer_reported_at`; `payment_order_events` (manual VietQR reported/confirmed/rejected) | `tests/test_phase20_migration.py`: 0018 → 0019 and back (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
+| `0020_manual_payment_statuses` | Data only: manual VietQR orders the buyer reported become `awaiting_confirmation`, rejected ones `rejected`; no schema change | `tests/test_phase21.py`: 0019 → 0020 and back (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
 
 The tests keep every existing row. Set `REELFORGE_TEST_DATABASE_URL` to also run them on PostgreSQL. Apply with `python -m alembic upgrade head` before restarting the services.
 

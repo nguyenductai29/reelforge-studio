@@ -34,6 +34,12 @@ function checkValue(check: SystemCheck, formatDateTime: (value: string) => strin
   if (typeof check.last_run === "string") parts.push(formatDateTime(check.last_run));
   if (typeof check.last_seen_at === "string") parts.push(formatDateTime(check.last_seen_at));
   if (typeof check.source === "string") parts.push(check.source);
+  if (typeof check.key_source === "string") parts.push(check.key_source);
+  if (typeof check.vietqr_mode === "string") parts.push(check.vietqr_mode);
+  if (typeof check.provider === "string") parts.push(check.provider);
+  if (typeof check.redirect === "string") parts.push(check.redirect);
+  if (typeof check.count === "number" && check.count) parts.push(`${check.count}: ${((check.names as string[]) ?? []).join(", ")}`);
+  if (typeof check.cache_seconds === "number") parts.push(`${check.cache_seconds}s`);
   if (typeof check.mode === "string") parts.push(check.mode);
   if (Array.isArray(check.variables)) parts.push((check.variables as string[]).join(", "));
   if (typeof check.enabled_models === "number" && check.enabled_models) parts.push(`${check.enabled_models} model`);

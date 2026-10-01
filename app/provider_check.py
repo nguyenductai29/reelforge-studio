@@ -28,6 +28,7 @@ from app.providers.image import IMAGE_PROVIDERS, image_provider_config_issue
 from app.providers.text import TEXT_PROVIDERS
 from app.providers.voice import VOICE_PROVIDERS, voice_provider_config_issue
 from app.runtime_env import key_fingerprint, load_runtime_env
+from app import system_config
 
 # Small, inexpensive models for the text smoke test; any model name the provider accepts can be passed instead.
 DEFAULT_TEXT_MODELS = {"openai": "gpt-4.1-mini", "anthropic": "claude-haiku-4-5-20251001",
@@ -60,8 +61,22 @@ class ProviderCheck:
         return not self.issues
 
 
+def _activate_database_settings() -> None:
+    """Use Admin-managed settings when a database is configured; the environment alone otherwise."""
+    try:
+        from app.db import engine
+        from sqlalchemy import inspect
+
+        with engine.connect() as connection:
+            if inspect(connection).has_table("system_config"):
+                system_config.activate()
+    except Exception:  # noqa: BLE001 - no database here (a developer laptop): keys come from the environment
+        pass
+
+
 def _key_state(name: str) -> tuple[str, str | None]:
-    value = os.environ.get(name, "")
+    # The key in use: Admin → System settings when this runs on the server, else the environment.
+    value = system_config.env(name)
     if not value.strip():
         return "missing", None
     if value != value.strip() or any(character.isspace() for character in value.strip()):
@@ -73,7 +88,7 @@ def _pick(requested: str | None, env_name: str, providers) -> str | None:
     choice = (requested or os.environ.get(env_name, "")).strip().lower()
     if choice:
         return choice
-    return next((name for name, spec in providers.items() if os.environ.get(spec.key_env, "").strip()), None)
+    return next((name for name, spec in providers.items() if system_config.env(spec.key_env).strip()), None)
 
 
 def check_text(provider: str | None = None, model: str | None = None) -> ProviderCheck:
@@ -283,4 +298,6 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # From the command line on a server, read the keys saved in Admin (the database) like the workers do.
+    _activate_database_settings()
     sys.exit(main())

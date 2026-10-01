@@ -222,7 +222,8 @@ export default function AdminPage() {
           </div>
         </TabsContent>
         <TabsContent value="payments" className="mt-3 flex min-h-0 flex-1 flex-col">
-          <AdminPayments providers={overview.payment_providers} initialStatus={reviewTransfers ? "awaiting_confirmation" : ""} />
+          <AdminPayments providers={overview.payment_providers} initialStatus={reviewTransfers ? "awaiting_confirmation" : ""}
+                         awaitingCount={counts.transfers_to_confirm ?? 0} />
         </TabsContent>
         <TabsContent value="support" className="mt-3 flex min-h-0 flex-1 flex-col">
           <AdminSupport initialTicket={requestedTicket} />

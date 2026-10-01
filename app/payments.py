@@ -12,7 +12,11 @@ from app.models import PaymentOrder, Subscription, Workspace
 from app import notifications
 from app.usage import post_credit
 
-OPEN_STATUSES = ("pending", "expired", "failed", "cancelled")
+# Statuses a confirmed payment may still settle. A manual VietQR order the buyer reported is
+# awaiting_confirmation; one an admin rejected is rejected (the money may still turn up later).
+OPEN_STATUSES = ("pending", "awaiting_confirmation", "expired", "failed", "cancelled", "rejected")
+# Waiting for money or for an admin: counted as pending payments.
+WAITING_STATUSES = ("pending", "awaiting_confirmation")
 
 
 def apply_paid(db, order_code: int, amount: int, reference: str = "", provider: str = "payos") -> str:

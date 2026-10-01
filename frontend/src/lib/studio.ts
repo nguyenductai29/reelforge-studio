@@ -38,6 +38,9 @@ export const statusTone: Record<string, string> = {
   pending: "scheduled",
   paid: "completed",
   paid_unapplied: "needs attention",
+  // Manual VietQR (Phase 21): the buyer reported the transfer; an admin did not find it.
+  awaiting_confirmation: "needs attention",
+  rejected: "failed",
   cancelled: "draft",
   canceled: "draft",
   expired: "failed",

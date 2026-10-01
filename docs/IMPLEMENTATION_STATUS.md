@@ -641,6 +641,26 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
   - Earlier tests updated where shapes intentionally changed.
 - **Not verified live:** scanning the QR with real banking apps, the AI test endpoints with real keys, and moving a production key into the file.
 
+### Phase 21 changes
+
+- **Environment audit:** `system_config.ENVIRONMENT` classifies every variable outside the registry (bootstrap, legacy, experimental, dev). `tests/test_phase21.py` fails on an unclassified variable, or on a module outside the allowed list reading `os.environ`.
+- **Bootstrap:** `REELFORGE_DATABASE_URL` is accepted when `instance/bootstrap.json` has no URL; the file wins.
+- **Master key:**
+  - read again only when the file changes;
+  - a new directory gets 700;
+  - `init` never overwrites;
+  - `status` prints guidance and permission/legacy warnings;
+  - the key is scrubbed from logs.
+- **Tools:** `provider_check` and `smoke_test` read Admin-managed keys when run on a server. `process_started` fingerprints the keys actually in use.
+- **Readiness:**
+  - a configuration section: legacy settings from the environment, a loaded runtime file, the cache time;
+  - VietQR as buyers get it;
+  - an OAuth source and redirect per channel.
+- **Manual VietQR:** explicit `awaiting_confirmation` and `rejected` statuses. Migration `0020_manual_payment_statuses` is data only. The rejection reason is sent to the owner (`payment.rejected`). The admin review shows the content and report time, with an awaiting filter and count.
+- **System settings:** AI provider status and last test, settings still from the environment, and known variables set (names only).
+- **Deployment:** `deploy/systemd/` (API, frontend, `reelforge-worker@.service`, maintenance service and timer), all with optional `EnvironmentFile=-`. `deploy.sh` checks the master key before restarting and handles both worker unit layouts. `docs/PRODUCTION_BOOTSTRAP.md`.
+- **Tests:** `test_phase21.py` covers the environment audit, master key hardening, the deployment files, migration 0020, a fresh installation without a runtime file, and a separate worker process picking up new settings. Plus `Phase21FrontendTest`.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional legacy `payos` credentials.

@@ -1,0 +1,27 @@
+# One unit for every ReelForge worker: enable the ones this server runs, for example
+#   sudo systemctl enable --now reelforge-worker@text reelforge-worker@video reelforge-worker@render
+# Instances: text image video voice render source youtube social scheduler.
+# Workers read provider keys and runtime settings from PostgreSQL (Admin -> System settings) and pick up
+# changes within 15 seconds; they need no provider variables. Adjust User/Group/paths to your server.
+[Unit]
+Description=ReelForge Studio %i worker
+After=network-online.target reelforge-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tai
+Group=tai
+WorkingDirectory=/home/tai/apps/reelforge-studio
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.%i_worker
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+#Environment=REELFORGE_MASTER_KEY_FILE=/etc/reelforge/master.key
+EnvironmentFile=-/etc/reelforge/runtime.env
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

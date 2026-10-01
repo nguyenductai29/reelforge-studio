@@ -284,6 +284,26 @@ function CopyLine({ value }: { value: string }) {
   );
 }
 
+function ProviderStatus({ data, provider }: { data: SystemConfigOverview; provider: string }) {
+  const { t, formatDateTime } = useI18n();
+  const s = t.admin.system;
+  const status = data.ai_status?.[provider];
+  const models = data.models_in_use[provider] ?? 0;
+  if (!status) return <>{s.modelsInUse(models)}</>;
+  const state = !status.enabled ? "off" : status.configured ? "ready" : "missing";
+  return (
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+      <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", state === "ready" ? "bg-success/15 text-success"
+        : state === "off" ? "bg-surface-2 text-muted-foreground" : "bg-warning/15 text-warning")}>{s.providerState[state]}</span>
+      <span>{s.modelsInUse(models)}</span>
+      {status.last_test && (
+        <span>{s.lastTest(formatDateTime(status.last_test.at),
+                          s.testStatus[status.last_test.remote as keyof typeof s.testStatus] ?? status.last_test.remote ?? "—")}</span>
+      )}
+    </span>
+  );
+}
+
 function SecurityPanel({ data }: { data: SystemConfigOverview }) {
   const { t } = useI18n();
   const s = t.admin.system;
@@ -308,6 +328,44 @@ function SecurityPanel({ data }: { data: SystemConfigOverview }) {
         <p className="text-muted-foreground">{s.keyBackup}</p>
       </div>
       <p className="text-xs text-muted-foreground">{s.bootstrapOnly}</p>
+      {data.legacy_in_use && (
+        <div className="space-y-1 border-t border-border pt-3 text-xs">
+          <h4 className="font-semibold">{s.legacyTitle}</h4>
+          {data.legacy_in_use.length === 0 ? <p className="text-success">{s.legacyNone}</p> : (
+            <>
+              <p className="text-warning">{s.legacySome(data.legacy_in_use.length)}</p>
+              <ul className="flex flex-wrap gap-1">
+                {data.legacy_in_use.map((key) => (
+                  <li key={key} className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px]">
+                    {s.labels[key as keyof typeof s.labels] ?? key}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {data.runtime_file?.path && <p className="text-muted-foreground">{s.runtimeFile(data.runtime_file.path, data.runtime_file.values)}</p>}
+          {data.cache_seconds !== undefined && <p className="text-muted-foreground">{s.cacheNote(data.cache_seconds)}</p>}
+        </div>
+      )}
+      {data.environment && (
+        <details className="border-t border-border pt-3 text-xs">
+          <summary className="cursor-pointer select-none font-semibold">{s.envTitle}</summary>
+          <p className="mt-1 text-muted-foreground">{s.envHint}</p>
+          <ul className="mt-1 space-y-0.5">
+            {data.environment.filter((row) => row.set).map((row) => (
+              <li key={row.name} className="flex flex-wrap gap-2">
+                <code className="font-mono">{row.name}</code>
+                <span className={cn("rounded px-1.5 text-[10px]", row.category === "bootstrap" ? "bg-success/15 text-success"
+                  : row.category === "legacy" ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted-foreground")}>
+                  {s.envCategories[row.category]}
+                </span>
+                <span className="text-muted-foreground">{row.reason}</span>
+              </li>
+            ))}
+            {!data.environment.some((row) => row.set) && <li className="text-muted-foreground">{s.envNone}</li>}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
@@ -390,7 +448,7 @@ export function AdminSystem() {
         <p className="text-xs text-muted-foreground">{s.aiHint}</p>
         {AI_PROVIDERS.map((provider) => (
           <SettingsCard key={`${provider}-${version}`} section="ai" title={s.providers[provider]} labels={s.labels}
-                        description={s.modelsInUse(data.models_in_use[provider] ?? 0)} settings={group("ai", provider)}
+                        description={<ProviderStatus data={data} provider={provider} />} settings={group("ai", provider)}
                         footer={<ProviderTestButton provider={provider} />} />
         ))}
       </div>

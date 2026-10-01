@@ -30,7 +30,9 @@ The dev server writes generated files to `frontend/.next-dev`; `npm run build` a
 
 Open http://localhost:3000 to create the first admin account, or run `npm run create-admin` in `frontend` while the API is running (it prompts for the email and password, or reads `ADMIN_EMAIL` and `ADMIN_PASSWORD`). On a public server, create the admin this way before the site is reachable; until an account exists, the first visitor can claim it. API documentation is at http://127.0.0.1:8000/docs. The Next.js proxy defaults to `http://127.0.0.1:8000`; if the API is at a different server address, copy `frontend/config.example.json` to `frontend/instance/config.json` and set `api_base_url` to the address **reachable by the Next.js server**. That address is the frontend's connection bootstrap, not an application preference.
 
-### Configuration (Phase 20)
+### Configuration (Phases 20–21)
+
+**A new production server** needs no `.env.runtime`: follow [docs/PRODUCTION_BOOTSTRAP.md](docs/PRODUCTION_BOOTSTRAP.md) (systemd units in `deploy/systemd/`, deploys with `./deploy.sh`).
 
 **Bootstrap.** Production needs only `instance/bootstrap.json` (the database URL) and the master encryption key file `/etc/reelforge/master.key` (`python -m app.master_key init`; chmod 600; back it up separately).
 
@@ -268,6 +270,7 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 - Migration `0017_notify_support_verify`.
 - Phase 19: admin-managed payment gateways; migration `0018_admin_payment_config`.
 - Phase 20: central system configuration (database over environment; master key file), manual VietQR confirmed by an admin; migration `0019_system_configuration`.
+- Phase 21: production hardening (every environment variable classified; workers pick up changes without restarts; master key safeguards; explicit `awaiting_confirmation` / `rejected` manual payment statuses; systemd units and deploy checks); migration `0020_manual_payment_statuses`.
 
 ### Voice, subtitles and the final render (Phases 6–8)
 

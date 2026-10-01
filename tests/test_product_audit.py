@@ -323,5 +323,38 @@ class Phase20FrontendTest(unittest.TestCase):
                 self.assertIn(phrase, source(f"lib/i18n/{locale}.ts"))
 
 
+
+class Phase21FrontendTest(unittest.TestCase):
+    def test_vietqr_tab_shows_one_mode_at_a_time_and_bins_only_for_other_banks(self):
+        ui = source("components/reelforge/admin/payment-gateways.tsx")
+        # Manual mode renders the bank form only; payOS mode renders the payOS credentials only.
+        self.assertRegex(ui, r'\{vietqr && \(vietqrMode === "manual" \? \(\s*<BankQRPanel')
+        self.assertIn("{otherBank && (", ui)
+        self.assertIn('<option value="other">{q.otherBank}</option>', ui)
+
+    def test_admin_review_shows_transfer_details_and_a_quick_filter(self):
+        payments = source("components/reelforge/admin/admin-payments.tsx")
+        self.assertIn('{ key: "transfer", header: p.columns.transfer', payments)
+        self.assertIn("p.reportedOn(formatDateTime(o.transfer_reported_at))", payments)
+        self.assertIn('filtered(setStatus)("awaiting_confirmation")', payments)
+        self.assertIn("reviewing.order.workspace_name, reviewing.order.plan_code.toUpperCase()", payments)
+
+    def test_buyers_see_their_transfer_is_waiting(self):
+        billing = source("app/billing/page.tsx")
+        self.assertIn('order.status === "awaiting_confirmation"', billing)
+        self.assertIn("t.billing.transfer.waitingBanner", billing)
+        for locale in ("vi", "en", "ja"):
+            with self.subTest(locale=locale):
+                text = source(f"lib/i18n/{locale}.ts")
+                self.assertRegex(text, r'awaiting_confirmation: "[^"]+",\s*rejected: "[^"]+"')
+
+    def test_system_settings_show_provider_status_and_environment_dependence(self):
+        system = source("components/reelforge/admin/admin-system.tsx")
+        self.assertIn("<ProviderStatus data={data} provider={provider} />", system)
+        self.assertIn("data.legacy_in_use", system)
+        self.assertIn("data.environment.filter((row) => row.set)", system)
+        self.assertNotIn("row.value", system)
+
+
 if __name__ == "__main__":
     unittest.main()

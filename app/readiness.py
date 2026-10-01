@@ -160,17 +160,39 @@ def ai_checks(db) -> list[dict]:
 
 
 def publishing_checks() -> list[dict]:
+    """Each OAuth app: configured or not, where its secret comes from, and the redirect URL in use."""
+    from app import system_config
     from app.publishers import channel_oauth, google_oauth
 
+    secrets = {"youtube": "social.youtube.client_secret", "tiktok": "social.tiktok.client_secret",
+               "facebook": "social.facebook.app_secret"}
     checks = []
-    try:
-        google_oauth.GoogleOAuthConfig.from_environment()
-        checks.append(_check("youtube", "ok"))
-    except google_oauth.OAuthError:
-        checks.append(_check("youtube", "missing", "not_configured"))
-    for channel in ("tiktok", "facebook"):
-        checks.append(_check(channel, "ok" if channel_oauth.configured(channel) else "missing",
-                             None if channel_oauth.configured(channel) else "not_configured"))
+    for channel in ("youtube", "tiktok", "facebook"):
+        if channel == "youtube":
+            try:
+                google_oauth.GoogleOAuthConfig.from_environment()
+                configured = True
+            except google_oauth.OAuthError:
+                configured = False
+        else:
+            configured = channel_oauth.configured(channel)
+        checks.append(_check(channel, "ok" if configured else "missing", None if configured else "not_configured",
+                             source=system_config.source(secrets[channel]),
+                             redirect=system_config.redirect_uri(channel) or None))
+    return checks
+
+
+def configuration_checks() -> list[dict]:
+    """Phase 21: how far this server still depends on environment variables (names only, never values)."""
+    from app import runtime_env, system_config
+
+    legacy = system_config.legacy_in_use()
+    checks = [_check("legacy_settings", "warning" if legacy else "ok", "from_environment" if legacy else None,
+                     count=len(legacy), names=legacy[:12])]
+    loaded = runtime_env.LOADED
+    checks.append(_check("runtime_file", "warning" if loaded["path"] else "ok", "loaded" if loaded["path"] else None,
+                         path=loaded["path"], values=len(loaded["names"])))
+    checks.append(_check("cache", "ok", cache_seconds=system_config.CACHE_SECONDS))
     return checks
 
 
@@ -225,6 +247,13 @@ def payment_checks(db) -> list[dict]:
     manual_on = bool(system_config.get("payments.bank_qr.enabled"))
     status, detail = (("ok", None) if manual_on else ("warning", "disabled")) if ready_manual else ("off", "not_configured")
     checks.append(_check("bank_qr", status, detail, vietqr_mode=mode))
+    # What buyers get for "VietQR / Bank Transfer" right now: the provider of the current mode.
+    from app import payment_providers
+
+    active = payment_providers.for_method("vietqr")
+    offered = active.offered()
+    checks.insert(0, _check("vietqr", "ok" if offered else "off", None if offered else "not_available",
+                            vietqr_mode=mode, provider=active.name))
     saved = any(payment_config.get(provider, db).source == "admin" for provider in payment_config.PROVIDERS)
     if secret_box.available():
         checks.append(_check("encryption", "ok"))
@@ -248,6 +277,7 @@ def report(db, *, streams: int, poll_seconds: float) -> dict:
         ("publishing", publishing_checks()),
         ("payments", payment_checks(db)),
         ("security", security_checks()),
+        ("configuration", configuration_checks()),
         ("realtime", [_check("stream", "ok", open_streams=streams, poll_seconds=poll_seconds)]),
         ("support", [_check("tickets", "ok", awaiting_support=int(open_tickets or 0))]),
     ]

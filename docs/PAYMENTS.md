@@ -111,12 +111,23 @@ These are not secret: buyers see them on the QR. They are stored as plain system
    - it records `transfer_reported_at` and a `transfer_reported` event;
    - it notifies every system admin in real time (`payment.transfer_reported`, linking to Admin → Thanh toán filtered on **Chờ xác nhận**).
 
-   Reporting twice changes nothing. The order stays `pending` and shows **Chờ xác nhận**. **Xem QR** (`GET /api/billing/orders/{id}/transfer`) shows the QR again.
-3. **A system admin checks the bank account,** then in Admin → Thanh toán chooses **Xác nhận đã nhận tiền** on the order. The dialog states "Confirm that 199,000 ₫ has been received for order RF… (buyer)". `POST /api/admin/payments/{id}/confirm` with `{amount_vnd}`:
+   Reporting twice changes nothing. The order moves to **`awaiting_confirmation`** ("Chờ xác nhận chuyển khoản"). It is still unpaid: no plan change, no credits. Billing shows a banner, and **Xem QR** (`GET /api/billing/orders/{id}/transfer`) shows the QR again.
+3. **A system admin checks the bank account,** then opens Admin → Thanh toán. The header button **Chờ xác nhận (N)** filters the reported transfers, and each row shows the user, studio, plan, expected amount, the **transfer content** and the **time it was reported**. The admin chooses **Xác nhận đã nhận tiền** on the order. The dialog states "Confirm that 199,000 ₫ has been received for order RF…", with the user, studio and plan. `POST /api/admin/payments/{id}/confirm` with `{amount_vnd}`:
    - must equal the order's amount (else 422 `amount_mismatch`);
    - settles through the **shared** `payments.apply_paid` path (provider `bank_qr`). It extends the subscription and posts the plan's credits **once**, under the order's row lock; a second confirm answers 409;
    - writes a `confirmed` event with the admin and the amount (`payment_order_events`, listed by `GET /api/admin/payments/{id}/events`).
-4. **Or the admin rejects it.** **Từ chối / không thấy tiền** (`POST …/reject`, optional note) fails the order and notifies the owner. If the money turns up later, the order can still be confirmed, exactly as a late payment of any provider.
+4. **Or the admin rejects it.** **Từ chối / không thấy tiền** (`POST …/reject`, optional reason) sets the order to **`rejected`**. It also notifies the owner (`payment.rejected`), with the reason if one was given. If the money turns up later, the order can still be confirmed, exactly as a late payment of any provider.
+
+**Manual order statuses** (Phase 21; migration `0020` converted the Phase 20 rows):
+
+| Status | Meaning | Next |
+| --- | --- | --- |
+| `pending` | QR shown, nothing reported | The buyer reports the transfer |
+| `awaiting_confirmation` | The buyer reported it; an admin must check the bank | Confirm → `paid` (or `paid_unapplied`), or reject → `rejected` |
+| `rejected` | The admin did not find the money | A late confirmation still pays it once |
+| `paid` | Confirmed; plan extended and credits posted once | — |
+
+The admin header counts `awaiting_confirmation` orders, and **Thanh toán chờ** counts `pending` + `awaiting_confirmation`. payOS and OnePAY orders never use the two manual statuses.
 
 **Who can do what:**
 

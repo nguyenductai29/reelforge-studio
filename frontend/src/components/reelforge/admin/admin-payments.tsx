@@ -30,14 +30,21 @@ import { PaymentGatewaysDialog } from "./payment-gateways";
 import { Detail, FilterSelect } from "./shared";
 
 const LIMIT = 20;
-const STATUSES = ["awaiting_confirmation", "pending", "paid", "paid_unapplied", "failed", "cancelled", "expired"] as const;
-const awaiting = (o: AdminPayment) => o.provider === "bank_qr" && o.status === "pending" && Boolean(o.transfer_reported_at);
+const STATUSES = ["awaiting_confirmation", "pending", "paid", "paid_unapplied", "failed", "rejected", "cancelled", "expired"] as const;
+// Manual VietQR orders an admin can still act on: confirm (also late, after a rejection) or reject.
+const confirmable = (o: AdminPayment) => !["paid", "paid_unapplied"].includes(o.status);
+const rejectable = (o: AdminPayment) => o.status === "pending" || o.status === "awaiting_confirmation";
 
 /**
  * Every studio's payment orders. An admin can ask the provider again (server to server); only what the
  * provider confirms is applied. There is deliberately no "mark as paid".
  */
-export function AdminPayments({ providers, initialStatus = "" }: { providers: PaymentProviderStatus[]; initialStatus?: string }) {
+export function AdminPayments({ providers, initialStatus = "", awaitingCount = 0 }: {
+  providers: PaymentProviderStatus[];
+  initialStatus?: string;
+  /** Manual transfers waiting for an admin (GET /api/admin counts). */
+  awaitingCount?: number;
+}) {
   const { t, formatDateTime, formatMoney } = useI18n();
   const p = t.admin.payments;
   const client = useQueryClient();
@@ -109,15 +116,25 @@ export function AdminPayments({ providers, initialStatus = "" }: { providers: Pa
     { key: "plan", header: p.columns.plan, className: "whitespace-nowrap", cell: (o) => o.plan_code.toUpperCase() },
     { key: "amount", header: p.columns.amount, className: "whitespace-nowrap text-right tabular-nums",
       cell: (o) => formatMoney(o.amount_vnd) },
-    { key: "status", header: p.columns.status, className: "whitespace-nowrap", cell: (o) => awaiting(o)
-      ? <StatusBadge status="needs_attention" label={p.awaitingConfirmation} />
-      : <StatusBadge status={o.status} label={statusLabel(o.status)} /> },
+    { key: "status", header: p.columns.status, className: "whitespace-nowrap",
+      cell: (o) => <StatusBadge status={o.status} label={statusLabel(o.status)} /> },
+    // Manual VietQR: the content to look for on the bank statement, and when the buyer said they paid.
+    { key: "transfer", header: p.columns.transfer, className: "max-w-[200px] text-xs",
+      cell: (o) => o.provider === "bank_qr" ? (
+        <span className="block">
+          <span className="block truncate font-mono" title={o.transfer_content ?? ""}>{o.transfer_content ?? "—"}</span>
+          <span className="block text-muted-foreground">
+            {o.transfer_reported_at ? p.reportedOn(formatDateTime(o.transfer_reported_at)) : p.notReported}
+          </span>
+        </span>
+      ) : <span className="text-muted-foreground">—</span> },
     { key: "created", header: p.columns.created, className: "whitespace-nowrap text-muted-foreground",
       cell: (o) => formatDateTime(o.created_at) },
     { key: "paid", header: p.columns.paid, className: "whitespace-nowrap text-muted-foreground",
       cell: (o) => (o.paid_at ? formatDateTime(o.paid_at) : "—") },
     { key: "reference", header: p.columns.reference, className: "max-w-[140px] font-mono text-xs",
-      cell: (o) => <span className="block truncate" title={o.provider_reference ?? ""}>{o.provider_reference ?? "—"}</span> },
+      cell: (o) => o.provider === "bank_qr" ? <span className="text-muted-foreground">—</span>
+        : <span className="block truncate" title={o.provider_reference ?? ""}>{o.provider_reference ?? "—"}</span> },
     { key: "actions", header: <span className="sr-only">{p.columns.actions}</span>, className: "w-10 text-right",
       cell: (o) => (
         <DropdownMenu>
@@ -130,11 +147,11 @@ export function AdminPayments({ providers, initialStatus = "" }: { providers: Pa
             <DropdownMenuItem onClick={() => setViewing(o)}>{p.view}</DropdownMenuItem>
             {o.provider === "bank_qr" ? (
               <>
-                <DropdownMenuItem disabled={Boolean(busy) || o.status === "paid" || o.status === "paid_unapplied"}
+                <DropdownMenuItem disabled={Boolean(busy) || !confirmable(o)}
                                   onClick={() => setReviewing({ order: o, action: "confirm" })}>
                   {p.confirmReceived}
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={Boolean(busy) || o.status !== "pending"} className="text-destructive"
+                <DropdownMenuItem disabled={Boolean(busy) || !rejectable(o)} className="text-destructive"
                                   onClick={() => setReviewing({ order: o, action: "reject" })}>
                   {p.rejectTransfer}
                 </DropdownMenuItem>
@@ -165,7 +182,7 @@ export function AdminPayments({ providers, initialStatus = "" }: { providers: Pa
         limit={LIMIT}
         offset={offset}
         onOffset={setOffset}
-        minWidth={1240}
+        minWidth={1400}
         toolbar={
           <>
             <div className="relative min-w-[200px] flex-1">
@@ -185,6 +202,12 @@ export function AdminPayments({ providers, initialStatus = "" }: { providers: Pa
                           options={(["payos", "bank_qr", "onepay"] as const).map((v) => [v, providerLabel(v)])} />
             <FilterSelect value={status} onChange={filtered(setStatus)} all={p.allStatuses}
                           options={STATUSES.map((v) => [v, statusLabel(v)])} />
+            {awaitingCount > 0 && status !== "awaiting_confirmation" && (
+              <Button variant="outline" size="sm" className="h-8 border-warning/50 text-warning"
+                      onClick={() => filtered(setStatus)("awaiting_confirmation")}>
+                {p.awaitingFilter(awaitingCount)}
+              </Button>
+            )}
             <div className="flex flex-wrap gap-1.5 text-[11px]">
               {providers.map((item) => {
                 // Older APIs report only "configured".
@@ -225,7 +248,10 @@ export function AdminPayments({ providers, initialStatus = "" }: { providers: Pa
               <Detail label={p.columns.paid}>{viewing.paid_at ? formatDateTime(viewing.paid_at) : "—"}</Detail>
               <Detail label={p.columns.reference}>{viewing.provider_reference ?? "—"}</Detail>
               {viewing.provider === "bank_qr" && (
-                <Detail label={p.reportedAt}>{viewing.transfer_reported_at ? formatDateTime(viewing.transfer_reported_at) : "—"}</Detail>
+                <>
+                  <Detail label={p.columns.transfer}>{viewing.transfer_content ?? "—"}</Detail>
+                  <Detail label={p.reportedAt}>{viewing.transfer_reported_at ? formatDateTime(viewing.transfer_reported_at) : "—"}</Detail>
+                </>
               )}
             </dl>
           )}
@@ -238,7 +264,7 @@ export function AdminPayments({ providers, initialStatus = "" }: { providers: Pa
             <AlertDialogDescription>
               {reviewing && (reviewing.action === "confirm"
                 ? p.confirmText(formatMoney(reviewing.order.amount_vnd), reviewing.order.transfer_content ?? reviewing.order.reference,
-                                reviewing.order.owner_email)
+                                reviewing.order.owner_email, reviewing.order.workspace_name, reviewing.order.plan_code.toUpperCase())
                 : p.rejectText(reviewing.order.transfer_content ?? reviewing.order.reference))}
             </AlertDialogDescription>
           </AlertDialogHeader>

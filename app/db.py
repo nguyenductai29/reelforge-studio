@@ -1,5 +1,14 @@
-"""Minimal connection bootstrap shared by the API and Alembic."""
+"""Minimal connection bootstrap shared by the API, the workers and Alembic.
+
+The database URL is one of the two things ReelForge keeps outside PostgreSQL (the
+other is the master key file, ``app/master_key.py``). It comes from
+``instance/bootstrap.json`` (``{"database_url": "postgresql+psycopg://…"}``), or, when
+that file has none, from ``REELFORGE_DATABASE_URL`` (for container-style
+deployments). The file wins, so a stray variable can never redirect an installation
+that has one.
+"""
 import json
+import os
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL, make_url
@@ -12,10 +21,14 @@ source_file = CONFIG_FILE if CONFIG_FILE.exists() else LEGACY_CONFIG_FILE
 config = json.loads(source_file.read_text()) if source_file.exists() else {}
 
 
+DATABASE_URL_ENV = "REELFORGE_DATABASE_URL"
+
+
 def database_url() -> URL:
-    raw = config.get("database_url")
+    raw = config.get("database_url") or os.environ.get(DATABASE_URL_ENV, "").strip()
     if not raw:
-        raise RuntimeError("Create instance/bootstrap.json with a PostgreSQL database_url before migrating or starting ReelForge Studio")
+        raise RuntimeError("Create instance/bootstrap.json with a PostgreSQL database_url (or set "
+                           f"{DATABASE_URL_ENV}) before migrating or starting ReelForge Studio")
     url = make_url(raw)
     if url.drivername == "postgresql":
         url = url.set(drivername="postgresql+psycopg")

@@ -2,6 +2,13 @@
 
 This guide describes how to deploy the `feat/studio-foundation` branch of ReelForge Studio to the IMO & KOME Ubuntu home server.
 
+> **Phase 21: a new server needs no `.env.runtime`.** Normal operation needs only:
+>
+> - the database URL (`instance/bootstrap.json`);
+> - the master key file (`/etc/reelforge/master.key`).
+>
+> Everything else is configured in the admin UI and read from PostgreSQL without restarts. The concise from-zero sequence is [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md), and the systemd units are in `deploy/systemd/`. This guide gives the full detail. Where it still mentions `/etc/reelforge/runtime.env`, that is an optional legacy fallback for installations configured before Phase 20.
+
 The target production layout is:
 
 ```text
@@ -26,13 +33,14 @@ Cloudflare Tunnel
           |
           +--> reelforge_studio_db
 
-Background services:
-  - ReelForge video worker
-  - ReelForge YouTube worker
+Background services (deploy/systemd/reelforge-worker@.service, one instance each):
+  - text, image, video, voice, render, source, youtube, social, scheduler workers
+  - daily media maintenance (timer, 03:00)
 
-Persistent media (HDD):
-  /srv/data/videos/reelforge   (REELFORGE_STORAGE_ROOT)
-  /srv/data/backups/reelforge  (database dumps)
+SSD: OS, application + virtualenv, PostgreSQL, /etc/reelforge (master.key)
+Persistent media (HDD at /srv/data):
+  /srv/data/videos/reelforge   (media root: Admin → Cài đặt hệ thống → Lưu trữ)
+  /srv/data/backups/reelforge  (database dumps; copy them off this disk too)
 ```
 
 The frontend is the only service exposed through Cloudflare. FastAPI and PostgreSQL remain private to the home server.
@@ -724,7 +732,27 @@ The retention ages are `REELFORGE_RETENTION_*` in the runtime file. Set `REELFOR
 
 ---
 
-## 12. Video worker systemd service
+## 12. Worker services
+
+**Recommended since Phase 21: one template unit for every worker.** `deploy/systemd/reelforge-worker@.service` runs `python -m app.<name>_worker` as `tai`, with no provider variable. Workers read their keys and settings from PostgreSQL and pick up changes within 15 seconds.
+
+```bash
+sudo cp deploy/systemd/reelforge-worker@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now reelforge-worker@{text,image,video,voice,render,source,youtube,social,scheduler}
+journalctl -u 'reelforge-worker@*' -f
+```
+
+Enable only the workers this server needs.
+
+**Switching from the per-worker units below:**
+
+1. `sudo systemctl disable --now reelforge-<name>-worker`;
+2. enable `reelforge-worker@<name>`.
+
+`deploy.sh` restarts either form. The per-worker units below remain valid.
+
+### Video worker (per-worker unit)
 
 The video worker is required for queued AI video jobs.
 
@@ -1168,6 +1196,7 @@ Each is applied by `python -m alembic upgrade head`, as usual:
 - `0017_notify_support_verify`: notifications, support tickets and messages, and the live-verification checklist. It only adds tables; no existing row changes.
 - `0018_admin_payment_config`: the encrypted payment gateway configuration and its audit trail. It only adds tables; orders, subscriptions, credits and the payment activity record are untouched, and legacy payment configuration keeps working.
 - `0019_system_configuration`: the central system settings (plain and encrypted), their audit trail, and manual VietQR order history (`payment_order_events`, `payment_orders.transfer_reported_at`). It only adds; every existing row, setting, token and gateway configuration is untouched.
+- `0020_manual_payment_statuses`: data only. Manual VietQR orders the buyer reported become `awaiting_confirmation`, and ones an admin rejected become `rejected`. Other orders are unchanged.
 
 **After upgrading to Phase 18:**
 
@@ -1177,6 +1206,13 @@ Each is applied by `python -m alembic upgrade head`, as usual:
   - `REELFORGE_SSE_MAX_SECONDS` (300);
   - `CREDITS_LOW_THRESHOLD` (20).
 - Then open **Admin → Kiểm định**: readiness should show Migration ok. Work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+
+**After upgrading to Phase 21:**
+
+1. Run `./deploy.sh`: it now refuses to restart services without a usable master key.
+2. Optionally move the workers to the template unit (section 12).
+3. Open Kiểm định → **Cấu hình**. It lists the settings that still come from `/etc/reelforge/runtime.env`. Save them in Cài đặt hệ thống until the list is empty.
+4. Then remove the file: the units start without it.
 
 **After upgrading to Phase 20:**
 
@@ -1251,62 +1287,29 @@ curl -I https://studio.imokome-cloud.com
 
 ---
 
-## 17. Recommended deploy script
+## 17. Deploy script
 
-A simple deploy helper can live at:
-
-```text
-~/apps/reelforge-studio/deploy.sh
-```
-
-Example:
+The repository's `deploy.sh` is the deploy procedure. Run it as `tai` from the application directory:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-cd "$(dirname "$0")"
-
-echo "== Pull source =="
-git pull
-
-echo "== Backend dependencies =="
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-
-echo "== Database migrations =="
-python -m alembic upgrade head
-
-echo "== Frontend dependencies/build =="
-cd frontend
-npm ci
-npm run build
-cd ..
-
-echo "== Restart services =="
-sudo systemctl restart reelforge-api
-sudo systemctl restart reelforge-frontend
-
-for worker in text image video voice render source youtube social scheduler; do
-  if systemctl is-enabled --quiet "reelforge-$worker-worker" 2>/dev/null; then
-    sudo systemctl restart "reelforge-$worker-worker"
-  fi
-done
-
-echo "== Health checks =="
-curl -fsS http://127.0.0.1:8000/openapi.json >/dev/null
-curl -fsSI http://127.0.0.1:3001 >/dev/null
-
-echo "Deploy completed."
+cd ~/apps/reelforge-studio
+./deploy.sh
 ```
 
-Make executable:
+**What it does:**
 
-```bash
-chmod +x deploy.sh
-```
+1. `git pull`.
+2. `pip install -r requirements.txt`.
+3. **Checks the bootstrap:** `instance/bootstrap.json` (or `REELFORGE_DATABASE_URL`) exists, and `python -m app.master_key status` finds a usable key. **Without one it stops before touching any service**, and says how to restore or create it.
+4. `alembic upgrade head`.
+5. `npm ci && npm run build`.
+6. Restarts the API, the frontend and every enabled worker, in both forms (`reelforge-<name>-worker` and `reelforge-worker@<name>`).
+7. Health checks on `:8000` and `:3001`.
+8. Notes when `deploy/systemd/` differs from the installed units. Review the change, copy it and run `daemon-reload` yourself.
 
-Note: restarting services through this script requires the current user to have permission to run the corresponding `sudo systemctl` commands.
+It needs passwordless `sudo systemctl restart reelforge-*` for the user that runs it.
+
+Configuration changes (keys, prices, storage, payment gateways) never need a deploy or a restart: save them in the admin UI.
 
 ---
 

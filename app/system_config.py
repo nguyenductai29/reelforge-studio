@@ -142,6 +142,34 @@ SETTINGS: tuple[Setting, ...] = (
 )
 BY_KEY = {setting.key: setting for setting in SETTINGS}
 BY_ENV = {setting.env: setting for setting in SETTINGS if setting.env}
+
+# Every other environment variable the backend reads, and why it is still an environment variable
+# (docs/SYSTEM_CONFIGURATION.md). Categories: bootstrap (needed before the database can be opened or
+# decrypted; allowed to stay outside it), legacy (a fallback for installations configured before the
+# admin UI), experimental (off unless an operator runs it) and dev (tests and command-line tools).
+# Every variable in BY_ENV is "legacy" too: a fallback for its admin-managed setting.
+# tests/test_phase21.py fails if the code reads a variable that is in neither table.
+_ONEPAY = ("ONEPAY_MERCHANT_ID", "ONEPAY_ACCESS_CODE", "ONEPAY_HASH_KEY", "ONEPAY_QUERY_USER", "ONEPAY_QUERY_PASSWORD",
+           "ONEPAY_PAYMENT_URL", "ONEPAY_QUERY_URL")
+_SMOKE = tuple(f"REELFORGE_SMOKE_{task}_{part}" for task in ("TEXT", "VIDEO", "IMAGE", "VOICE")
+               for part in ("PROVIDER", "MODEL"))
+ENVIRONMENT: dict[str, tuple[str, str]] = {
+    "REELFORGE_DATABASE_URL": ("bootstrap", "The database URL when instance/bootstrap.json has none"),
+    "REELFORGE_MASTER_KEY_FILE": ("bootstrap", "Where the master key file is, when not /etc/reelforge/master.key"),
+    "REELFORGE_LOG_FORMAT": ("bootstrap", "Log format, read once when a process starts, before the database"),
+    "REELFORGE_LOG_LEVEL": ("bootstrap", "Log level, read once when a process starts, before the database"),
+    "REELFORGE_ENV_FILE": ("legacy", "Names a legacy runtime file to load"),
+    "REELFORGE_TOKEN_ENCRYPTION_KEY": ("legacy", "The master key before it moved into a file"),
+    **{name: ("legacy", "OnePAY before Admin → Payments → Payment gateways (Phase 19)") for name in _ONEPAY},
+    "DOLA_API_KEY": ("experimental", "The experimental Dola video gateway"),
+    "DOLA_EXPERIMENTAL_ENABLED": ("experimental", "Turns the experimental Dola gateway on"),
+    "DOLA_BASE_URL": ("experimental", "The Dola gateway's address"),
+    "DOLA_MEDIA_BASE_URL": ("experimental", "The Dola gateway's media address"),
+    "DOLA_MAX_JOB_AGE_SECONDS": ("experimental", "How long a Dola job may wait"),
+    **{name: ("dev", "Live smoke-test choice (python -m app.smoke_test / app.provider_check)") for name in _SMOKE},
+    "REELFORGE_LIVE_TESTS": ("dev", "Allows the paid live smoke tests in this shell"),
+    "REELFORGE_TEST_DATABASE_URL": ("dev", "Runs the migration tests on an isolated PostgreSQL database"),
+}
 SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications", "payments")
 # Paths the frontend serves each OAuth callback on.
 REDIRECT_PATHS = {"youtube": "/youtube/callback", "tiktok": "/channels/callback/tiktok",
@@ -302,6 +330,20 @@ def get(key: str) -> Any:
             except ValueError:
                 return setting.default
     return setting.default if setting.kind != "secret" else ""
+
+
+def legacy_in_use() -> list[str]:
+    """Settings whose value comes from a legacy environment variable right now (names only)."""
+    return [setting.key for setting in SETTINGS if setting.env and source(setting.key) == "environment"]
+
+
+def environment_report() -> list[dict]:
+    """Which known variables this process has (names, categories and whether set; never a value)."""
+    rows = [{"name": name, "category": category, "reason": reason, "set": bool(os.environ.get(name, "").strip())}
+            for name, (category, reason) in ENVIRONMENT.items()]
+    rows += [{"name": setting.env, "category": "legacy", "reason": f"Fallback for {setting.key}",
+              "set": bool(os.environ.get(setting.env, "").strip())} for setting in SETTINGS if setting.env]
+    return rows
 
 
 def frontend_origin() -> str:

@@ -39,6 +39,12 @@ def secret_values() -> list[str]:
     """Current values of secret environment variables, longest first."""
     values = {os.environ.get(name, "") for name in SECRET_ENV_NAMES}
     values |= {value for name, value in os.environ.items() if _SECRET_ENV.search(name)}
+    try:  # the master key file's content is never in the environment; scrub it too
+        from app import master_key
+
+        values.add(master_key.load())
+    except Exception:  # noqa: BLE001 - logging must never fail because of the key
+        pass
     return sorted((value.strip() for value in values if len(value.strip()) >= _MIN_SECRET_CHARS),
                   key=len, reverse=True)
 

@@ -465,6 +465,8 @@ function BankQRPanel({ setup, banks }: { setup: PaymentSetup; banks: { bin: stri
                                   transfer_prefix: "RF", note: "", sla_message: "" };
   const [enabled, setEnabled] = useState(setup.enabled || !setup.configured);
   const [values, setValues] = useState(saved);
+  // A bank outside the list: the admin types its NAPAS BIN and name.
+  const [otherBank, setOtherBank] = useState(Boolean(saved.bank_bin) && !banks.some((b) => b.bin === saved.bank_bin));
   const [preview, setPreview] = useState<BankTransfer | null>(setup.preview ?? null);
   const [busy, setBusy] = useState<"save" | "switch" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -558,24 +560,35 @@ function BankQRPanel({ setup, banks }: { setup: PaymentSetup; banks: { bin: stri
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1 sm:col-span-2">
             <label htmlFor="bank_qr-bank" className="text-xs font-medium">{q.fields.bank}</label>
-            <select id="bank_qr-bank" value={values.bank_bin}
-                    onChange={(e) => setValues((current) => ({ ...current, bank_bin: e.target.value,
-                                                               bank_name: banks.find((b) => b.bin === e.target.value)?.name ?? "" }))}
+            <select id="bank_qr-bank" value={otherBank ? "other" : values.bank_bin}
+                    onChange={(e) => {
+                      const choice = e.target.value;
+                      setOtherBank(choice === "other");
+                      setValues((current) => choice === "other" ? { ...current, bank_bin: "", bank_name: "" }
+                        : { ...current, bank_bin: choice, bank_name: banks.find((b) => b.bin === choice)?.name ?? "" });
+                    }}
                     className="h-8 w-full rounded-md border border-border bg-surface-2 px-2 text-sm">
               <option value="">{q.chooseBank}</option>
               {banks.map((bank) => (
-                <option key={bank.bin} value={bank.bin}>{bank.name} ({bank.bin})</option>
+                <option key={bank.bin} value={bank.bin}>{bank.name}</option>
               ))}
-              {values.bank_bin && !banks.some((b) => b.bin === values.bank_bin) && (
-                <option value={values.bank_bin}>{values.bank_name || values.bank_bin}</option>
-              )}
+              <option value="other">{q.otherBank}</option>
             </select>
           </div>
-          <div className="space-y-1">
-            <label htmlFor="bank_qr-bank_bin" className="text-xs font-medium">{q.fields.bank_bin}</label>
-            <Input id="bank_qr-bank_bin" value={values.bank_bin} inputMode="numeric" maxLength={6}
-                   onChange={(e) => set("bank_bin", e.target.value.replace(/\D/g, ""))} className="h-8 bg-surface-2 font-mono text-xs" />
-          </div>
+          {otherBank && (
+            <>
+              <div className="space-y-1">
+                <label htmlFor="bank_qr-bank_name" className="text-xs font-medium">{q.fields.bank_name}</label>
+                <Input id="bank_qr-bank_name" value={values.bank_name} maxLength={80}
+                       onChange={(e) => set("bank_name", e.target.value)} className="h-8 bg-surface-2 text-xs" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="bank_qr-bank_bin" className="text-xs font-medium">{q.fields.bank_bin}</label>
+                <Input id="bank_qr-bank_bin" value={values.bank_bin} inputMode="numeric" maxLength={6}
+                       onChange={(e) => set("bank_bin", e.target.value.replace(/\D/g, ""))} className="h-8 bg-surface-2 font-mono text-xs" />
+              </div>
+            </>
+          )}
           {BANK_FIELDS.map((name) => (
             <div key={name} className="space-y-1">
               <label htmlFor={`bank_qr-${name}`} className="text-xs font-medium">{q.fields[name]}</label>

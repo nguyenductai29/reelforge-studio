@@ -265,7 +265,7 @@ assert client.get("/api/admin/payment-config").json()["providers"][2]["fields"][
 report = client.get("/api/admin/readiness")
 clean(report.text)
 sections = {s["key"]: {c["key"]: c for c in s["checks"]} for s in report.json()["sections"]}
-assert set(sections) == {"database", "storage", "ffmpeg", "workers", "ai", "publishing", "payments", "realtime", "support", "security"}
+assert set(sections) == {"database", "storage", "ffmpeg", "workers", "ai", "publishing", "payments", "realtime", "support", "security", "configuration"}
 assert sections["database"]["migration"]["status"] == "ok"
 assert sections["payments"]["onepay"]["mode"] == "sandbox" and sections["payments"]["payos"]["status"] == "ok"
 assert sections["workers"]["render_worker"]["status"] == "missing"

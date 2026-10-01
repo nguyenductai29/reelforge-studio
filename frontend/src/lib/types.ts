@@ -686,6 +686,18 @@ export type SystemConfigOverview = {
   redirects: Record<"youtube" | "tiktok" | "facebook", string>;
   derived_redirects: Record<"youtube" | "tiktok" | "facebook", string>;
   models_in_use: Record<string, number>;
+  /** Phase 21; absent from older APIs. */
+  ai_status?: Record<string, {
+    enabled: boolean;
+    configured: boolean;
+    source: SystemSetting["source"];
+    models_in_use: number;
+    last_test: { at: string; by: string | null; local?: string; remote?: string } | null;
+  }>;
+  legacy_in_use?: string[];
+  environment?: { name: string; category: "bootstrap" | "legacy" | "experimental" | "dev"; reason: string; set: boolean }[];
+  runtime_file?: { path: string | null; values: number };
+  cache_seconds?: number;
   master_key: {
     source: "file" | "legacy_env" | "missing";
     path: string | null;

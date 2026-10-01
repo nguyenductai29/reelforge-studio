@@ -39,6 +39,7 @@ from app.providers.errors import ProviderError
 from app.providers.text import create_text_provider
 from app.providers.voice import VOICE_PROVIDERS, VoiceRequest, create_voice_provider
 from app.runtime_env import ROOT, load_runtime_env
+from app import system_config
 from app.video_files import download_video, mp4_duration_seconds, valid_mp4
 
 TEXT_PROMPT = "Write one short sentence explaining why consistent posting helps a social media channel."
@@ -133,7 +134,7 @@ def smoke_video(*, provider=None, model=None, prompt=VIDEO_PROMPT, aspect="16:9"
     started = time.monotonic()
     try:
         spec.module.validate_video_request(request)
-        client = (client_factory or spec.client_type)(os.environ[spec.key_env])
+        client = (client_factory or spec.client_type)(system_config.env(spec.key_env))
     except PROVIDER_ERRORS as exc:
         _report_error(exc, out)
         return 2
@@ -459,4 +460,8 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # From the command line on a server, read the keys saved in Admin (the database) like the workers do.
+    from app.provider_check import _activate_database_settings
+
+    _activate_database_settings()
     sys.exit(main())

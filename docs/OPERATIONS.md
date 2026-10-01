@@ -122,7 +122,7 @@ List responses are `{items, total, limit, offset}` (`limit` 20 by default, at mo
 
 **Master key.** The key file is checked by readiness (Kiểm định → Bảo mật). It warns while the legacy variable is used, when the file is readable by others, and when a remaining legacy variable differs from the file. See [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md).
 
-**Manual VietQR (Phase 20).** Transfers that buyers reported appear in Admin → Thanh toán under **Chờ xác nhận**. The header counts them, and every admin gets a notification. **Xác nhận đã nhận tiền** settles the order through the shared path; **Từ chối** fails it. `GET /api/admin/payments/{id}/events` lists who reported, confirmed or rejected. See [PAYMENTS.md](PAYMENTS.md#vietqr-modes-phase-20).
+**Manual VietQR (Phases 20–21).** Transfers that buyers reported have the status `awaiting_confirmation` and appear in Admin → Thanh toán under **Chờ xác nhận (N)**. Each row shows the transfer content and when it was reported. The header counts them, and every admin gets a notification. **Xác nhận đã nhận tiền** settles the order through the shared path; **Từ chối** sets it to `rejected` and tells the owner the reason. `GET /api/admin/payments/{id}/events` lists who reported, confirmed or rejected. See [PAYMENTS.md](PAYMENTS.md#vietqr-modes-phase-20).
 
 ## Notifications and support (Phase 18)
 

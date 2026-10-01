@@ -23,6 +23,7 @@ Code: `app/readiness.py`, the `/api/admin/readiness` and `/api/admin/verificatio
 | Publishing | YouTube OAuth, TikTok and Facebook apps, and the token encryption key |
 | Payments | payOS, manual VietQR (and the VietQR mode) and OnePAY configured, OnePAY's mode (sandbox, production or custom), and the encryption key |
 | Security | Where the master key comes from (file, legacy variable, missing), the file's permissions, a differing legacy variable |
+| Configuration | Settings still read from a legacy environment variable (names), whether a legacy runtime file was loaded, and the workers' settings cache (15 s). A fresh installation shows neither of the first two |
 | Realtime | Open notification streams and the poll interval |
 | Support | Tickets awaiting an answer |
 
@@ -44,7 +45,7 @@ Items marked **Tốn phí** cost money or credits. Run them deliberately, once.
 
 | Item | How to verify | Paid |
 | --- | --- | --- |
-| Migration upgraded | `python -m alembic upgrade head`, then `python -m alembic current` shows `0019_system_configuration (head)`, and readiness shows Migration ok | |
+| Migration upgraded | `python -m alembic upgrade head`, then `python -m alembic current` shows `0020_manual_payment_statuses (head)`, and readiness shows Migration ok | |
 | Storage on the HDD | Admin → Cài đặt hệ thống → Lưu trữ: `/srv/data/videos/reelforge` (or the legacy `REELFORGE_STORAGE_ROOT`); readiness shows the root and writable ([STORAGE.md](STORAGE.md)) | |
 | FFmpeg verified | `python -m app.render_worker --check` | |
 | Master key in its own file | `python -m app.master_key init`, `ls -l /etc/reelforge/master.key` shows `-rw-------`, a copy is stored off the server; Kiểm định → Bảo mật is OK ([SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md)) | |
@@ -61,7 +62,7 @@ Items marked **Tốn phí** cost money or credits. Run them deliberately, once.
 | VietQR: small live checkout | One small real payment; the plan activates, the order shows paid, and the owner is notified | yes |
 | VietQR: webhook received | The last webhook time appears under VietQR activity | |
 | VietQR: credits applied once | The studio's credit history shows the plan's credits once, even if payOS repeated the webhook | |
-| Manual VietQR round trip | Manual mode: a real banking app scans the QR (bank, account, exact amount, content RF…), the buyer reports the transfer, an admin confirms it in Thanh toán, the credits are posted once | yes |
+| Manual VietQR round trip | Manual mode: a real banking app scans the QR (bank, account, exact amount, content RF…). The buyer reports the transfer (the order shows **Chờ xác nhận chuyển khoản**, no credits yet). An admin confirms it from **Chờ xác nhận (N)** in Thanh toán. The plan activates and the credits are posted once | yes |
 | Card: sandbox configured | **Cổng thanh toán → Thẻ**: Sandbox mode saved; the SANDBOX badge shows; IPN and Return URLs registered for the test merchant | |
 | Card: sandbox configuration check | **Kiểm tra cấu hình** and **Kiểm tra với OnePAY (QueryDR)** both pass | |
 | Card: sandbox payment succeeded | OnePAY's test card on the sandbox page; the order turns paid | |

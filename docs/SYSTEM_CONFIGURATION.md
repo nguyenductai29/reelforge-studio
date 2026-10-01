@@ -1,11 +1,13 @@
-# System configuration (Phase 20)
+# System configuration (Phases 20–21)
 
 **Production ReelForge does not need a large `.env.runtime`.** The server needs two things before it can start:
 
 | Bootstrap | Where | Why it cannot live in the database |
 | --- | --- | --- |
-| Database URL | `instance/bootstrap.json` → `{"database_url": "postgresql+psycopg://…"}` | It is how the application finds the database |
+| Database URL | `instance/bootstrap.json` → `{"database_url": "postgresql+psycopg://…"}`, or `REELFORGE_DATABASE_URL` when the file has none | It is how the application finds the database |
 | Master encryption key | `/etc/reelforge/master.key` (chmod 600, owned by the service account) | It decrypts the secrets stored in the database; storing it there would defeat the encryption |
+
+A new server is set up in ten steps: [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md).
 
 Everything else is configured by a system admin in the web UI and stored in PostgreSQL. Changes apply without SSH, without editing a file, and without restarting the API or workers:
 
@@ -37,8 +39,8 @@ Everything else is configured by a system admin in the web UI and stored in Post
 A database backup alone reveals none of them.
 
 ```bash
-python -m app.master_key status   # where the key comes from and what is wrong; never prints the key
-python -m app.master_key init     # writes the key file with chmod 600 (see below)
+python -m app.master_key status   # source, path, problems, permission and legacy warnings; never the key
+python -m app.master_key init     # writes the key file (chmod 600; a new directory gets 700), then prints the status
 ```
 
 **What `init` does:**
@@ -46,7 +48,7 @@ python -m app.master_key init     # writes the key file with chmod 600 (see belo
 - **If `REELFORGE_TOKEN_ENCRYPTION_KEY` is set** (in the environment or the legacy runtime file), it **copies that key** into the file. Everything encrypted so far stays readable.
 - **If no key exists and the database holds no encrypted data**, it generates a new key.
 - **If the database already holds encrypted data**, it **refuses**: a new key would make that data unreadable. Restore the original key file instead.
-- **If a key file already exists**, it changes nothing.
+- **If a key file already exists**, it changes nothing. It never overwrites a file, valid or not.
 
 The application never generates a key by itself.
 
@@ -58,6 +60,13 @@ The application never generates a key by itself.
 - stored secrets read as empty (providers report "key missing"). They are not deleted, and they never fall back to an environment variable.
 
 Restoring the key file brings everything back.
+
+**Hardening:**
+
+- **Permissions.** The file is expected to be chmod 600, owned by the account the services run as. Readiness and `status` warn when other users can read it (POSIX only).
+- **Logs.** The key's value is scrubbed from every log line, like environment secrets.
+- **Reads.** The file is read again only when it changes.
+- **Deploys.** `deploy.sh` runs `master_key status` before restarting anything and stops without a usable key.
 
 **Back up the key file separately from the database dumps**, for example on another machine or a password manager. Losing it means:
 
@@ -122,16 +131,65 @@ Numbers are validated against the same ranges the code enforces, for example:
 
 Credit prices are ReelForge's internal credits per operation, not money paid to providers.
 
-### What still comes from the environment, and why
+### Every environment variable, and why it remains
 
-| Variable | Why |
+`app/system_config.py` lists every variable the backend still reads (`ENVIRONMENT`, plus the registry's legacy names). `tests/test_phase21.py` fails if code reads a variable that is not classified. Only the modules in the table below may read `os.environ` directly; everything else asks `system_config`.
+
+**A. Bootstrap: allowed outside the database**
+
+| Variable | Read by | Why |
+| --- | --- | --- |
+| `REELFORGE_DATABASE_URL` (optional) | `app/db.py` | The database URL when `instance/bootstrap.json` has none. The file wins |
+| `REELFORGE_MASTER_KEY_FILE` (optional) | `app/master_key.py` | The key file when not at `/etc/reelforge/master.key` |
+| `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL` (optional) | `app/logs.py` | Read once when a process configures logging, before the database is opened |
+
+**B. Legacy fallback only.** A value saved in the admin UI always wins over these:
+
+| Variable | Read by | Replaced by |
+| --- | --- | --- |
+| Every variable in the settings table above | `system_config.env` | Admin → Cài đặt hệ thống |
+| `REELFORGE_TOKEN_ENCRYPTION_KEY` | `app/master_key.py` | The key file (`python -m app.master_key init` copies it) |
+| `ONEPAY_*` | `app/payment_config.py`, `onepay.py` | Admin → Thanh toán → Cổng thanh toán → Thẻ |
+| `payos` in `instance/bootstrap.json` | `app/payment_config.py` | Admin → Thanh toán → Cổng thanh toán → VietQR |
+| `REELFORGE_ENV_FILE` | `app/runtime_env.py` | Names a legacy runtime file; none is needed |
+
+**C. Should move to the admin UI.** None remain: every normal provider credential and runtime setting is in the registry.
+
+**D. Experimental, development and tests:**
+
+| Variable | Read by | Why |
+| --- | --- | --- |
+| `DOLA_*` | `app/providers/dola.py`, `catalog.py` | The experimental Dola gateway, off unless an operator runs one |
+| `REELFORGE_SMOKE_*`, `REELFORGE_LIVE_TESTS` | `app/provider_check.py`, `app/smoke_test.py` | Live smoke-test choices; deliberately not in the production UI. The tools themselves read keys from the database when run on a server |
+| `REELFORGE_TEST_DATABASE_URL` | tests | Runs the migration tests on an isolated PostgreSQL |
+
+Admin → Cài đặt hệ thống → Bảo mật lists the known variables set in the API's environment: names and categories only, never values. It also lists the settings that still come from a legacy variable.
+
+## Hot configuration: workers and the API
+
+Every worker reads its settings per job, never once at start-up:
+
+- `text_worker`, `image_worker`, `video_worker`, `voice_worker`, `source_worker`, `render_worker`, `youtube_worker`, `social_worker`, `scheduler_worker`;
+- the settings they read: provider keys, credit prices, job limits, FFmpeg, storage, OAuth apps.
+
+**Timing:**
+
+| Where | Delay |
 | --- | --- |
-| `REELFORGE_MASTER_KEY_FILE` (optional) | Bootstrap: where the key file is when not at the default path |
-| `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL` (optional) | Read once when a process configures logging, before it opens the database; changing them at runtime would add complexity for no operator benefit |
-| `REELFORGE_SMOKE_*`, `REELFORGE_LIVE_TESTS`, `REELFORGE_LIVE_VIDEO` | Development and live-test tooling (`python -m app.smoke_test …`); deliberately not in the production UI |
-| `DOLA_*` | The experimental Dola gateway, off unless an operator runs one |
-| `REELFORGE_TEST_DATABASE_URL` | Tests only |
-| `REELFORGE_ENV_FILE` | Names a legacy runtime file, if one is still used |
+| In the process that saved | Applies to the next request |
+| Every other process | Within `CACHE_SECONDS` = **15 s**: settings are cached per process and re-read in one query |
+| Payment gateways (`payment_provider_configs`) | Not cached: read per request |
+| Master key file | Re-read when it changes (size or modification time) |
+
+**Proof.** `tests/test_phase21.py` starts a separate worker process, then changes the OpenAI key, the VietQR mode and the card switch through the API. The running process sees all three without a restart.
+
+**Readiness.** Admin → Kiểm định → **Cấu hình** shows:
+
+- how many settings still come from the environment;
+- whether a legacy runtime file was loaded;
+- the cache time.
+
+A fresh installation shows none of the first two.
 
 ## The admin UI
 

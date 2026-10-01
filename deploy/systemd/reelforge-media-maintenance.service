@@ -1,0 +1,15 @@
+# Daily cleanup of intermediate media past retention (Admin -> System settings -> Storage).
+[Unit]
+Description=ReelForge Studio daily media maintenance
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=tai
+Group=tai
+WorkingDirectory=/home/tai/apps/reelforge-studio
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.media_maintenance --apply --intermediates
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/reelforge/runtime.env
+Nice=10
+IOSchedulingClass=idle

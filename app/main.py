@@ -36,6 +36,7 @@ from app.models import CreditReconciliation
 from app.providers.catalog import video_provider_config_issue  # noqa: F401
 from app.publishers import channel_oauth, google_oauth
 from app.publishers.youtube import UPLOAD_SCOPE as YOUTUBE_UPLOAD_SCOPE
+from app import runtime_env
 from app.runtime_env import start_process
 from app.logs import log_event
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
@@ -928,11 +929,13 @@ def report_manual_transfer(order_id: str, request: Request):
         if db.get(Membership, (user.id, ws.id)).role != "owner":
             raise HTTPException(403, "Workspace owner required")
         order = _manual_order(db, order_id, ws.id, lock=True)
-        if order.status != "pending":
+        if order.status not in payments.WAITING_STATUSES:
             raise HTTPException(409, "Order is not awaiting payment")
-        if order.transfer_reported_at is None:
+        if order.status == "pending":
+            # Not paid yet: an administrator still has to confirm that the money arrived.
             now = datetime.now(timezone.utc)
-            order.transfer_reported_at = now
+            order.status = "awaiting_confirmation"
+            order.transfer_reported_at = order.transfer_reported_at or now
             db.add(PaymentOrderEvent(order_id=order.id, action="transfer_reported", user_id=user.id,
                                      amount_vnd=order.amount_vnd, created_at=now))
             notifications.transfer_reported(db, order, order.provider_reference or "")
@@ -1115,15 +1118,15 @@ def admin_overview(request: Request):
                 "failed_jobs_24h": count_of(db, select(WorkflowJob.id).where(WorkflowJob.state == "failed",
                                                                              WorkflowJob.updated_at >= since)),
                 "stuck_jobs": len(stuck["expired_leases"]) + len(stuck["overdue"]),
-                "pending_payments": count_of(db, select(PaymentOrder.id).where(PaymentOrder.status == "pending")),
+                "pending_payments": count_of(db, select(PaymentOrder.id).where(
+                    PaymentOrder.status.in_(payments.WAITING_STATUSES))),
                 # Studios at 90 % of their storage or more (the levels below come from one grouped query).
                 "storage_alerts": sum(levels[name] for name in ("critical", "full")),
                 "support_open": count_of(db, select(SupportTicket.id).where(
                     SupportTicket.status.in_(support.AWAITING_SUPPORT))),
-                # Manual VietQR transfers waiting for an admin (migration 0019).
+                # Manual VietQR transfers the buyer reported, waiting for an admin.
                 "transfers_to_confirm": count_of(db, select(PaymentOrder.id).where(
-                    PaymentOrder.provider == "bank_qr", PaymentOrder.status == "pending",
-                    PaymentOrder.transfer_reported_at.is_not(None))) if system_config.ready(db) else 0,
+                    PaymentOrder.status == "awaiting_confirmation")),
             },
             "storage_levels": levels,
             "plans": [plan_data(p) for p in db.scalars(select(Plan).order_by(Plan.code))],
@@ -1280,7 +1283,7 @@ def admin_workspace_detail(workspace_id: str, request: Request):
 def admin_payments(request: Request, q: str | None = Query(default=None, max_length=255),
                    provider: Literal["payos", "bank_qr", "onepay"] | None = None,
                    status: Literal["pending", "awaiting_confirmation", "paid", "paid_unapplied", "failed", "cancelled",
-                                   "expired"] | None = None,
+                                   "expired", "rejected"] | None = None,
                    limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
     """Payment orders of every studio, newest first; ``q`` searches the owner's email, the studio name,
     the order reference and the provider reference. No checkout URL or provider payload is returned."""
@@ -1299,11 +1302,7 @@ def admin_payments(request: Request, q: str | None = Query(default=None, max_len
             query = query.where(or_(*matches))
         if provider:
             query = query.where(PaymentOrder.provider == provider)
-        if status == "awaiting_confirmation":
-            # Manual transfers the buyer reported and nobody has confirmed or rejected yet.
-            query = query.where(PaymentOrder.provider == "bank_qr", PaymentOrder.status == "pending",
-                                PaymentOrder.transfer_reported_at.is_not(None))
-        elif status:
+        if status:
             query = query.where(PaymentOrder.status == status)
         total = count_of(db, query)
         rows = db.execute(query.order_by(PaymentOrder.created_at.desc(), PaymentOrder.id).limit(limit).offset(offset)).all()
@@ -1360,12 +1359,13 @@ def reject_manual_payment(order_id: str, data: ManualRejectInput, request: Reque
     with Session.begin() as db:
         admin = admin_for(request, db)
         order = _admin_manual_order(db, order_id)
-        if order.status != "pending":
+        if order.status not in payments.WAITING_STATUSES:
             raise HTTPException(409, "Order is not awaiting payment")
-        order.status = "failed"
+        order.status = "rejected"
+        reason = (data.note or "").strip() or None
         db.add(PaymentOrderEvent(order_id=order.id, action="rejected", user_id=admin.id, amount_vnd=order.amount_vnd,
-                                 note=(data.note or "").strip() or None, created_at=datetime.now(timezone.utc)))
-        notifications.payment_settled(db, order, "failed")
+                                 note=reason, created_at=datetime.now(timezone.utc)))
+        notifications.payment_rejected(db, order, reason)
         result = order_data(order)
         admin_id = admin.id
     log_event(logger, "manual_payment_rejected", admin_id=admin_id, order_id=order_id)
@@ -1758,6 +1758,25 @@ def _stored_files(db) -> int:
     return count_of(db, select(Asset.id).where(Asset.bytes > 0))
 
 
+AI_KEYS = {"openai": "ai.openai.api_key", "anthropic": "ai.anthropic.api_key", "gemini": "ai.gemini.api_key",
+           "runway": "ai.runway.api_secret", "fal": "ai.fal.api_key", "runware": "ai.runware.api_key",
+           "replicate": "ai.replicate.api_token"}
+
+
+def _ai_status(db, used: dict) -> dict:
+    """Per provider: switched on, a usable key, where the key comes from, models using it, the last test."""
+    tests = {}
+    for entry in system_config.history(db, "ai", limit=100):
+        provider = entry["metadata"].get("provider")
+        if entry["action"] == "tested" and provider and provider not in tests:
+            tests[provider] = {"at": entry["at"], "by": entry["by"], "local": entry["metadata"].get("local"),
+                               "remote": entry["metadata"].get("remote")}
+    return {name: {"enabled": bool(system_config.get(f"ai.{name}.enabled")),
+                   "configured": bool(system_config.get(key)), "source": system_config.source(key),
+                   "models_in_use": int(used.get(name, 0)), "last_test": tests.get(name)}
+            for name, key in AI_KEYS.items()}
+
+
 def _system_overview(db) -> dict:
     origin = setting(db, "frontend_origin").rstrip("/")
     used = dict(db.execute(select(AITool.provider, func.count(AITool.id)).where(AITool.is_enabled.is_(True))
@@ -1768,6 +1787,11 @@ def _system_overview(db) -> dict:
         "redirects": {channel: system_config.redirect_uri(channel) for channel in system_config.REDIRECT_PATHS},
         "derived_redirects": {channel: f"{origin}{path}" for channel, path in system_config.REDIRECT_PATHS.items()},
         "models_in_use": {name: int(used.get(name, 0)) for name in system_config.AI_PROVIDERS},
+        "ai_status": _ai_status(db, used),
+        "legacy_in_use": system_config.legacy_in_use(),
+        "environment": system_config.environment_report(),
+        "runtime_file": {"path": runtime_env.LOADED["path"], "values": len(runtime_env.LOADED["names"])},
+        "cache_seconds": system_config.CACHE_SECONDS,
         "master_key": {**master_key.status(), "encryption_available": secret_box.available()},
         "storage": {"root": str(storage.media_root(db)), "source": system_config.source("storage.root"),
                     "files": _stored_files(db), "disk": storage.disk_usage(db)},

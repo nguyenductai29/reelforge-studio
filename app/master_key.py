@@ -42,10 +42,29 @@ def _valid(value: str) -> bool:
     return True
 
 
+_cache: dict = {}
+
+
 def _read(path: Path) -> str | None:
+    """The file's content; re-read only when the file changes (every encryption and decryption asks)."""
     try:
-        return path.read_text(encoding="ascii").strip()
+        info = os.stat(path)
+        stamp = (str(path), info.st_mtime_ns, info.st_size)
+        if _cache.get("stamp") != stamp:
+            _cache.update(stamp=stamp, value=Path(path).read_text(encoding="ascii").strip())
+        return _cache["value"]
     except (OSError, UnicodeError):
+        _cache.clear()
+        return None
+
+
+def _mode(path: str) -> int | None:
+    """Permission bits on POSIX; None where they mean nothing (Windows development machines)."""
+    if os.name != "posix":
+        return None
+    try:
+        return stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
         return None
 
 
@@ -83,19 +102,21 @@ def status() -> dict:
     info = {"source": found["source"], "path": found["path"], "problem": found["problem"],
             "permissions_ok": None, "legacy_env_set": bool(os.environ.get(LEGACY_ENV, "").strip()),
             "legacy_env_matches": None}
-    if found["source"] == "file" and found["path"] and os.name == "posix":
-        try:
-            mode = stat.S_IMODE(os.stat(found["path"]).st_mode)
-            info["permissions_ok"] = mode & 0o077 == 0
-        except OSError:
-            info["permissions_ok"] = False
+    if found["source"] == "file" and found["path"] and found["key"]:
+        mode = _mode(found["path"])
+        # Readable or writable by anyone but the owner: chmod 600 is expected.
+        info["permissions_ok"] = None if mode is None else mode & 0o077 == 0
     if found["source"] == "file" and found["key"] and info["legacy_env_set"]:
         info["legacy_env_matches"] = os.environ.get(LEGACY_ENV, "").strip() == found["key"]
     return info
 
 
 def _write(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Create the file (never over an existing one) readable by its owner only; a new directory gets 700."""
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, mode=0o700)
+        if os.name == "posix":
+            os.chmod(path.parent, 0o700)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="ascii") as handle:
         handle.write(value + "\n")
@@ -125,12 +146,13 @@ def encrypted_data_exists() -> bool:
 
 
 def init(path: Path, *, out=print) -> int:
+    """Write the key file once. Never overwrites, never prints the key."""
     found = resolve()
     if found["source"] == "file" and found["key"]:
         out(f"A master key already exists at {found['path']}; nothing changed.")
         return 0
     if Path(path).exists():
-        out(f"{path} exists but holds no valid key; fix or remove it by hand. Nothing changed.")
+        out(f"{path} already exists but holds no valid key; it is never overwritten. Fix or move it by hand.")
         return 1
     legacy = os.environ.get(LEGACY_ENV, "").strip()
     if legacy and _valid(legacy):
@@ -154,17 +176,36 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"default: ${FILE_ENV}, else {PRODUCTION_FILE} on Linux, else {DEVELOPMENT_FILE}")
     commands.add_parser("status", help="where the key comes from (never prints the key)")
     args = parser.parse_args(argv)
-    if args.command == "status":
-        info = status()
-        for key, value in info.items():
-            print(f"{key}: {value}")
-        return 0 if info["problem"] is None else 1
     from app.runtime_env import load_runtime_env
 
     load_runtime_env()  # a legacy key may still live in the runtime file
+    if args.command == "status":
+        return print_status()
     path = args.path or Path(os.environ.get(FILE_ENV, "").strip() or
                              (PRODUCTION_FILE if sys.platform.startswith("linux") else DEVELOPMENT_FILE))
-    return init(path)
+    result = init(path)
+    print_status()
+    return result
+
+
+def print_status(out=print) -> int:
+    """Safe facts only; 0 when a usable key exists, 1 otherwise. Warnings do not fail."""
+    info = status()
+    for name in ("source", "path", "problem", "permissions_ok", "legacy_env_set", "legacy_env_matches"):
+        out(f"{name}: {info[name]}")
+    if info["problem"]:
+        out("error: no usable master key. Restore the key file from backup, or run "
+            "`python -m app.master_key init` on a new installation.")
+    if info["permissions_ok"] is False:
+        out(f"warning: {info['path']} is readable by other users; run chmod 600 on it.")
+    if info["source"] == "legacy_env":
+        out(f"warning: the key still comes from {LEGACY_ENV}; run `python -m app.master_key init` to move it "
+            "into a file.")
+    if info["legacy_env_matches"] is False:
+        out(f"warning: {LEGACY_ENV} differs from the key file; secrets encrypted with it cannot be read.")
+    if not info["problem"]:
+        out("reminder: keep a copy of the key file off this server, separate from the database backups.")
+    return 0 if info["problem"] is None else 1
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+# ReelForge web (Next.js). It proxies /api/* to the API and holds no secrets.
+[Unit]
+Description=ReelForge Studio Next.js Frontend
+After=network-online.target reelforge-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tai
+Group=tai
+WorkingDirectory=/home/tai/apps/reelforge-studio/frontend
+Environment=NODE_ENV=production
+Environment=PORT=3001
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

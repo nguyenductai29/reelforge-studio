@@ -75,9 +75,14 @@ def key_fingerprint(value: str) -> str:
 
 
 def provider_key_summary() -> dict[str, str | None]:
-    """Each provider key variable: its fingerprint when set, else ``None``."""
-    return {name: key_fingerprint(os.environ[name]) if os.environ.get(name, "").strip() else None
-            for name in PROVIDER_KEYS}
+    """Each provider key in use (Admin-managed, else the environment): its fingerprint when set, else ``None``."""
+    from app import system_config
+
+    summary = {}
+    for name in PROVIDER_KEYS:
+        value = system_config.env(name)
+        summary[name] = key_fingerprint(value) if value.strip() else None
+    return summary
 
 
 def start_process(name: str) -> None:
@@ -99,6 +104,10 @@ def start_process(name: str) -> None:
               provider_keys=provider_key_summary())
 
 
+# The legacy file this process loaded, if any (readiness reports it; a fresh installation has none).
+LOADED: dict = {"path": None, "names": []}
+
+
 def load_runtime_env(path: Path | None = None) -> tuple[Path | None, list[str]]:
     """Load the runtime file into ``os.environ`` without overriding set variables.
 
@@ -113,4 +122,5 @@ def load_runtime_env(path: Path | None = None) -> tuple[Path | None, list[str]]:
         if value and not os.environ.get(name):
             os.environ[name] = value
             loaded.append(name)
+    LOADED.update(path=str(path), names=sorted(loaded))
     return path, loaded

@@ -112,7 +112,7 @@ export default function BillingPage() {
     setBusy(order.id);
     try {
       const result = await api<{ transfer: BankTransfer }>(`billing/orders/${encodeURIComponent(order.id)}/transfer`);
-      setTransfer({ orderId: order.id, details: result.transfer, reported: Boolean(order.transfer_reported_at) });
+      setTransfer({ orderId: order.id, details: result.transfer, reported: order.status === "awaiting_confirmation" });
     } catch (error) {
       showError(error);
     } finally {
@@ -173,9 +173,7 @@ export default function BillingPage() {
     { key: "amount", header: t.billing.history.amount, className: "whitespace-nowrap text-right tabular-nums",
       cell: (order) => formatMoney(order.amount_vnd) },
     { key: "status", header: t.billing.history.status,
-      cell: (order) => order.status === "pending" && order.transfer_reported_at
-        ? <StatusBadge status="needs_attention" label={t.billing.transfer.awaiting} />
-        : <StatusBadge status={order.status} label={orderStatus(order.status)} /> },
+      cell: (order) => <StatusBadge status={order.status} label={orderStatus(order.status)} /> },
     { key: "created", header: t.billing.history.created, className: "whitespace-nowrap text-muted-foreground",
       cell: (order) => formatDateTime(order.created_at) },
     { key: "paid", header: t.billing.history.paid, className: "whitespace-nowrap text-muted-foreground",
@@ -184,7 +182,7 @@ export default function BillingPage() {
       cell: (order) => order.reference },
     { key: "actions", header: <span className="sr-only">{t.billing.check}</span>, className: "text-right",
       cell: (order) =>
-        order.provider === "bank_qr" ? (order.status === "pending" ? (
+        order.provider === "bank_qr" ? (["pending", "awaiting_confirmation"].includes(order.status) ? (
           <Button variant="outline" size="sm" className="h-7" disabled={Boolean(busy)} onClick={() => void showTransfer(order)}>
             {busy === order.id && <Loader2 className="size-3.5 animate-spin" />}
             {t.billing.transfer.show}
@@ -208,6 +206,12 @@ export default function BillingPage() {
           </Button>
         }
       />
+
+      {data.orders.some((order) => order.status === "awaiting_confirmation") && (
+        <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm" role="status">
+          {t.billing.transfer.waitingBanner}
+        </p>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label={t.billing.stats.plan} value={planName} hint={statusLabel} />

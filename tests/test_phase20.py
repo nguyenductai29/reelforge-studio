@@ -411,7 +411,8 @@ assert other.post(f"/api/billing/orders/{body['order_id']}/transferred").status_
 
 # The buyer reports the transfer; admins are told; reporting twice changes nothing.
 reported = client.post(f"/api/billing/orders/{body['order_id']}/transferred")
-assert reported.status_code == 200 and reported.json()["transfer_reported_at"] and reported.json()["status"] == "pending"
+assert reported.status_code == 200 and reported.json()["transfer_reported_at"]
+assert reported.json()["status"] == "awaiting_confirmation"  # still unpaid: an admin has to confirm
 assert client.post(f"/api/billing/orders/{body['order_id']}/transferred").status_code == 200
 with Session() as db:
     kinds = [row.type for row in db.scalars(select(Notification).where(Notification.type == "payment.transfer_reported"))]
@@ -421,7 +422,7 @@ awaiting = client.get("/api/admin/payments", params={"status": "awaiting_confirm
 assert [item["id"] for item in awaiting["items"]] == [body["order_id"]] and awaiting["items"][0]["transfer_content"]
 assert client.get("/api/admin").json()["counts"]["transfers_to_confirm"] == 1
 # Check (refresh) asks nobody and changes nothing for a manual order.
-assert client.post(f"/api/billing/orders/{body['order_id']}/refresh").json()["status"] == "pending"
+assert client.post(f"/api/billing/orders/{body['order_id']}/refresh").json()["status"] == "awaiting_confirmation"
 
 # Only a system admin confirms, for the exact amount, once.
 assert other.post(f"/api/admin/payments/{body['order_id']}/confirm", json={"amount_vnd": 30000}).status_code == 403
@@ -442,8 +443,9 @@ assert client.post(f"/api/admin/payments/{body['order_id']}/reject", json={}).st
 theirs = other.post("/api/billing/checkout", json={"plan_code": "standard", "method": "vietqr"}).json()
 other.post(f"/api/billing/orders/{theirs['order_id']}/transferred")
 rejected = client.post(f"/api/admin/payments/{theirs['order_id']}/reject", json={"note": "Không thấy giao dịch"})
-assert rejected.status_code == 200 and rejected.json()["status"] == "failed"
-assert "payment.failed" in [n["type"] for n in other.get("/api/notifications").json()["items"]]
+assert rejected.status_code == 200 and rejected.json()["status"] == "rejected"
+told = [n for n in other.get("/api/notifications").json()["items"] if n["type"] == "payment.rejected"]
+assert told and told[0]["params"]["reason"] == "Không thấy giao dịch"
 assert client.post(f"/api/admin/payments/{theirs['order_id']}/confirm", json={"amount_vnd": 30000}).json()["status"] == "paid"
 assert credits(other_ws) == [(5, f"payment:{theirs['order_id']}")]
 # Other providers' orders are never confirmed by hand.

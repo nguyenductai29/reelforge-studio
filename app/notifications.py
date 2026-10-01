@@ -31,7 +31,7 @@ from app import system_config
 TYPES = (
     "run.completed", "run.failed", "run.needs_attention", "run.awaiting_review",
     "publish.scheduled", "publish.succeeded", "publish.failed", "publish.needs_attention",
-    "payment.succeeded", "payment.failed", "payment.unapplied", "payment.transfer_reported",
+    "payment.succeeded", "payment.failed", "payment.unapplied", "payment.transfer_reported", "payment.rejected",
     "credits.low", "credits.adjusted",
     "storage.warning", "storage.critical", "storage.full",
     "support.new", "support.reply", "support.status",
@@ -215,6 +215,16 @@ def transfer_reported(db, order, content: str) -> None:
                   link="/admin?tab=payments&review=1",
                   params={"plan": order.plan_code, "amount": order.amount_vnd, "reference": content,
                           "order_id": order.id}, dedupe=f"payment:{order.id}:transfer_reported")
+
+
+def payment_rejected(db, order, reason: str | None) -> None:
+    """An admin did not find a manual transfer; the owners learn why (the admin's note, if any)."""
+    params = {"plan": order.plan_code, "amount": order.amount_vnd, "reference": order.provider_reference or ""}
+    if reason:
+        params["reason"] = reason[:200]
+    notify_workspace(db, order.workspace_id, "payment.rejected", "Bank transfer not confirmed",
+                     reason or "The transfer was not found.", owners_only=True, link="/billing",
+                     params=params, dedupe=f"payment:{order.id}:rejected")
 
 
 def low_credit_threshold() -> int:
