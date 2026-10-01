@@ -14,7 +14,6 @@ import {
   OptionChips,
   SectionLink,
   SectionTitle,
-  SoonBadge,
   StatusBadge,
 } from "@/components/reelforge/primitives";
 import { ProjectCard } from "@/components/reelforge/project-card";
@@ -28,12 +27,13 @@ import { assetKind, projectStatus } from "@/lib/studio";
 import type { Project } from "@/lib/types";
 import { previewKinds, type TemplateId } from "@/lib/workflow";
 
-const quickCreate: { key: "youtube" | "tiktok" | "recap" | "review" | "repurpose"; icon: typeof Video; template: TemplateId; soonHref?: string }[] = [
-  { key: "youtube", icon: Video, template: "youtube-video", soonHref: "/ai/video" },
+// Each one creates a workflow from a template the backend runs.
+const quickCreate: { key: "youtube" | "tiktok" | "recap" | "review" | "repurpose"; icon: typeof Video; template: TemplateId }[] = [
+  { key: "youtube", icon: Video, template: "youtube-video" },
   { key: "tiktok", icon: Share2, template: "tiktok-video" },
-  { key: "recap", icon: Film, template: "movie-recap", soonHref: "/ai/movie-recap" },
-  { key: "review", icon: PenLine, template: "movie-review", soonHref: "/ai/movie-recap" },
-  { key: "repurpose", icon: Recycle, template: "repurpose", soonHref: "/ai/repurpose" },
+  { key: "recap", icon: Film, template: "movie-recap" },
+  { key: "review", icon: PenLine, template: "movie-review" },
+  { key: "repurpose", icon: Recycle, template: "repurpose" },
 ];
 
 function greeting(t: ReturnType<typeof useI18n>["t"]) {
@@ -158,16 +158,11 @@ export default function HomePage() {
                   )}
                 </span>
                 <span className="text-sm font-medium leading-snug">{t.home.quick[item.key]}</span>
-                {item.soonHref && <SoonBadge className="self-start" />}
               </>
             );
             const className =
               "panel group flex flex-col items-start gap-3 p-4 text-left transition-colors hover:border-border-strong";
-            return item.soonHref ? (
-              <Link key={item.key} href={item.soonHref} className={className}>
-                {body}
-              </Link>
-            ) : (
+            return (
               <button
                 key={item.key}
                 type="button"

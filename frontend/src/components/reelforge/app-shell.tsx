@@ -21,7 +21,6 @@ import {
   PanelLeftOpen,
   Rss,
   Search,
-  Send,
   Settings,
   Share2,
   ShieldCheck,
@@ -36,7 +35,6 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -57,7 +55,7 @@ import { LOCALES, LOCALE_NAMES, isLocale } from "@/lib/i18n/config";
 import type { Dictionary } from "@/lib/i18n/vi";
 import { useBilling, useDashboard, useRuns, useUsage } from "@/lib/queries";
 import { assetKind, isActiveRun } from "@/lib/studio";
-import { SoonBadge, StatusBadge } from "./primitives";
+import { StatusBadge } from "./primitives";
 
 type NavKey = Exclude<keyof Dictionary["nav"], "groups">;
 type NavItem = { key: NavKey; href: string; icon: LucideIcon };
@@ -342,56 +340,6 @@ function SearchBox() {
   );
 }
 
-function AssistantPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
-  const { t } = useI18n();
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
-        <SheetTitle className="sr-only">{t.assistant.title}</SheetTitle>
-        <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3 pr-12">
-          <div className="flex items-center gap-2">
-            <Sparkles className="size-4 text-primary" />
-            <p className="text-sm font-medium">{t.assistant.title}</p>
-          </div>
-          <span className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted-foreground">{t.assistant.studioContext}</span>
-        </div>
-        <div className="scrollbar-thin flex-1 space-y-3 overflow-y-auto p-4">
-          <div className="max-w-[85%] rounded-xl border border-border bg-surface px-3 py-2 text-sm">{t.assistant.intro}</div>
-          <div className="rounded-xl border border-primary/25 bg-[color-mix(in_oklab,var(--primary)_7%,transparent)] p-3 text-xs text-muted-foreground">
-            <SoonBadge className="mb-2" />
-            <p>{t.assistant.soon}</p>
-          </div>
-        </div>
-        <div className="border-t border-border p-3">
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {t.assistant.suggestions.map((s) => (
-              <button
-                key={s}
-                type="button"
-                disabled
-                className="rounded-md border border-border bg-surface-2 px-2 py-1 text-[11px] text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-end gap-2">
-            <Textarea
-              disabled
-              rows={2}
-              placeholder={t.assistant.placeholder}
-              className="min-h-[56px] resize-none bg-surface"
-            />
-            <Button size="icon" disabled aria-label={t.assistant.title}>
-              <Send className="size-4" />
-            </Button>
-          </div>
-        </div>
-      </SheetContent>
-    </Sheet>
-  );
-}
-
 function AccountMenu() {
   const { t, locale, setLocale } = useI18n();
   const { data } = useDashboard();
@@ -477,7 +425,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const fullBleed = pathname.startsWith("/workflows/");
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
-  const [assistant, setAssistant] = useState(false);
 
   return (
     <div className="min-h-screen bg-background">
@@ -544,10 +491,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           </Button>
           <SearchBox />
           <div className="ml-auto flex items-center gap-1.5">
-            <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => setAssistant(true)}>
-              <Sparkles className="size-4 text-primary" />
-              {t.shell.askAi}
-            </Button>
             <GenerationCenter />
             <AccountMenu />
           </div>
@@ -559,17 +502,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">{children}</main>
         )}
       </div>
-
-      <Button
-        size="icon"
-        className="fixed bottom-5 right-5 z-20 size-12 rounded-full shadow-[var(--shadow-glow)] sm:hidden"
-        onClick={() => setAssistant(true)}
-        aria-label={t.shell.askAi}
-      >
-        <Sparkles className="size-5" />
-      </Button>
-
-      <AssistantPanel open={assistant} onOpenChange={setAssistant} />
     </div>
   );
 }

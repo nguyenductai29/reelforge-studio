@@ -5,30 +5,35 @@ import json
 import math
 import os
 import re
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import parse_qsl
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from pydantic import AliasChoices, BaseModel, Field
-from sqlalchemy import case, func, inspect, select, update
+from sqlalchemy import case, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db import ROOT, config, engine, Session
 from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
+from app.models import UserProfile
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
-from app import (auth_security, billing, heartbeat, jobs, media_maintenance, payments, publications, reconciliation,
-                 run_summary, sources, usage)
+from app import (auth_security, billing, heartbeat, jobs, media_maintenance, payment_providers, payments, publications,
+                 reconciliation, run_summary, sources, usage)
+from app.payment_providers import onepay
 from app.models import CreditReconciliation
 # Re-exported: existing callers import video_provider_config_issue from app.main.
 from app.providers.catalog import video_provider_config_issue  # noqa: F401
 from app.publishers import channel_oauth, google_oauth
 from app.publishers.youtube import UPLOAD_SCOPE as YOUTUBE_UPLOAD_SCOPE
 from app.runtime_env import start_process
+from app.logs import log_event
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
                           parse_graph)
 from app.workflow.config import TOOL, ConfigError, check_assets, check_tools
@@ -50,6 +55,12 @@ WORKSPACE_DEFAULTS = {
     "default_language": "vi",
     "video_orientation": "vertical",
     "approval_required": True,
+    # Used by text steps whose own setting is left empty (app/workflow/nodes/text.py).
+    "default_platform": "generic",
+    "default_tone": "neutral",
+    "default_duration": None,
+    # Prefills the time of a scheduled post ("HH:MM", the viewer's time zone).
+    "default_publish_time": None,
 }
 
 
@@ -58,7 +69,11 @@ def setting(db, key):
 
 
 def workspace_settings(db, workspace_id):
-    return {key: json.loads(db.get(WorkspaceSetting, (workspace_id, key)).value) for key in WORKSPACE_DEFAULTS}
+    values = {}
+    for key, default in WORKSPACE_DEFAULTS.items():
+        row = db.get(WorkspaceSetting, (workspace_id, key))
+        values[key] = json.loads(row.value) if row else default
+    return values
 
 
 def media_root(db):
@@ -185,6 +200,8 @@ class PlanInput(BaseModel):
 
 class CheckoutInput(BaseModel):
     plan_code: str = Field(pattern="^(standard|pro)$")
+    # vietqr: payOS bank transfer (the default, as before); card: OnePAY.
+    method: Literal["vietqr", "card"] = "vietqr"
 
 
 class ReconciliationInput(BaseModel):
@@ -354,6 +371,15 @@ class WorkspaceSettingsInput(BaseModel):
     default_language: str = Field(pattern="^(vi|en|ja)$")
     video_orientation: str = Field(pattern="^(vertical|horizontal|square)$")
     approval_required: bool
+    default_platform: Literal["generic", "youtube", "youtube_shorts", "tiktok", "facebook"] = "generic"
+    default_tone: Literal["neutral", "casual", "professional", "cinematic", "storytelling", "documentary", "dramatic",
+                          "funny"] = "neutral"
+    default_duration: int | None = Field(default=None, ge=5, le=3600)
+    default_publish_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class ProfileInput(BaseModel):
+    display_name: str | None = Field(default=None, max_length=80)
 
 
 class SystemSettingsInput(BaseModel):
@@ -574,7 +600,9 @@ def get_settings(request: Request):
         system = None
         if user.is_admin:
             system = {key: setting(db, key) for key in SYSTEM_DEFAULTS}
-        return {"workspace": workspace_settings(db, ws.id), "system": system}
+        profile = db.get(UserProfile, user.id)
+        return {"workspace": workspace_settings(db, ws.id), "system": system,
+                "profile": {"display_name": profile.display_name if profile else None}}
 
 
 @app.put("/api/settings/workspace")
@@ -586,8 +614,27 @@ def update_workspace_settings(data: WorkspaceSettingsInput, request: Request):
         if membership.role != "owner":
             raise HTTPException(403, "Workspace owner required")
         for key, value in data.model_dump().items():
-            db.get(WorkspaceSetting, (ws.id, key)).value = json.dumps(value)
+            row = db.get(WorkspaceSetting, (ws.id, key))
+            if row is None:
+                db.add(WorkspaceSetting(workspace_id=ws.id, key=key, value=json.dumps(value)))
+            else:
+                row.value = json.dumps(value)
         return {"workspace": data.model_dump()}
+
+
+@app.put("/api/settings/profile")
+def update_profile(data: ProfileInput, request: Request):
+    """The signed-in user's display name; empty clears it."""
+    same_origin(request)
+    with Session.begin() as db:
+        user = authorize(request, db)
+        name = " ".join((data.display_name or "").split()) or None
+        profile = db.get(UserProfile, user.id)
+        if profile is None:
+            profile = UserProfile(user_id=user.id)
+            db.add(profile)
+        profile.display_name, profile.updated_at = name, datetime.now(timezone.utc)
+        return {"display_name": name}
 
 
 # Friendly names of the tasks a workspace can choose a default model for, and the AI tool task each maps to.
@@ -676,9 +723,15 @@ def plan_data(plan):
 
 
 def order_data(order):
-    return {"id": order.id, "plan_code": order.plan_code, "provider": order.provider,
+    """A payment order without anything secret: no checkout token, no provider payload."""
+    method = next((m for m, name in payment_providers.METHODS.items() if name == order.provider), None)
+    return {"id": order.id, "plan_code": order.plan_code, "provider": order.provider, "method": method,
+            "reference": str(order.order_code), "provider_reference": order.provider_reference,
             "amount_vnd": order.amount_vnd, "status": order.status,
             "created_at": order.created_at.isoformat(), "paid_at": order.paid_at.isoformat() if order.paid_at else None}
+
+
+ORDER_PAGE = Query(default=10, ge=1, le=50)
 
 
 @app.get("/api/billing")
@@ -686,18 +739,34 @@ def billing_overview(request: Request):
     with Session() as db:
         ws = workspace_for(request, db)
         subscription = db.get(Subscription, ws.id)
-        orders = db.scalars(select(PaymentOrder).where(PaymentOrder.workspace_id == ws.id).order_by(PaymentOrder.created_at.desc()).limit(30)).all()
+        orders = db.scalars(select(PaymentOrder).where(PaymentOrder.workspace_id == ws.id).order_by(PaymentOrder.created_at.desc()).limit(10)).all()
+        total = db.scalar(select(func.count()).select_from(PaymentOrder).where(PaymentOrder.workspace_id == ws.id))
         return {"plans": [plan_data(p) for p in db.scalars(select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.code))],
                 "subscription": {"plan_code": subscription.plan_code, "status": effective_status(subscription),
                                  "ends_at": subscription.ends_at.isoformat() if subscription.ends_at else None},
-                "orders": [order_data(o) for o in orders], "payos_ready": billing.configured()}
+                "orders": [order_data(o) for o in orders], "orders_total": total,
+                # Only the payment methods this server can take; payos_ready is kept for older clients.
+                "methods": payment_providers.available_methods(), "payos_ready": billing.configured()}
+
+
+@app.get("/api/billing/orders")
+def billing_orders(request: Request, limit: int = ORDER_PAGE, offset: int = Query(default=0, ge=0)):
+    """The workspace's payment history, newest first, one page at a time."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        where = PaymentOrder.workspace_id == ws.id
+        rows = db.scalars(select(PaymentOrder).where(where).order_by(PaymentOrder.created_at.desc(), PaymentOrder.id)
+                          .limit(limit).offset(offset)).all()
+        total = db.scalar(select(func.count()).select_from(PaymentOrder).where(where))
+        return {"items": [order_data(o) for o in rows], "total": total, "limit": limit, "offset": offset}
 
 
 @app.post("/api/billing/checkout", status_code=201)
 def billing_checkout(data: CheckoutInput, request: Request):
     same_origin(request)
-    if not billing.configured():
-        raise HTTPException(503, "payOS is not configured")
+    provider = payment_providers.for_method(data.method)
+    if not provider.configured():
+        raise HTTPException(503, "payOS is not configured" if provider.name == "payos" else "Card payment is not configured")
     with Session.begin() as db:
         ws = workspace_for(request, db)
         if db.get(Membership, (authorize(request, db).id, ws.id)).role != "owner":
@@ -712,14 +781,15 @@ def billing_checkout(data: CheckoutInput, request: Request):
             raise HTTPException(400, "Plan price is not configured")
         origin = setting(db, "frontend_origin")
         order = PaymentOrder(id=ident(), workspace_id=ws.id, plan_code=plan.code,
-                             provider="payos", order_code=secrets.randbelow(8_000_000_000_000) + 1_000_000_000_000,
+                             provider=provider.name, order_code=secrets.randbelow(8_000_000_000_000) + 1_000_000_000_000,
                              amount_vnd=plan.price_vnd, credits_award=plan.monthly_credits,
                              status="pending", created_at=datetime.now(timezone.utc))
         db.add(order)
         db.flush()
         order_id, code, amount, plan_code = order.id, order.order_code, order.amount_vnd, plan.code
     try:
-        link = billing.create_link(code, amount, plan_code, origin)
+        link = provider.checkout(order_code=code, amount_vnd=amount, plan_code=plan_code, origin=origin.rstrip("/"),
+                                 client_ip=request.client.host if request.client else "")
     except Exception as exc:
         with Session.begin() as db:
             row = db.get(PaymentOrder, order_id)
@@ -748,40 +818,117 @@ async def payos_webhook(request: Request):
         raise HTTPException(400, "Payment currency mismatch")
     try:
         with Session.begin() as db:
-            payments.apply_paid(db, verified.order_code, int(verified.amount), str(getattr(verified, "reference", "")))
+            payments.apply_paid(db, verified.order_code, int(verified.amount), str(getattr(verified, "reference", "")),
+                                provider="payos")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
 
 
-@app.post("/api/billing/orders/{order_id}/refresh")
-def refresh_payment_order(order_id: str, request: Request):
-    same_origin(request)
-    if not billing.configured():
-        raise HTTPException(503, "payOS is not configured")
+def refresh_order(order_id: str, workspace_id: str | None = None):
+    """Ask the order's own provider, server to server, and settle what it confirms (idempotent)."""
     with Session() as db:
-        ws = workspace_for(request, db)
-        order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order_id, PaymentOrder.workspace_id == ws.id))
+        query = select(PaymentOrder).where(PaymentOrder.id == order_id)
+        if workspace_id is not None:
+            query = query.where(PaymentOrder.workspace_id == workspace_id)
+        order = db.scalar(query)
         if not order:
             raise HTTPException(404, "Order not found")
         if order.status in ("paid", "paid_unapplied"):
             return order_data(order)
-        code, amount = order.order_code, order.amount_vnd
+        provider = payment_providers.provider(order.provider)
+        if provider is None or not provider.configured():
+            raise HTTPException(503, "payOS is not configured" if order.provider == "payos" else
+                                "This payment provider is not configured")
+        code, amount, name = order.order_code, order.amount_vnd, order.provider
     try:
-        provider_order = billing.get_payment(code)
+        evidence = provider.lookup(code, amount)
+    except payment_providers.ProviderMismatch as exc:
+        raise HTTPException(502, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(502, "Unable to check payment with payOS") from exc
-    if int(provider_order.order_code) != code or int(provider_order.amount) != amount:
-        raise HTTPException(502, "Provider order mismatch")
+        raise HTTPException(502, "Unable to check payment with payOS" if name == "payos" else
+                            "Unable to check payment with the provider") from exc
     with Session.begin() as db:
-        row = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order_id, PaymentOrder.workspace_id == ws.id).with_for_update())
-        if provider_order.status == "PAID":
-            if int(provider_order.amount_paid) < amount:
-                raise HTTPException(502, "Payment amount mismatch")
-            payments.apply_paid(db, code, amount, str(provider_order.id))
-        elif provider_order.status in ("CANCELLED", "EXPIRED") and row.status == "pending":
-            row.status = provider_order.status.lower()
-        return order_data(row)
+        try:
+            payments.settle(db, name, evidence)
+        except ValueError as exc:
+            raise HTTPException(502, "Payment amount mismatch") from exc
+        return order_data(db.get(PaymentOrder, order_id))
+
+
+@app.post("/api/billing/orders/{order_id}/refresh")
+def refresh_payment_order(order_id: str, request: Request):
+    same_origin(request)
+    with Session() as db:
+        ws = workspace_for(request, db)
+    return refresh_order(order_id, ws.id)
+
+
+logger = logging.getLogger("app.main")
+
+
+@app.get("/api/billing/onepay/return")
+def onepay_return(request: Request):
+    """Where OnePAY sends the buyer back. The signed result is read, but a payment is applied only after
+    QueryDR confirms it server to server (or when the signed IPN arrives); a browser visit alone never pays."""
+    card = payment_providers.provider("onepay")
+    params = dict(request.query_params)
+    if not card.configured():
+        return RedirectResponse("/billing?payment=failed", status_code=303)
+    try:
+        evidence = card.evidence(params)
+    except (onepay.OnePayError, payment_providers.ProviderMismatch) as exc:
+        log_event(logger, "payment_return_rejected", level=logging.WARNING, provider="onepay",
+                  reason=getattr(exc, "code", "mismatch"))
+        return RedirectResponse("/billing?payment=invalid", status_code=303)
+    outcome = "returned"
+    if evidence.status in ("failed", "cancelled"):
+        with Session.begin() as db:
+            payments.settle(db, "onepay", evidence)
+        outcome = evidence.status
+    elif evidence.status == "paid" and card.can_confirm():
+        with Session() as db:
+            order = db.scalar(select(PaymentOrder).where(PaymentOrder.order_code == evidence.order_code))
+            amount = order.amount_vnd if order else None
+        try:
+            confirmed = card.lookup(evidence.order_code, amount or 0) if amount else None
+            if confirmed is not None:
+                with Session.begin() as db:
+                    payments.settle(db, "onepay", confirmed)
+        except (onepay.OnePayError, payment_providers.ProviderMismatch, ValueError) as exc:
+            # Left pending: the IPN or a later status check settles it.
+            log_event(logger, "payment_confirmation_failed", level=logging.WARNING, provider="onepay",
+                      reason=getattr(exc, "code", type(exc).__name__))
+    return RedirectResponse(f"/billing?payment={outcome}", status_code=303)
+
+
+@app.api_route("/api/webhooks/onepay", methods=["GET", "POST"])
+async def onepay_ipn(request: Request):
+    """OnePAY's server-to-server IPN. Settles only a correctly signed result of a OnePAY order, for its exact amount."""
+    fail = lambda reason: PlainTextResponse(f"responsecode=0&desc={reason}")  # noqa: E731
+    params = dict(request.query_params)
+    if request.method == "POST":
+        body = await request.body()
+        if len(body) > 16384:
+            return fail("confirm-fail")
+        params.update(dict(parse_qsl(body.decode("utf-8", "replace"), keep_blank_values=True)))
+    card = payment_providers.provider("onepay")
+    if not card.configured():
+        return fail("confirm-fail")
+    try:
+        evidence = card.evidence(params)
+    except (onepay.OnePayError, payment_providers.ProviderMismatch):
+        log_event(logger, "payment_callback_rejected", level=logging.WARNING, provider="onepay", reason="signature")
+        return fail("confirm-fail")
+    try:
+        with Session.begin() as db:
+            status = payments.settle(db, "onepay", evidence)
+    except ValueError:
+        log_event(logger, "payment_callback_rejected", level=logging.WARNING, provider="onepay", reason="amount")
+        return fail("amount-mismatch")
+    if status == "unknown" or (evidence.status == "paid" and status not in ("paid", "paid_unapplied")):
+        return fail("order-not-found")
+    return PlainTextResponse("responsecode=1&desc=confirm-success")
 
 
 @app.get("/api/usage")
@@ -854,21 +1001,231 @@ def refund_reconciliation(step_id: str, data: ReconciliationInput, request: Requ
     return resolve_credit_reconciliation(data, request, "refunded", step_id=step_id)
 
 
+ADMIN_LIMIT = Query(default=20, ge=1, le=100)
+ADMIN_OFFSET = Query(default=0, ge=0)
+
+
+def count_of(db, query) -> int:
+    return db.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
+
+
 @app.get("/api/admin")
 def admin_overview(request: Request):
+    """Counts for the admin header, from COUNT queries; the collections are paginated endpoints of their own."""
     with Session() as db:
         admin_for(request, db)
-        users = db.scalars(select(User).order_by(User.email)).all()
-        workspaces = db.scalars(select(Workspace).order_by(Workspace.created_at.desc())).all()
-        plans = db.scalars(select(Plan).order_by(Plan.code)).all()
-        return {"plans": [plan_data(p) for p in plans],
-                "users": [{"id": u.id, "email": u.email, "is_active": u.is_active, "is_admin": u.is_admin} for u in users],
-                "workspaces": [{"id": w.id, "name": w.name, "owner_id": w.owner_id,
-                                "plan_code": s.plan_code if s else None,
-                                "status": effective_status(s) if s else "unavailable",
-                                "credits": db.get(CreditAccount, w.id).balance if db.get(CreditAccount, w.id) else 0,
-                                "ends_at": s.ends_at.isoformat() if s and s.ends_at else None}
-                               for w in workspaces for s in [db.get(Subscription, w.id)]]}
+        users = select(User.id)
+        stuck = jobs.stuck_jobs(db, limit=100)
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        return {
+            "counts": {
+                "users": count_of(db, users),
+                "active_users": count_of(db, users.where(User.is_active.is_(True))),
+                "admins": count_of(db, users.where(User.is_admin.is_(True), User.is_active.is_(True))),
+                "workspaces": count_of(db, select(Workspace.id)),
+                "plans": count_of(db, select(Plan.code)),
+                "pending_reconciliation": reconciliation.list_items(db, status="pending", limit=1, offset=0)["total"],
+                "failed_jobs_24h": count_of(db, select(WorkflowJob.id).where(WorkflowJob.state == "failed",
+                                                                             WorkflowJob.updated_at >= since)),
+                "stuck_jobs": len(stuck["expired_leases"]) + len(stuck["overdue"]),
+                "pending_payments": count_of(db, select(PaymentOrder.id).where(PaymentOrder.status == "pending")),
+            },
+            "plans": [plan_data(p) for p in db.scalars(select(Plan).order_by(Plan.code))],
+            "payment_providers": payment_providers.readiness(),
+        }
+
+
+def _iso_or_none(value):
+    return _iso(value) if value else None
+
+
+def _first_studios(db, user_ids):
+    """Each user's first studio (by creation) with its subscription, for one page of users."""
+    found = {}
+    if not user_ids:
+        return found
+    rows = db.execute(select(Membership.user_id, Membership.role, Workspace, Subscription)
+                      .join(Workspace, Workspace.id == Membership.workspace_id)
+                      .outerjoin(Subscription, Subscription.workspace_id == Workspace.id)
+                      .where(Membership.user_id.in_(user_ids)).order_by(Workspace.created_at, Workspace.id))
+    for user_id, role, ws, subscription in rows:
+        found.setdefault(user_id, (role, ws, subscription))
+    return found
+
+
+def admin_user(user, created_at, studio, display_name=None):
+    role, ws, subscription = studio if studio else (None, None, None)
+    return {"id": user.id, "email": user.email, "display_name": display_name, "is_admin": user.is_admin,
+            "is_active": user.is_active, "created_at": _iso_or_none(created_at),
+            "workspace": {"id": ws.id, "name": ws.name, "role": role} if ws else None,
+            "plan_code": subscription.plan_code if subscription else None,
+            "subscription_status": effective_status(subscription) if subscription else None}
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request, q: str | None = Query(default=None, max_length=255),
+                role: Literal["admin", "member"] | None = None, status: Literal["active", "locked"] | None = None,
+                limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
+    """Users one page at a time; ``q`` searches email, case-insensitively, on the server."""
+    with Session() as db:
+        admin_for(request, db)
+        joined = (select(Membership.user_id, func.min(Workspace.created_at).label("created_at"))
+                  .join(Workspace, Workspace.id == Membership.workspace_id).group_by(Membership.user_id).subquery())
+        query = select(User, joined.c.created_at, UserProfile.display_name) \
+            .outerjoin(joined, joined.c.user_id == User.id).outerjoin(UserProfile, UserProfile.user_id == User.id)
+        if q and q.strip():
+            query = query.where(func.lower(User.email).like(like_pattern(q), escape="\\"))
+        if role:
+            query = query.where(User.is_admin.is_(role == "admin"))
+        if status:
+            query = query.where(User.is_active.is_(status == "active"))
+        total = count_of(db, query)
+        rows = db.execute(query.order_by(joined.c.created_at.desc().nulls_last(), User.email)
+                          .limit(limit).offset(offset)).all()
+        studios = _first_studios(db, [user.id for user, _, _ in rows])
+        return {"items": [admin_user(user, created, studios.get(user.id), name) for user, created, name in rows],
+                "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/admin/users/{user_id}")
+def admin_user_detail(user_id: str, request: Request):
+    with Session() as db:
+        admin_for(request, db)
+        user = db.get(User, user_id)
+        if not user:
+            raise HTTPException(404, "User not found")
+        memberships = db.execute(select(Membership.role, Workspace, Subscription, CreditAccount.balance)
+                                 .join(Workspace, Workspace.id == Membership.workspace_id)
+                                 .outerjoin(Subscription, Subscription.workspace_id == Workspace.id)
+                                 .outerjoin(CreditAccount, CreditAccount.workspace_id == Workspace.id)
+                                 .where(Membership.user_id == user_id).order_by(Workspace.created_at)).all()
+        created = min((ws.created_at for _, ws, _, _ in memberships if ws.created_at), default=None)
+        profile = db.get(UserProfile, user_id)
+        sessions = count_of(db, select(LoginSession.token_hash).where(LoginSession.user_id == user_id,
+                                                                     LoginSession.expires_at > datetime.now(timezone.utc)))
+        first = (memberships[0][0], memberships[0][1], memberships[0][2]) if memberships else None
+        return {**admin_user(user, created, first, profile.display_name if profile else None),
+                "active_sessions": sessions,
+                "workspaces": [{"id": ws.id, "name": ws.name, "role": role,
+                                "plan_code": sub.plan_code if sub else None,
+                                "status": effective_status(sub) if sub else "unavailable", "credits": balance or 0}
+                               for role, ws, sub, balance in memberships]}
+
+
+def admin_workspace(ws, owner_email, subscription, balance):
+    return {"id": ws.id, "name": ws.name, "owner_id": ws.owner_id, "owner_email": owner_email,
+            "plan_code": subscription.plan_code if subscription else None,
+            "status": effective_status(subscription) if subscription else "unavailable",
+            "ends_at": _iso_or_none(subscription.ends_at) if subscription else None,
+            "credits": balance or 0, "created_at": _iso_or_none(ws.created_at)}
+
+
+@app.get("/api/admin/workspaces")
+def admin_workspaces(request: Request, q: str | None = Query(default=None, max_length=255), plan: str | None = None,
+                     status: Literal["active", "expired", "paused", "canceled"] | None = None,
+                     limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
+    """Studios one page at a time; ``q`` searches the studio name and the owner's email on the server."""
+    with Session() as db:
+        admin_for(request, db)
+        now = datetime.now(timezone.utc)
+        query = (select(Workspace, User.email, Subscription, CreditAccount.balance)
+                 .join(User, User.id == Workspace.owner_id)
+                 .outerjoin(Subscription, Subscription.workspace_id == Workspace.id)
+                 .outerjoin(CreditAccount, CreditAccount.workspace_id == Workspace.id))
+        if q and q.strip():
+            pattern = like_pattern(q)
+            query = query.where(or_(func.lower(Workspace.name).like(pattern, escape="\\"),
+                                    func.lower(User.email).like(pattern, escape="\\")))
+        if plan:
+            query = query.where(Subscription.plan_code == plan)
+        if status == "active":
+            query = query.where(Subscription.status == "active", or_(Subscription.ends_at.is_(None), Subscription.ends_at > now))
+        elif status == "expired":
+            query = query.where(Subscription.status == "active", Subscription.ends_at <= now)
+        elif status:
+            query = query.where(Subscription.status == status)
+        total = count_of(db, query)
+        rows = db.execute(query.order_by(Workspace.created_at.desc(), Workspace.id).limit(limit).offset(offset)).all()
+        return {"items": [admin_workspace(*row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/admin/workspaces/{workspace_id}")
+def admin_workspace_detail(workspace_id: str, request: Request):
+    with Session() as db:
+        admin_for(request, db)
+        row = db.execute(select(Workspace, User.email, Subscription, CreditAccount.balance)
+                         .join(User, User.id == Workspace.owner_id)
+                         .outerjoin(Subscription, Subscription.workspace_id == Workspace.id)
+                         .outerjoin(CreditAccount, CreditAccount.workspace_id == Workspace.id)
+                         .where(Workspace.id == workspace_id)).first()
+        if not row:
+            raise HTTPException(404, "Workspace not found")
+        members = db.execute(select(User.email, Membership.role).join(Membership, Membership.user_id == User.id)
+                             .where(Membership.workspace_id == workspace_id).order_by(User.email)).all()
+        ledger = db.scalars(select(CreditLedger).where(CreditLedger.workspace_id == workspace_id)
+                            .order_by(CreditLedger.created_at.desc()).limit(10)).all()
+        orders = db.scalars(select(PaymentOrder).where(PaymentOrder.workspace_id == workspace_id)
+                            .order_by(PaymentOrder.created_at.desc()).limit(5)).all()
+        return {**admin_workspace(*row),
+                "members": [{"email": email, "role": role} for email, role in members],
+                "counts": {"projects": count_of(db, select(Project.id).where(Project.workspace_id == workspace_id)),
+                           "workflows": count_of(db, select(Workflow.id).where(Workflow.workspace_id == workspace_id)),
+                           "runs": count_of(db, select(WorkflowRun.id).where(WorkflowRun.workspace_id == workspace_id))},
+                "storage_bytes": sum(media_maintenance.usage_by_type(db, workspace_id).values()),
+                "ledger": [{"id": e.id, "delta": e.delta, "reason": e.reason, "created_at": _iso(e.created_at)}
+                           for e in ledger],
+                "orders": [order_data(order) for order in orders]}
+
+
+@app.get("/api/admin/payments")
+def admin_payments(request: Request, q: str | None = Query(default=None, max_length=255),
+                   provider: Literal["payos", "onepay"] | None = None,
+                   status: Literal["pending", "paid", "paid_unapplied", "failed", "cancelled", "expired"] | None = None,
+                   limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
+    """Payment orders of every studio, newest first; ``q`` searches the owner's email, the studio name,
+    the order reference and the provider reference. No checkout URL or provider payload is returned."""
+    with Session() as db:
+        admin_for(request, db)
+        query = (select(PaymentOrder, Workspace.name, User.email)
+                 .join(Workspace, Workspace.id == PaymentOrder.workspace_id)
+                 .join(User, User.id == Workspace.owner_id))
+        if q and q.strip():
+            pattern = like_pattern(q)
+            matches = [func.lower(User.email).like(pattern, escape="\\"),
+                       func.lower(Workspace.name).like(pattern, escape="\\"),
+                       func.lower(PaymentOrder.provider_reference).like(pattern, escape="\\")]
+            if q.strip().isdigit() and len(q.strip()) <= 18:
+                matches.append(PaymentOrder.order_code == int(q.strip()))
+            query = query.where(or_(*matches))
+        if provider:
+            query = query.where(PaymentOrder.provider == provider)
+        if status:
+            query = query.where(PaymentOrder.status == status)
+        total = count_of(db, query)
+        rows = db.execute(query.order_by(PaymentOrder.created_at.desc(), PaymentOrder.id).limit(limit).offset(offset)).all()
+        return {"items": [{**order_data(order), "workspace_id": order.workspace_id, "workspace_name": name,
+                           "owner_email": email} for order, name, email in rows],
+                "total": total, "limit": limit, "offset": offset}
+
+
+@app.post("/api/admin/payments/{order_id}/refresh")
+def admin_refresh_payment(order_id: str, request: Request):
+    """Ask the provider again, server to server; only what the provider confirms is applied. Admins cannot mark paid."""
+    same_origin(request)
+    with Session() as db:
+        admin = admin_for(request, db)
+        admin_id = admin.id
+    result = refresh_order(order_id)
+    log_event(logger, "payment_refreshed_by_admin", admin_id=admin_id, order_id=order_id, status=result["status"])
+    return result
+
+
+@app.get("/api/admin/payment-providers")
+def admin_payment_providers(request: Request):
+    """Whether each payment provider is configured; credentials are never returned."""
+    with Session() as db:
+        admin_for(request, db)
+    return {"providers": payment_providers.readiness()}
 
 
 ADMIN_JOB_QUEUES = ("text", "image", "video", "voice", "render", "source", "publish")
@@ -908,6 +1265,7 @@ def admin_jobs(request: Request, state: Literal["queued", "leased", "succeeded",
             query = query.where(WorkflowJob.state == state)
         if queue:
             query = query.where(WorkflowJob.logical_key.startswith(f"{queue}:"))
+        total = count_of(db, query)
         rows = db.scalars(query.order_by(WorkflowJob.updated_at.desc(), WorkflowJob.id).limit(limit).offset(offset))
         queue_name = case(*((WorkflowJob.logical_key.startswith(f"{name}:"), name) for name in ADMIN_JOB_QUEUES),
                           else_="other")
@@ -915,7 +1273,8 @@ def admin_jobs(request: Request, state: Literal["queued", "leased", "succeeded",
         for key, job_state, count in db.execute(select(queue_name, WorkflowJob.state, func.count())
                                                 .group_by(queue_name, WorkflowJob.state)):
             counts.setdefault(key, {})[job_state] = count
-        return {"jobs": [public_job(job) for job in rows], "counts": counts, "stuck": jobs.stuck_jobs(db)}
+        return {"jobs": [public_job(job) for job in rows], "total": total, "limit": limit, "offset": offset,
+                "counts": counts, "stuck": jobs.stuck_jobs(db)}
 
 
 @app.get("/api/admin/storage")
@@ -1416,9 +1775,10 @@ def owned_publication(db, ws, publication_id):
 @app.get("/api/publications")
 def list_publications(request: Request, run_id: str | None = None,
                       channel: Literal["youtube", "tiktok", "facebook"] | None = None,
-                      start: datetime | None = None, end: datetime | None = None):
-    """Publications of every channel, newest first; ``start``/``end`` (UTC) select a calendar range by the
-    scheduled time, else the publishing time, else the creation time."""
+                      start: datetime | None = None, end: datetime | None = None,
+                      limit: int = Query(default=100, ge=1, le=300), offset: int = Query(default=0, ge=0)):
+    """Publications of every channel, newest first, one page at a time; ``start``/``end`` (UTC) select a
+    calendar range by the scheduled time, else the publishing time, else the creation time."""
     with Session() as db:
         ws = workspace_for(request, db)
         Publication = publications.Publication
@@ -1432,8 +1792,10 @@ def list_publications(request: Request, run_id: str | None = None,
             query = query.where(when >= start)
         if end:
             query = query.where(when < end)
-        rows = db.scalars(query.order_by(when.desc(), Publication.id).limit(300))
-        return {"publications": [public_publication(row) for row in rows]}
+        total = db.scalar(select(func.count()).select_from(query.subquery()))
+        rows = db.scalars(query.order_by(when.desc(), Publication.id).limit(limit).offset(offset))
+        return {"publications": [public_publication(row) for row in rows], "total": total, "limit": limit,
+                "offset": offset}
 
 
 @app.post("/api/publications", status_code=201)
@@ -1848,6 +2210,64 @@ def workflow_node_types(request: Request):
     with Session() as db:
         workspace_for(request, db)
     return {"data_types": list(DATA_TYPES), "node_types": describe_node_types(default_registry)}
+
+
+SCRIPT_NODES = {"ai_writer": "script", "recap_script": "script", "rewrite": "text", "translate": "text",
+                "summarize": "summary"}
+
+
+@app.get("/api/scripts")
+def list_scripts(request: Request, project_id: str | None = None,
+                 limit: int = Query(default=20, ge=1, le=50), offset: int = Query(default=0, ge=0)):
+    """Text that finished runs wrote (AI Writer, Recap Script, Rewrite, Translate, Summarize), newest first."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+        query = (select(WorkflowRunStep, WorkflowRun)
+                 .join(WorkflowRun, WorkflowRun.id == WorkflowRunStep.run_id)
+                 .where(WorkflowRun.workspace_id == ws.id, WorkflowRunStep.status == "completed",
+                        WorkflowRunStep.node_type.in_(tuple(SCRIPT_NODES))))
+        if project_id:
+            query = query.where(WorkflowRun.project_id == project_id)
+        total = db.scalar(select(func.count()).select_from(query.subquery()))
+        items = []
+        for step, run in db.execute(query.order_by(WorkflowRun.created_at.desc(), WorkflowRunStep.position)
+                                    .limit(limit).offset(offset)):
+            output = json.loads(step.output) if step.output else {}
+            text = output.get(SCRIPT_NODES[step.node_type]) or output.get("text") if isinstance(output, dict) else None
+            text = text if isinstance(text, str) else ""
+            items.append({"step_id": step.id, "run_id": run.id, "project_id": run.project_id,
+                          "workflow_id": run.workflow_id, "node_type": step.node_type, "node_id": step.node_id,
+                          "text": text[:6000], "words": len(text.split()), "truncated": len(text) > 6000,
+                          "created_at": run.created_at.isoformat()})
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+def like_pattern(text: str) -> str:
+    """A case-insensitive ``LIKE`` pattern for ``text`` with its wildcards escaped (used with ``escape='\\'``)."""
+    escaped = text.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+class AssetPatch(BaseModel):
+    project_id: str | None = None
+
+
+@app.patch("/api/assets/{asset_id}")
+def update_asset(asset_id: str, data: AssetPatch, request: Request):
+    """Attach an uploaded file to one of the workspace's projects (or detach it). Generated media keeps its run's project."""
+    same_origin(request)
+    with Session.begin() as db:
+        ws = workspace_for(request, db)
+        asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.workspace_id == ws.id))
+        if not asset:
+            raise HTTPException(404, "Asset not found")
+        if asset.run_id is not None:
+            raise HTTPException(409, "Generated media belongs to its run's project")
+        if data.project_id is not None and not db.scalar(
+                select(Project.id).where(Project.id == data.project_id, Project.workspace_id == ws.id)):
+            raise HTTPException(404, "Project not found")
+        asset.project_id = data.project_id
+        return {"id": asset.id, "project_id": asset.project_id}
 
 
 @app.post("/api/assets", status_code=201)

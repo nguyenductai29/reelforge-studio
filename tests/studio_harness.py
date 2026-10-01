@@ -250,7 +250,7 @@ def run_program(body: str, env: dict | None = None):
         clean = {key: value for key, value in os.environ.items()
                  if not key.startswith(("FAL_", "VIDEO_", "GEMINI", "VOICE_", "RENDER_", "OPENAI", "TEXT_", "GOOGLE_",
                                         "REELFORGE_TOKEN", "TIKTOK_", "FACEBOOK_", "TRANSCRIPTION_", "RUNWAY",
-                                        "ANTHROPIC", "REPLICATE", "RUNWARE", "DOLA"))}
+                                        "ANTHROPIC", "REPLICATE", "RUNWARE", "DOLA", "ONEPAY_"))}
         return subprocess.run([sys.executable, "-c", PRELUDE + body], cwd=target,
                               env={**clean, **(env or {}), "PYTHONPATH": str(target), "PYTHONIOENCODING": "utf-8"},
                               capture_output=True, text=True, encoding="utf-8")

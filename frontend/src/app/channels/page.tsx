@@ -16,7 +16,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { PageHeader, PlatformIcon, SoonBadge, platformLabel } from "@/components/reelforge/primitives";
+import { PageHeader, PlatformIcon, platformLabel } from "@/components/reelforge/primitives";
 import { ChannelBadge } from "@/components/reelforge/publication-actions";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
@@ -189,22 +189,6 @@ export default function ChannelsPage() {
           const status = channels.data?.find((item) => item.channel === channel);
           return status ? <ChannelCard key={channel} status={status} onDisconnect={setConfirm} /> : null;
         })}
-        <div className="panel space-y-4 p-5">
-          <div className="flex items-start gap-3">
-            <span className="flex size-11 items-center justify-center rounded-xl bg-surface-2">
-              <PlatformIcon platform="instagram" className="size-5" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="font-medium">{platformLabel.instagram}</p>
-              <p className="text-xs text-muted-foreground">{t.channels.soonHandle}</p>
-            </div>
-            <SoonBadge />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {platformLabel.instagram} · {t.channels.soonSync}
-          </p>
-          <Caps caps={["publishReel", "schedule"]} />
-        </div>
       </div>
 
       <AlertDialog open={Boolean(confirm)} onOpenChange={(open) => !open && setConfirm(null)}>

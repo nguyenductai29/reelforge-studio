@@ -3,12 +3,13 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type DragEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Download, Grid2x2, Layers, List, Loader2, Plus, Upload } from "lucide-react";
+import { Download, Grid2x2, Layers, List, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { EmptyState, FilterPills, PageHeader, SoonBadge } from "@/components/reelforge/primitives";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { EmptyState, FieldLabel, FilterPills, PageHeader } from "@/components/reelforge/primitives";
 import { MediaThumb, assetKindIcon } from "@/components/reelforge/media-preview";
-import { api, assetUrl } from "@/lib/api";
+import { api, assetUrl, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
@@ -17,6 +18,8 @@ import { MAX_UPLOAD_BYTES, UPLOAD_ACCEPT, acceptedUpload, assetKind, formatBytes
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | Exclude<AssetKind, "other">;
+// Radix Select items cannot use an empty string, so "no project" gets its own token.
+const NO_PROJECT = "__none__";
 
 function MediaPage() {
   const { t, formatDateTime } = useI18n();
@@ -70,6 +73,17 @@ function MediaPage() {
     if (last) setSelectedId(last);
     setUploading(false);
     if (input.current) input.current.value = "";
+  }
+
+  /** Attach an uploaded file to a project (or detach it); generated media stays with its run's project. */
+  async function attach(assetId: string, projectId: string | null) {
+    try {
+      await api(`assets/${encodeURIComponent(assetId)}`, jsonRequest("PATCH", { project_id: projectId }));
+      await client.invalidateQueries({ queryKey: keys.dashboard });
+      toast.success(t.media.attached);
+    } catch (error) {
+      showError(error);
+    }
   }
 
   const onDrop = (e: DragEvent) => {
@@ -221,9 +235,27 @@ function MediaPage() {
                     <Download className="size-4" /> {t.common.download}
                   </a>
                 </Button>
-                <Button variant="outline" size="sm" className="w-full" disabled>
-                  <Plus className="size-4" /> {t.media.addToProject} <SoonBadge className="ml-1" />
-                </Button>
+                {!selected.run_id && (
+                  <div>
+                    <FieldLabel>{t.media.addToProject}</FieldLabel>
+                    <Select
+                      value={selected.project_id ?? NO_PROJECT}
+                      onValueChange={(value) => void attach(selected.id, value === NO_PROJECT ? null : value)}
+                    >
+                      <SelectTrigger className="h-8 bg-surface" aria-label={t.media.addToProject}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_PROJECT}>{t.media.noProject}</SelectItem>
+                        {(data?.projects ?? []).map((project) => (
+                          <SelectItem key={project.id} value={project.id}>
+                            {project.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
               </div>
             </>
           ) : (

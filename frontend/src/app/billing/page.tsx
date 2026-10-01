@@ -2,9 +2,18 @@
 
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, RefreshCw } from "lucide-react";
+import { CreditCard, Loader2, QrCode, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { DataTable, type Column } from "@/components/reelforge/data-table";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader, StatCard, StatusBadge } from "@/components/reelforge/primitives";
 import { api, jsonRequest } from "@/lib/api";
@@ -12,10 +21,13 @@ import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle, useSearchParam } from "@/lib/hooks";
 import { toDate, useI18n } from "@/lib/i18n";
 import type { Dictionary } from "@/lib/i18n/vi";
-import { keys, useBilling, useUsage } from "@/lib/queries";
+import { keys, useBilling, useBillingOrders, useUsage } from "@/lib/queries";
+import type { Order, PaymentMethod } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const rank = (code: string) => ["trial", "standard", "pro"].indexOf(code);
+const ORDER_PAGE = 10;
+const METHOD_ICON = { vietqr: QrCode, card: CreditCard } as const;
 
 function reasonText(reason: string, t: Dictionary) {
   if (reason.startsWith("admin: ")) return t.billing.reasons.admin(reason.slice(7));
@@ -31,29 +43,49 @@ export default function BillingPage() {
   const billing = useBilling();
   const usage = useUsage();
   const [busy, setBusy] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState<string | null>(null);
+  const [method, setMethod] = useState<PaymentMethod | null>(null);
+  const [orderOffset, setOrderOffset] = useState(0);
+  const orders = useBillingOrders(orderOffset, ORDER_PAGE);
   const payment = useSearchParam("payment");
 
   const refreshAll = () =>
     Promise.all([
       client.invalidateQueries({ queryKey: keys.billing }),
+      client.invalidateQueries({ queryKey: keys.billingOrders }),
       client.invalidateQueries({ queryKey: keys.usage }),
       client.invalidateQueries({ queryKey: keys.dashboard }),
     ]);
 
-  // payOS sends the buyer back here; the webhook, not this visit, confirms payment.
+  // The provider sends the buyer back here; its signed callback or a server-side check, not this visit, confirms payment.
   useEffect(() => {
     if (!payment) return;
     if (payment === "cancelled") toast(t.billing.paymentCancelled);
+    else if (payment === "failed") toast.error(t.billing.paymentFailed);
+    else if (payment === "invalid") toast.error(t.billing.paymentInvalid);
     else toast(t.billing.paymentReturned);
     void refreshAll();
     window.history.replaceState(null, "", window.location.pathname);
     // Run once per return visit.
   }, [payment]);
 
-  async function checkout(code: string) {
+  /** Pay for a plan: straight to checkout with one payment method, else ask which one. */
+  function choose(code: string) {
+    const methods = billing.data?.methods ?? [];
+    if (methods.length === 1) void checkout(code, methods[0]!.id);
+    else {
+      setMethod(methods[0]?.id ?? null);
+      setChoosing(code);
+    }
+  }
+
+  async function checkout(code: string, chosen: PaymentMethod) {
     setBusy(code);
     try {
-      const result = await api<{ checkout_url: string }>("billing/checkout", jsonRequest("POST", { plan_code: code }));
+      const result = await api<{ checkout_url: string }>(
+        "billing/checkout",
+        jsonRequest("POST", { plan_code: code, method: chosen }),
+      );
       const url = new URL(result.checkout_url);
       if (url.protocol !== "https:") throw new Error(t.billing.invalidCheckout);
       window.location.assign(url.toString());
@@ -92,6 +124,31 @@ export default function BillingPage() {
   const byTool = [...thisMonth.reduce((map, e) => map.set(e.tool, (map.get(e.tool) ?? 0) + e.credits), new Map<string, number>())]
     .sort((a, b) => b[1] - a[1]);
   const limitText = (n: number | null) => (n === null ? t.common.unlimited : formatNumber(n));
+  const canPay = data.methods.length > 0;
+  const orderStatus = (status: string) => t.status.order[status as keyof Dictionary["status"]["order"]] ?? status;
+  const orderColumns: Column<Order>[] = [
+    { key: "plan", header: t.billing.history.plan, cell: (order) => order.plan_code.toUpperCase() },
+    { key: "method", header: t.billing.history.method, className: "whitespace-nowrap",
+      cell: (order) => (order.method ? t.billing.methods[order.method].name : order.provider) },
+    { key: "amount", header: t.billing.history.amount, className: "whitespace-nowrap text-right tabular-nums",
+      cell: (order) => formatMoney(order.amount_vnd) },
+    { key: "status", header: t.billing.history.status,
+      cell: (order) => <StatusBadge status={order.status} label={orderStatus(order.status)} /> },
+    { key: "created", header: t.billing.history.created, className: "whitespace-nowrap text-muted-foreground",
+      cell: (order) => formatDateTime(order.created_at) },
+    { key: "paid", header: t.billing.history.paid, className: "whitespace-nowrap text-muted-foreground",
+      cell: (order) => (order.paid_at ? formatDateTime(order.paid_at) : "—") },
+    { key: "reference", header: t.billing.history.reference, className: "font-mono text-xs text-muted-foreground",
+      cell: (order) => order.reference },
+    { key: "actions", header: <span className="sr-only">{t.billing.check}</span>, className: "text-right",
+      cell: (order) =>
+        ["pending", "expired", "failed"].includes(order.status) ? (
+          <Button variant="outline" size="sm" className="h-7" disabled={Boolean(busy)} onClick={() => void checkOrder(order.id)}>
+            {busy === order.id && <Loader2 className="size-3.5 animate-spin" />}
+            {t.billing.check}
+          </Button>
+        ) : null },
+  ];
 
   return (
     <div className="space-y-6">
@@ -180,14 +237,13 @@ export default function BillingPage() {
                   <p>{t.billing.limits(limitText(p.project_limit), limitText(p.workflow_limit))}</p>
                   <p>{t.billing.monthlyCredits(formatNumber(p.monthly_credits))}</p>
                 </div>
-                {canBuy && (
+                {/* Without a configured payment method there is nothing to press; the notice below explains why. */}
+                {canBuy && canPay && (
                   <Button
                     className="mt-auto"
                     variant={current ? "outline" : "default"}
-                    disabled={
-                      Boolean(busy) || !p.price_vnd || !data.payos_ready || !["active", "expired"].includes(subscription.status)
-                    }
-                    onClick={() => void checkout(p.code)}
+                    disabled={Boolean(busy) || !p.price_vnd || !["active", "expired"].includes(subscription.status)}
+                    onClick={() => choose(p.code)}
                   >
                     {busy === p.code && <Loader2 className="size-4 animate-spin" />}
                     {busy === p.code ? t.billing.creatingOrder : current ? t.billing.renew : t.billing.pay}
@@ -197,46 +253,84 @@ export default function BillingPage() {
             );
           })}
         </div>
-        {!data.payos_ready && (
+        {!canPay && (
           <p className="rounded-lg border border-warning/40 bg-[color-mix(in_oklab,var(--warning)_10%,transparent)] px-3 py-2 text-sm">
-            {t.billing.payosMissing}
+            {t.billing.noPaymentMethod}
           </p>
         )}
-        <p className="text-xs text-muted-foreground">{t.billing.cardSoon}</p>
+        {canPay && (
+          <p className="text-xs text-muted-foreground">
+            {t.billing.acceptedMethods(data.methods.map((m) => t.billing.methods[m.id].name).join(" · "))}
+          </p>
+        )}
       </section>
 
-      <section className="panel p-5">
+      <section className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm font-medium">{t.billing.orders}</p>
+          <div>
+            <p className="text-sm font-medium">{t.billing.orders}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t.billing.ordersHint}</p>
+          </div>
           <Button variant="ghost" size="sm" onClick={() => void refreshAll()}>
             <RefreshCw className="size-3.5" /> {t.common.refresh}
           </Button>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">{t.billing.ordersHint}</p>
-        <div className="mt-3 divide-y divide-border">
-          {data.orders.length === 0 && <p className="py-3 text-sm text-muted-foreground">{t.billing.noOrders}</p>}
-          {data.orders.map((order) => (
-            <div key={order.id} className="flex flex-wrap items-center gap-3 py-3 text-sm">
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">
-                  {order.plan_code.toUpperCase()} · {formatMoney(order.amount_vnd)}
-                </p>
-                <p className="text-xs text-muted-foreground">{formatDateTime(order.created_at)}</p>
-              </div>
-              <StatusBadge
-                status={order.status}
-                label={t.status.order[order.status as keyof Dictionary["status"]["order"]] ?? order.status}
-              />
-              {["pending", "expired", "failed"].includes(order.status) && data.payos_ready && (
-                <Button variant="outline" size="sm" disabled={Boolean(busy)} onClick={() => void checkOrder(order.id)}>
-                  {busy === order.id && <Loader2 className="size-3.5 animate-spin" />}
-                  {t.billing.check}
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
+        <DataTable
+          className="max-h-[520px]"
+          columns={orderColumns}
+          rows={orders.data?.items ?? []}
+          rowKey={(order) => order.id}
+          loading={orders.isFetching}
+          empty={t.billing.noOrders}
+          total={orders.data?.total ?? 0}
+          limit={ORDER_PAGE}
+          offset={orderOffset}
+          onOffset={setOrderOffset}
+          minWidth={820}
+        />
       </section>
+
+      <Dialog open={Boolean(choosing)} onOpenChange={(open) => !open && !busy && setChoosing(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t.billing.chooseMethod}</DialogTitle>
+            <DialogDescription>{t.billing.chooseMethodHint}</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2" role="radiogroup" aria-label={t.billing.chooseMethod}>
+            {data.methods.map((item) => {
+              const Icon = METHOD_ICON[item.id];
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={method === item.id}
+                  onClick={() => setMethod(item.id)}
+                  className={cn(
+                    "flex items-start gap-3 rounded-lg border p-3 text-left",
+                    method === item.id ? "border-primary bg-primary/10" : "border-border bg-surface hover:border-border-strong",
+                  )}
+                >
+                  <Icon className="mt-0.5 size-5 shrink-0 text-primary" />
+                  <span>
+                    <span className="block text-sm font-medium">{t.billing.methods[item.id].name}</span>
+                    <span className="block text-xs text-muted-foreground">{t.billing.methods[item.id].hint}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setChoosing(null)} disabled={Boolean(busy)}>
+              {t.common.cancel}
+            </Button>
+            <Button disabled={!method || Boolean(busy)} onClick={() => choosing && method && void checkout(choosing, method)}>
+              {busy && <Loader2 className="size-4 animate-spin" />}
+              {busy ? t.billing.creatingOrder : t.billing.continueToPay}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -20,6 +20,13 @@ Audio policy:
   or cut to the whole video;
 * without narration, each clip keeps its own audio (silence if it has none).
 
+Still images (an Image step, or uploaded pictures) are scenes too: each is
+shown for its scene's narration when there is one, else shares the single
+narration with the other stills, else lasts ``RENDER_STILL_SECONDS`` (default 5).
+
+Background music (a Music step) is looped to the video's length, lowered to its
+volume and mixed under everything else.
+
 Subtitles are re-timed onto this timeline: cues that belong to a scene are
 placed inside that scene's clip. Cues timed by narration keep their pace (and
 are cut at the clip's end, like the narration); cues timed by scene estimates or
@@ -72,6 +79,8 @@ class Clip:
     has_audio: bool
     width: int
     height: int
+    # A still image shown for ``duration`` seconds (Phase 16).
+    still: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,8 +161,19 @@ def render_credit_cost() -> int:
 
 # Probing ---------------------------------------------------------------------
 
-def probe(ffprobe: str, path: Path, run: Runner = subprocess.run) -> dict:
-    """Duration, audio presence and frame size of one media file."""
+def still_seconds() -> float:
+    """How long a still image is shown when nothing else decides (``RENDER_STILL_SECONDS``, default 5)."""
+    try:
+        value = float(os.environ.get("RENDER_STILL_SECONDS", "5"))
+    except ValueError as exc:
+        raise RenderError("invalid_config", "RENDER_STILL_SECONDS must be a number", "configuration_error") from exc
+    if not 1 <= value <= 60:
+        raise RenderError("invalid_config", "RENDER_STILL_SECONDS must be from 1 to 60", "configuration_error")
+    return value
+
+
+def probe(ffprobe: str, path: Path, run: Runner = subprocess.run, *, still: bool = False) -> dict:
+    """Duration, audio presence and frame size of one media file; a still image has no duration (0)."""
     try:
         done = run([ffprobe, "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height",
                     "-of", "json", str(path)], capture_output=True, text=True, timeout=60, check=False)
@@ -164,7 +184,8 @@ def probe(ffprobe: str, path: Path, run: Runner = subprocess.run) -> dict:
     try:
         data = json.loads(done.stdout or "{}")
         streams = [stream for stream in data.get("streams") or [] if isinstance(stream, dict)]
-        duration = float((data.get("format") or {}).get("duration"))
+        raw = (data.get("format") or {}).get("duration")
+        duration = 0.0 if still and raw in (None, "N/A") else float(raw)
     except (TypeError, ValueError) as exc:
         raise RenderError("render_failed", "ffprobe returned no duration") from exc
     video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
@@ -236,15 +257,20 @@ def audio_mode(clips: list[Clip], tracks: list[Track]) -> str:
 
 
 def build_command(ffmpeg: str, clips: list[Clip], tracks: list[Track], *, subtitles: bool,
-                  style: str | None = None) -> list[str]:
+                  style: str | None = None, music: Track | None = None, music_volume: float = 0.15) -> list[str]:
     """The ffmpeg argument list; it runs in the render's folder, where subtitles and output use fixed names."""
     width, height = frame_size(clips)
     total = sum(clip.duration for clip in clips)
     args = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
     for clip in clips:
+        if clip.still:
+            # One picture repeated as a video stream for exactly the clip's length.
+            args += ["-loop", "1", "-framerate", str(FPS), "-t", f"{clip.duration:.3f}"]
         args += ["-i", str(clip.path)]
     for track in tracks:
         args += ["-i", str(track.path)]
+    if music is not None:
+        args += ["-stream_loop", "-1", "-i", str(music.path)]
     graph = []
     for number, clip in enumerate(clips):
         graph.append(f"[{number}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
@@ -265,12 +291,14 @@ def build_command(ffmpeg: str, clips: list[Clip], tracks: list[Track], *, subtit
 
     mode = audio_mode(clips, tracks)
     first_track = len(clips)
+    # Without music the mix is the final audio; with music it is the bed the music goes under.
+    mixed = "aout" if music is None else "abed"
     if mode == "narration":
         for offset in range(len(tracks)):
             graph.append(f"[{first_track + offset}:a]aresample=48000,"
                          f"aformat=sample_fmts=fltp:channel_layouts=stereo[t{offset}]")
         joined = "".join(f"[t{offset}]" for offset in range(len(tracks)))
-        graph.append(f"{joined}concat=n={len(tracks)}:v=0:a=1,apad,atrim=duration={total:.3f}[aout]")
+        graph.append(f"{joined}concat=n={len(tracks)}:v=0:a=1,apad,atrim=duration={total:.3f}[{mixed}]")
     else:
         by_scene = {}
         for offset, track in enumerate(tracks):
@@ -283,7 +311,13 @@ def build_command(ffmpeg: str, clips: list[Clip], tracks: list[Track], *, subtit
             else:
                 graph.append(fitted(f"{number}:a", f"a{number}", clip.duration) if clip.has_audio
                              else silence(f"a{number}", clip.duration))
-        graph.append("".join(f"[a{number}]" for number in range(len(clips))) + f"concat=n={len(clips)}:v=0:a=1[aout]")
+        graph.append("".join(f"[a{number}]" for number in range(len(clips))) + f"concat=n={len(clips)}:v=0:a=1[{mixed}]")
+    if music is not None:
+        volume = min(1.0, max(0.01, music_volume))
+        graph.append(f"[{len(clips) + len(tracks)}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
+                     f"volume={volume:.2f},atrim=duration={total:.3f},asetpts=PTS-STARTPTS[music]")
+        # amix halves both inputs; doubling afterwards keeps the narration at its own level.
+        graph.append("[abed][music]amix=inputs=2:duration=first:dropout_transition=0,volume=2[aout]")
     return args + ["-filter_complex", ";".join(graph), "-map", f"[{video}]", "-map", "[aout]",
                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
                    "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart",

@@ -291,9 +291,10 @@ class RenderHandlerTest(unittest.TestCase):
                                                    "audio_policy": "voice"})
 
     def test_images_fonts_and_credits_block_before_queueing(self):
-        step, job = self.start(["images"])
-        self.assertEqual((step.status, job), ("blocked", None))
-        self.assertIn("ảnh", step.detail)
+        # Images are rendered as stills since Phase 16.
+        step, (key, payload) = self.start(["images"])
+        self.assertEqual((step.status, json.loads(step.output)["still_count"]), ("queued", 1))
+        self.assertTrue(all(clip["still"] for clip in payload["clips"]))
         self.font.return_value = ("font_unavailable", "Server chưa có phông chữ Noto Sans để đốt phụ đề.")
         step, job = self.start(["clips", "subs"])
         self.assertEqual((step.status, job, json.loads(step.output)["error"]["code"]), ("blocked", None, "font_unavailable"))

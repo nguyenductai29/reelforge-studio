@@ -142,19 +142,24 @@ def _render(claim: Claim, folder: Path, runner) -> tuple[Path, dict, bool]:
     if not ffmpeg or not ffprobe:
         raise render.RenderError("ffmpeg_missing", "FFmpeg or ffprobe is not installed", "configuration_error")
     payload = claim.payload
-    clip_paths = [(_input(claim, item.get("asset_id")), item.get("scene_index")) for item in payload.get("clips") or []]
+    clip_paths = [(_input(claim, item.get("asset_id")), item.get("scene_index"), bool(item.get("still")))
+                  for item in payload.get("clips") or []]
     tracks = [render.Track(_input(claim, item.get("asset_id")), item.get("scene_index"))
               for item in payload.get("audio") or []]
     if not clip_paths:
         raise render.RenderError("input_missing", "There are no clips to render", "invalid_request")
     folder.mkdir(parents=True, exist_ok=True)
     clips = []
-    for path, scene_index in clip_paths:
-        info = render.probe(ffprobe, path, runner)
-        if info["duration"] <= 0:
+    for path, scene_index, still in clip_paths:
+        info = render.probe(ffprobe, path, runner, still=still)
+        if info["duration"] <= 0 and not still:
             raise render.RenderError("render_failed", "A clip has no duration")
         clips.append(render.Clip(path, scene_index if isinstance(scene_index, int) else None, info["duration"],
-                                 info["has_audio"], info["width"], info["height"]))
+                                 False if still else info["has_audio"], info["width"], info["height"], still))
+    if any(clip.still for clip in clips):
+        clips = _time_stills(clips, tracks, ffprobe, runner)
+    music = payload.get("music") if isinstance(payload.get("music"), dict) else None
+    music_track = render.Track(_input(claim, music.get("asset_id")), None) if music else None
     burn, style = False, None
     subtitle = payload.get("subtitle")
     if isinstance(subtitle, dict):
@@ -164,8 +169,9 @@ def _render(claim: Claim, folder: Path, runner) -> tuple[Path, dict, bool]:
         if cues:
             (folder / render.SUBTITLE_NAME).write_bytes(render.burn_in_file(cues))
             burn, style = True, render.force_style(subtitle.get("style"), render.subtitle_font())
-    render.run_ffmpeg(render.build_command(ffmpeg, clips, tracks, subtitles=burn, style=style), folder,
-                      render.render_timeout_seconds(), runner)
+    render.run_ffmpeg(render.build_command(ffmpeg, clips, tracks, subtitles=burn, style=style, music=music_track,
+                                           music_volume=(music.get("volume") or 15) / 100 if music else 0.15),
+                      folder, render.render_timeout_seconds(), runner)
     output = folder / render.OUTPUT_NAME
     if not output.is_file() or not valid_mp4(output, max_bytes=render.MAX_RENDER_BYTES):
         raise render.RenderError("invalid_output", "FFmpeg did not produce a valid MP4")
@@ -173,6 +179,34 @@ def _render(claim: Claim, folder: Path, runner) -> tuple[Path, dict, bool]:
     size = render.frame_size(clips)
     return output, {"duration": round(info["duration"], 3), "width": info["width"] or size[0],
                     "height": info["height"] or size[1], "audio_policy": render.audio_mode(clips, tracks)}, burn
+
+
+def _time_stills(clips, tracks, ffprobe, runner):
+    """Give each still image its length: its scene's narration, else a share of one narration, else the default."""
+    durations = {}
+    for track in tracks:
+        durations.setdefault(track.scene_index, 0.0)
+        durations[track.scene_index] += max(0.0, render.probe(ffprobe, track.path, runner)["duration"])
+    stills = [clip for clip in clips if clip.still]
+    moving = sum(clip.duration for clip in clips if not clip.still)
+    shared = sum(durations.values())
+    # One narration for the whole video (no still has its own scene narration): the stills share what is left.
+    sharing = shared > moving and not any(still.scene_index in durations for still in stills
+                                          if still.scene_index is not None)
+    default = render.still_seconds()
+    timed = []
+    for clip in clips:
+        if not clip.still:
+            timed.append(clip)
+            continue
+        if clip.scene_index is not None and durations.get(clip.scene_index):
+            seconds = durations[clip.scene_index] + 0.3
+        elif sharing:
+            seconds = max(1.5, (shared - moving) / len(stills))
+        else:
+            seconds = default
+        timed.append(render.Clip(clip.path, clip.scene_index, round(seconds, 3), False, clip.width, clip.height, True))
+    return timed
 
 
 def _store(claim: Claim, output: Path, facts: dict, burned: bool, started: float) -> None:

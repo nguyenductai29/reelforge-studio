@@ -30,8 +30,10 @@ SOURCE = "source"
 SOURCE_CLIPS = "source_clips"
 # {"title", "characters", "plot_points", "acts", "important_moments", "themes"} (Phase 11).
 STORY = "story"
+# {"asset_id", "filename", "volume"}: background music Render mixes under the video (Phase 16).
+MUSIC = "music_track"
 DATA_TYPES = (BRIEF, TEXT, SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SUBTITLE_ASSET, PUBLICATION,
-              PUBLISH_METADATA, SOURCE, SOURCE_CLIPS, STORY)
+              PUBLISH_METADATA, SOURCE, SOURCE_CLIPS, STORY, MUSIC)
 TEXT_TYPES = frozenset({BRIEF, TEXT})
 LIST_TYPES = frozenset({SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SOURCE_CLIPS})
 

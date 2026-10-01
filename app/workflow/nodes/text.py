@@ -4,6 +4,10 @@ The text worker (``app/text_worker.py``) calls the provider outside any
 database transaction and reports back through ``WorkflowExecutor.finish_step``;
 ``output_from`` turns the normalized ``TextResult`` into the step output.
 
+Workspace defaults (Settings → Content defaults): a step whose tone, platform
+or target duration is left empty uses the workspace's ``default_tone``,
+``default_platform`` and ``default_duration``; a value set on the step always wins.
+
 Credits: ``TEXT_CREDITS_PER_GENERATION`` (default 1) is held when the step is
 queued (``text-reserve:<step>``), charged on success as a usage event
 (``text:<step>``), and refunded if generation fails (``text-refund:<step>``).
@@ -42,6 +46,9 @@ REWRITE_LENGTHS = {"shorter": "Make it noticeably shorter, about 30% fewer words
 TITLE_STYLES = {"catchy": "catchy and curiosity-driven", "descriptive": "clear and descriptive",
                 "question": "phrased as a question", "listicle": "list-style, with a number",
                 "seo": "search-friendly, with the main keyword near the start"}
+
+# Step setting → workspace setting used when the step leaves it empty.
+WORKSPACE_DEFAULT_FIELDS = {"tone": "default_tone", "platform": "default_platform", "duration": "default_duration"}
 
 # Fields shared by the text nodes; "auto" languages follow the workspace's default language.
 MODEL = ConfigField("tool_id", TOOL, label="model", task=TEXT_TASK, providers=tuple(TEXT_PROVIDERS),
@@ -139,11 +146,27 @@ class TextNodeHandler(NodeHandler):
 
     # Execution --------------------------------------------------------------
 
+    def with_workspace_defaults(self, context, raw, config) -> dict[str, Any]:
+        """``config`` with the workspace's tone, platform and duration for the fields the step left empty."""
+        raw = raw if isinstance(raw, Mapping) else {}
+        settings = context.workspace_settings
+        fields = {field.key: field for field in self.config_fields}
+        for key, setting in WORKSPACE_DEFAULT_FIELDS.items():
+            value = settings.get(setting)
+            if key not in fields or raw.get(key) is not None or value in (None, ""):
+                continue
+            try:
+                fields[key].check(value)
+            except ValueError:
+                continue
+            config[key] = value
+        return config
+
     def _tool(self, context, config):
         return context.find_tool(TEXT_TASK, TEXT_PROVIDERS, config.get("tool_id"))
 
     def execute(self, context, node, inputs):
-        config = self.config_values(inputs.config)
+        config = self.with_workspace_defaults(context, inputs.config, self.config_values(inputs.config))
         tool = self._tool(context, config)
         if tool is None and config.get("tool_id"):
             return NodeExecutionResult.blocked(TOOL_UNAVAILABLE_DETAIL,

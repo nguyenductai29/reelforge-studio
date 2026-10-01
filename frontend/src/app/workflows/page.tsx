@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { PageHeader, SectionTitle, SoonBadge, StatusBadge } from "@/components/reelforge/primitives";
+import { PageHeader, SectionTitle, StatusBadge } from "@/components/reelforge/primitives";
 import { MiniDiagram } from "@/components/workflow/mini-diagram";
 import { useCreateFromTemplate, useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
@@ -77,21 +77,15 @@ export default function WorkflowsPage() {
                 {template.steps ? t.common.steps(template.steps) : t.workflows.emptyCanvas}
                 {template.branches ? ` · ${t.workflows.outputs(template.branches)}` : ""}
               </p>
-              {template.graph || template.backend ? (
-                <Button
-                  size="sm"
-                  variant={template.backend ? "default" : "outline"}
-                  disabled={Boolean(pending)}
-                  onClick={() => void create(template.id)}
-                >
-                  {pending === template.id && <Loader2 className="size-3.5 animate-spin" />}
-                  {t.workflows.createWorkflow}
-                </Button>
-              ) : (
-                <div className="flex h-8 items-center justify-center">
-                  <SoonBadge />
-                </div>
-              )}
+              <Button
+                size="sm"
+                variant={template.backend ? "default" : "outline"}
+                disabled={Boolean(pending)}
+                onClick={() => void create(template.id)}
+              >
+                {pending === template.id && <Loader2 className="size-3.5 animate-spin" />}
+                {t.workflows.createWorkflow}
+              </Button>
             </div>
           ))}
         </div>

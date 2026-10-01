@@ -1,4 +1,4 @@
-import type { Graph, NodeType } from "./types";
+import type { Graph, NodeConfig, NodeType } from "./types";
 import type { Dictionary } from "./i18n/vi";
 
 /** Visual families from the design; several backend node types share one. */
@@ -67,8 +67,12 @@ export const MAX_NODES = 30;
 type LibraryItemId = keyof Dictionary["editor"]["library"]["items"];
 type CategoryId = keyof Dictionary["editor"]["library"]["categories"];
 
-/** Library entries without a `type` have no backend node yet and are shown as coming soon. */
-export type LibraryItem = { id: LibraryItemId; kind: NodeKind; type?: NodeType };
+/**
+ * One entry of the step library. Every entry adds a step the backend runs; several entries may add the
+ * same node type with preset settings (`config`), e.g. "Short script" is AI Writer with 60 seconds.
+ * Features that do not exist yet are not listed at all (see docs/FINAL_PRODUCT_AUDIT.md).
+ */
+export type LibraryItem = { id: LibraryItemId; kind: NodeKind; type: NodeType; config?: NodeConfig };
 
 export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
   {
@@ -78,20 +82,18 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "studioMedia", kind: "input", type: "assets" },
       { id: "textInput", kind: "input", type: "source_text" },
       { id: "url", kind: "input", type: "source_url" },
-      { id: "youtubeUrl", kind: "input" },
+      { id: "articleUrl", kind: "input", type: "source_url" },
       { id: "uploadVideo", kind: "input", type: "source_media" },
-      { id: "uploadImage", kind: "input" },
+      { id: "uploadImage", kind: "input", type: "source_media" },
       { id: "uploadAudio", kind: "input", type: "source_media" },
       { id: "uploadSubtitle", kind: "input", type: "source_media" },
       { id: "movieSource", kind: "input", type: "source_media" },
-      { id: "articleUrl", kind: "input", type: "source_url" },
       { id: "transcript", kind: "ai", type: "transcribe" },
     ],
   },
   {
     category: "ai",
     items: [
-      { id: "research", kind: "ai" },
       { id: "summarize", kind: "ai", type: "summarize" },
       { id: "aiWriter", kind: "ai", type: "ai_writer" },
       { id: "rewrite", kind: "ai", type: "rewrite" },
@@ -99,10 +101,10 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "generateHook", kind: "ai", type: "hook" },
       { id: "generateTitle", kind: "ai", type: "title" },
       { id: "movieAnalysis", kind: "ai", type: "story_analysis" },
+      { id: "keyMoments", kind: "ai", type: "story_analysis" },
       { id: "movieRecap", kind: "script", type: "recap_script" },
-      { id: "movieReview", kind: "ai" },
-      { id: "endingExplained", kind: "ai" },
-      { id: "keyMoments", kind: "ai" },
+      { id: "movieReview", kind: "script", type: "recap_script", config: { style: "review", spoiler_level: "light" } },
+      { id: "endingExplained", kind: "script", type: "recap_script", config: { style: "explainer", spoiler_level: "full" } },
       { id: "generateCta", kind: "ai", type: "cta" },
       { id: "publishMetadata", kind: "ai", type: "metadata" },
     ],
@@ -110,65 +112,55 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
   {
     category: "script",
     items: [
-      { id: "scriptWriter", kind: "script", type: "script" },
+      { id: "scriptWriter", kind: "ai", type: "ai_writer" },
+      { id: "shortScript", kind: "ai", type: "ai_writer", config: { duration: 60, platform: "youtube_shorts" } },
+      { id: "longScript", kind: "ai", type: "ai_writer", config: { duration: 600, platform: "youtube" } },
       { id: "splitScenes", kind: "script", type: "scenes" },
-      { id: "scenePlanner", kind: "script" },
-      { id: "storyboard", kind: "script" },
-      { id: "shortScript", kind: "script" },
-      { id: "longScript", kind: "script" },
     ],
   },
   {
     category: "visual",
     items: [
       { id: "imageGenerator", kind: "image", type: "image" },
-      { id: "thumbnailGenerator", kind: "image" },
+      { id: "thumbnailGenerator", kind: "image", type: "image", config: { aspect_ratio: "16:9", quality: "high" } },
       { id: "aiVideoGenerator", kind: "video", type: "video" },
-      { id: "stockMedia", kind: "image" },
+      { id: "textToVideo", kind: "video", type: "video" },
       { id: "clipMatcher", kind: "video", type: "match_scenes" },
-      { id: "imageToVideo", kind: "video" },
-      { id: "textToVideo", kind: "video" },
     ],
   },
   {
     category: "audio",
     items: [
       { id: "textToSpeech", kind: "voice", type: "voice" },
-      { id: "voiceClone", kind: "voice" },
       { id: "backgroundMusic", kind: "voice", type: "music" },
-      { id: "soundEffects", kind: "voice" },
-      { id: "audioMixer", kind: "voice" },
     ],
   },
   {
     category: "editing",
     items: [
-      { id: "cropResize", kind: "edit" },
-      { id: "aspectRatio", kind: "edit" },
       { id: "subtitle", kind: "subtitle", type: "subtitle" },
-      { id: "overlayText", kind: "edit" },
-      { id: "transition", kind: "edit" },
-      { id: "timeline", kind: "edit" },
-      { id: "mergeClips", kind: "edit" },
       { id: "extractClips", kind: "video", type: "extract_clips" },
+      { id: "mergeClips", kind: "render", type: "render" },
       { id: "renderVideo", kind: "render", type: "render" },
     ],
   },
   {
     category: "output",
     items: [
-      { id: "preview", kind: "review" },
       { id: "review", kind: "review", type: "review" },
-      { id: "download", kind: "review" },
+      { id: "preview", kind: "review", type: "review" },
       { id: "youtubeVideo", kind: "publish", type: "publish" },
       { id: "youtubeShorts", kind: "publish", type: "publish" },
       { id: "tiktok", kind: "publish", type: "publish" },
       { id: "facebook", kind: "publish", type: "publish" },
       { id: "facebookReels", kind: "publish", type: "publish" },
-      { id: "schedulePost", kind: "publish" },
+      { id: "schedulePost", kind: "publish", type: "publish" },
     ],
   },
 ];
+
+export const libraryItemById = (id: string) =>
+  nodeLibrary.flatMap((group) => group.items).find((item) => item.id === id);
 
 /** Node types the backend can execute today; every other step stops a run with a reason. */
 export const EXECUTABLE: ReadonlySet<NodeType> = new Set([
@@ -188,6 +180,7 @@ export const EXECUTABLE: ReadonlySet<NodeType> = new Set([
   "recap_script",
   "match_scenes",
   "extract_clips",
+  "music",
 ]);
 
 export type TemplateId = keyof Dictionary["templates"];
@@ -197,8 +190,17 @@ export type WorkflowTemplate = {
   /** Present when the template can be created and run with today's backend. */
   graph?: Graph;
   /** A starter workflow the backend builds (app/workflow/templates.py), with its own node settings. */
-  backend?: "youtube_short" | "youtube_landscape" | "tiktok_short" | "facebook_reel" | "repurpose" | "movie_recap";
-  /** Design preview for templates that are not available yet. */
+  backend?:
+    | "youtube_short"
+    | "youtube_landscape"
+    | "tiktok_short"
+    | "facebook_reel"
+    | "repurpose"
+    | "movie_recap"
+    | "movie_review"
+    | "article_to_video"
+    | "product_video";
+  /** The compact diagram's node kinds. */
   preview: NodeKind[];
   branches?: number;
   steps: number;
@@ -219,6 +221,8 @@ const clipGraph: Graph = {
 
 // Idea → AI Writer → Scenes → Video + Voice + Subtitle → Render → Review → Publish (with Metadata).
 const fullPreview: NodeKind[] = ["input", "ai", "script", "video", "voice", "subtitle", "render", "review", "publish"];
+// The same with one AI image per scene instead of a clip (Article to Video, Product Video).
+const slidePreview: NodeKind[] = ["input", "ai", "script", "image", "voice", "subtitle", "render", "review", "publish"];
 
 export const workflowTemplates: WorkflowTemplate[] = [
   { id: "social-video", graph: clipGraph, preview: ["input", "video", "review"], steps: 3 },
@@ -232,10 +236,15 @@ export const workflowTemplates: WorkflowTemplate[] = [
     preview: ["input", "ai", "script", "voice", "video", "render", "review", "publish"],
     steps: 12,
   },
-  { id: "movie-review", preview: ["input", "ai", "script", "image", "voice", "publish"], steps: 11 },
+  {
+    id: "movie-review",
+    backend: "movie_review",
+    preview: ["input", "ai", "script", "voice", "video", "render", "review", "publish"],
+    steps: 12,
+  },
   { id: "repurpose", backend: "repurpose", preview: fullPreview, steps: 10 },
-  { id: "article-to-video", preview: ["input", "ai", "script", "image", "voice"], steps: 9 },
-  { id: "product-video", preview: ["input", "script", "image", "video", "publish"], steps: 8 },
+  { id: "article-to-video", backend: "article_to_video", preview: slidePreview, steps: 10 },
+  { id: "product-video", backend: "product_video", preview: slidePreview, steps: 10 },
   {
     id: "blank",
     graph: { nodes: [{ id: "idea", type: "idea", x: 0, y: 160 }], edges: [] },

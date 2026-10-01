@@ -8,7 +8,7 @@ import { PageHeader, PlatformIcon, StatusBadge, platformLabel } from "@/componen
 import { ScheduleDialog } from "@/components/reelforge/publication-actions";
 import { useDocumentTitle } from "@/lib/hooks";
 import { toDate, useI18n } from "@/lib/i18n";
-import { usePublications } from "@/lib/queries";
+import { useCalendarPublications } from "@/lib/queries";
 import type { Publication } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -16,16 +16,22 @@ const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.
 const addDays = (date: Date, days: number) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 /** Monday-based weekday index, 0–6. */
 const weekday = (date: Date) => (date.getDay() + 6) % 7;
-/** When a publication shows on the calendar: its scheduled time, else when it went out, else when it was queued. */
-const when = (p: Publication) => p.scheduled_for ?? p.published_at ?? p.finished_at ?? p.created_at;
+/** When a publication shows on the calendar: its scheduled time, else when it went out, else when it was queued
+ * (the same order the server uses to select a date range). */
+const when = (p: Publication) => p.scheduled_for ?? p.published_at ?? p.created_at;
 
 export default function CalendarPage() {
   const { t, formatDate } = useI18n();
   const [scheduling, setScheduling] = useState<{ publication: Publication; mode: "reschedule" | "cancel" } | null>(null);
   useDocumentTitle(t.nav.calendar);
-  const publications = usePublications().data ?? [];
   const today = new Date();
   const [cursor, setCursor] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
+  const gridStart = addDays(cursor, -weekday(cursor));
+  const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+  const cells = Math.ceil((weekday(cursor) + daysInMonth) / 7) * 7;
+  // Only the visible grid is loaded (local midnights, sent as UTC instants); the week view lies inside it.
+  const range = useCalendarPublications(gridStart.toISOString(), addDays(gridStart, cells).toISOString());
+  const publications = useMemo(() => range.data ?? [], [range.data]);
 
   const byDay = useMemo(() => {
     const map = new Map<string, Publication[]>();
@@ -37,9 +43,6 @@ export default function CalendarPage() {
     return map;
   }, [publications]);
 
-  const gridStart = addDays(cursor, -weekday(cursor));
-  const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
-  const cells = Math.ceil((weekday(cursor) + daysInMonth) / 7) * 7;
   const days = Array.from({ length: cells }, (_, i) => addDays(gridStart, i));
   const weekdayNames = Array.from({ length: 7 }, (_, i) => formatDate(addDays(gridStart, i), { weekday: "short" }));
   const sameMonth = today.getFullYear() === cursor.getFullYear() && today.getMonth() === cursor.getMonth();

@@ -3,7 +3,8 @@ from app.workflow.nodes import (RECAP_HANDLERS, SOURCE_HANDLERS, TEXT_HANDLERS, 
                                 PendingAITaskHandler, PublishNodeHandler, RenderNodeHandler, ReviewNodeHandler,
                                 ScenesNodeHandler, SubtitleNodeHandler, UnsupportedNodeHandler, VideoNodeHandler,
                                 VoiceNodeHandler)
-from app.workflow.ports import AUDIO_ASSETS, BRIEF, TEXT, InputPort, OutputPort
+from app.workflow.nodes.music import MusicNodeHandler
+from app.workflow.ports import BRIEF, TEXT, InputPort, OutputPort
 
 
 class NodeRegistry:
@@ -35,12 +36,11 @@ class NodeRegistry:
 
 
 def _placeholders():
-    """Types without an executor yet, with the ports they will have."""
+    """Legacy types without an executor. ``script`` is kept so old workflows still open; the editor no
+    longer offers it (AI Writer replaces it) and a run blocks it with a reason."""
     return (
         PendingAITaskHandler("script", (InputPort("topic", (BRIEF, TEXT), multiple=True),),
                              (OutputPort("script", TEXT),)),
-        PendingAITaskHandler("music", (InputPort("mood", (BRIEF, TEXT), multiple=True),),
-                             (OutputPort("audio_assets", AUDIO_ASSETS),)),
     )
 
 
@@ -49,7 +49,8 @@ def build_default_registry() -> NodeRegistry:
     for handler in (IdeaNodeHandler(), AssetsNodeHandler(), ScenesNodeHandler(), ImageNodeHandler(),
                     VideoNodeHandler(), VoiceNodeHandler(), SubtitleNodeHandler(), RenderNodeHandler(),
                     ReviewNodeHandler(), PublishNodeHandler(), *(handler_type() for handler_type in TEXT_HANDLERS),
-                    *(handler_type() for handler_type in SOURCE_HANDLERS + RECAP_HANDLERS), *_placeholders()):
+                    *(handler_type() for handler_type in SOURCE_HANDLERS + RECAP_HANDLERS), MusicNodeHandler(),
+                    *_placeholders()):
         registry.register(handler)
     return registry
 

@@ -2,32 +2,29 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Clock, Facebook, Instagram, Music2, Sparkles, Youtube, type LucideIcon } from "lucide-react";
+import { Facebook, Music2, Youtube, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { statusTone } from "@/lib/studio";
 
-export type Platform = "youtube" | "tiktok" | "facebook" | "instagram";
+export type Platform = "youtube" | "tiktok" | "facebook";
 
 export const platformLabel: Record<Platform, string> = {
   youtube: "YouTube",
   tiktok: "TikTok",
   facebook: "Facebook",
-  instagram: "Instagram",
 };
 
 const platformIcon: Record<Platform, LucideIcon> = {
   youtube: Youtube,
   tiktok: Music2,
   facebook: Facebook,
-  instagram: Instagram,
 };
 
 const platformColor: Record<Platform, string> = {
   youtube: "text-yt",
   tiktok: "text-tt",
   facebook: "text-fb",
-  instagram: "text-ig",
 };
 
 export function PlatformBadge({
@@ -90,47 +87,6 @@ export function StatusBadge({ status, label, className }: { status: string; labe
       <span className="size-1.5 rounded-full bg-current" />
       {label}
     </span>
-  );
-}
-
-export function SoonBadge({ className }: { className?: string }) {
-  const { t } = useI18n();
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground",
-        className,
-      )}
-    >
-      <Clock className="size-2.5" />
-      {t.common.comingSoon}
-    </span>
-  );
-}
-
-/** Banner for screens whose layout is ready but whose backend is not. */
-export function ComingSoonBanner({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-primary/25 bg-[color-mix(in_oklab,var(--primary)_7%,transparent)] px-4 py-3">
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2">
-        <Sparkles className="size-4 text-primary" />
-      </span>
-      <div className="min-w-[200px] flex-1">
-        <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
-          {title} <SoonBadge />
-        </p>
-        <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-      </div>
-      {action}
-    </div>
   );
 }
 

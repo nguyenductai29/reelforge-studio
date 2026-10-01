@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
-import { keys, useChannels, useDashboard, usePublications, useRuns } from "@/lib/queries";
+import { keys, useChannels, useDashboard, usePublications, useRuns, useSettings } from "@/lib/queries";
 import { approvedAsset, runVideos } from "@/lib/studio";
 import type { ChannelId, PrivacyStatus, PublishMetadata, Run, RunSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -71,6 +71,17 @@ const toUtc = (local: string) => {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
+/** The next time the device clock shows ``HH:MM`` (today when still ahead, else tomorrow), as a
+ * `datetime-local` value; empty when the workspace has no default publishing time. */
+export const nextAt = (time: string | null | undefined, now = new Date()) => {
+  const match = /^(\d{2}):(\d{2})$/.exec(time ?? "");
+  if (!match) return "";
+  const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(match[1]), Number(match[2]));
+  if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+};
+
 /**
  * Reviews and queues the upload of an approved video (the final render when the run has one) to one or
  * more channels, now or at a scheduled time. Each channel gets its own publication and upload job.
@@ -104,6 +115,7 @@ export function PublishDialog({
   const runs = useRuns().data ?? [];
   const publications = usePublications().data ?? [];
   const channels = useChannels();
+  const defaultTime = useSettings().data?.workspace.default_publish_time;
   const d = t.publishing.dialog;
 
   const connected = new Set((channels.data ?? []).filter((c) => c.status === "connected").map((c) => c.channel));
@@ -381,7 +393,11 @@ export function PublishDialog({
                     type="button"
                     size="sm"
                     variant={when === value ? "default" : "outline"}
-                    onClick={() => setWhen(value)}
+                    onClick={() => {
+                      setWhen(value);
+                      // The workspace's default publishing time prefills an empty schedule.
+                      if (value === "later" && !schedule) setSchedule(nextAt(defaultTime));
+                    }}
                   >
                     {d[value]}
                   </Button>

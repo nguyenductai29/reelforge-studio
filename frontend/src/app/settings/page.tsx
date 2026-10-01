@@ -10,13 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  FieldLabel,
-  OptionChips,
-  PageHeader,
-  SettingRow,
-  SoonBadge,
-} from "@/components/reelforge/primitives";
+import { FieldLabel, OptionChips, PageHeader, SettingRow } from "@/components/reelforge/primitives";
 import { DefaultModelsForm, StorageUsagePanel } from "@/components/reelforge/default-models";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
@@ -25,13 +19,19 @@ import { useI18n } from "@/lib/i18n";
 import { LOCALES, LOCALE_NAMES, isLocale } from "@/lib/i18n/config";
 import { keys, useDashboard, useSettings } from "@/lib/queries";
 import { formatBytes } from "@/lib/studio";
-import type { SystemSettings, WorkspaceSettings } from "@/lib/types";
+import type { ContentPlatform, ContentTone, SystemSettings, WorkspaceSettings } from "@/lib/types";
 
-const Soon = ({ label }: { label: string }) => (
-  <span className="flex flex-wrap items-center gap-2">
-    {label} <SoonBadge />
-  </span>
-);
+const PLATFORMS: ContentPlatform[] = ["generic", "youtube", "youtube_shorts", "tiktok", "facebook"];
+const TONES: ContentTone[] = [
+  "neutral",
+  "casual",
+  "professional",
+  "cinematic",
+  "storytelling",
+  "documentary",
+  "dramatic",
+  "funny",
+];
 
 export default function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
@@ -43,13 +43,15 @@ export default function SettingsPage() {
   const settings = useSettings();
   const [workspace, setWorkspace] = useState<WorkspaceSettings | null>(null);
   const [system, setSystem] = useState<SystemSettings | null>(null);
+  const [displayName, setDisplayName] = useState("");
   const [tab, setTab] = useState("defaults");
-  const [saving, setSaving] = useState<"workspace" | "system" | null>(null);
+  const [saving, setSaving] = useState<"workspace" | "system" | "profile" | null>(null);
 
   useEffect(() => {
     if (settings.data) {
       setWorkspace(settings.data.workspace);
       setSystem(settings.data.system);
+      setDisplayName(settings.data.profile?.display_name ?? "");
     }
   }, [settings.data]);
 
@@ -68,6 +70,19 @@ export default function SettingsPage() {
       await api("settings/workspace", jsonRequest("PUT", workspace));
       await client.invalidateQueries({ queryKey: keys.settings });
       await client.invalidateQueries({ queryKey: ["readiness"] });
+      toast.success(s.savedToast);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function saveProfile() {
+    setSaving("profile");
+    try {
+      await api("settings/profile", jsonRequest("PUT", { display_name: displayName.trim() || null }));
+      await client.invalidateQueries({ queryKey: keys.settings });
       toast.success(s.savedToast);
     } catch (error) {
       showError(error);
@@ -109,7 +124,7 @@ export default function SettingsPage() {
         title={s.title}
         subtitle={s.subtitle}
         actions={
-          tab === "system" ? (
+          tab === "general" ? null : tab === "system" ? (
             <Button onClick={() => void saveSystem()} disabled={saving !== null}>
               {saving === "system" && <Loader2 className="size-4 animate-spin" />}
               {s.system.save}
@@ -134,11 +149,26 @@ export default function SettingsPage() {
         <TabsContent value="general" className="mt-5">
           <div className="panel max-w-xl space-y-4 p-5">
             <div>
-              <FieldLabel>{s.general.displayName}</FieldLabel>
+              <FieldLabel htmlFor="settings-name">{s.general.displayName}</FieldLabel>
               <div className="flex items-center gap-2">
-                <Input disabled value={dashboard?.user.email.split("@")[0] ?? ""} className="bg-surface-2" />
-                <SoonBadge />
+                <Input
+                  id="settings-name"
+                  value={displayName}
+                  maxLength={80}
+                  placeholder={dashboard?.user.email.split("@")[0] ?? ""}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  className="bg-surface"
+                />
+                <Button
+                  variant="outline"
+                  onClick={() => void saveProfile()}
+                  disabled={saving !== null || displayName.trim() === (settings.data?.profile?.display_name ?? "")}
+                >
+                  {saving === "profile" && <Loader2 className="size-4 animate-spin" />}
+                  {t.common.save}
+                </Button>
               </div>
+              <p className="mt-1 text-xs text-muted-foreground">{s.general.displayNameHint}</p>
             </div>
             <div>
               <FieldLabel htmlFor="settings-email">{s.general.email}</FieldLabel>
@@ -177,9 +207,6 @@ export default function SettingsPage() {
                 <p className="break-all font-mono text-xs text-muted-foreground">{dashboard?.workspace.id}</p>
               </div>
             </div>
-            <SettingRow label={<Soon label={s.workspace.teammates} />}>
-              <Switch disabled />
-            </SettingRow>
           </div>
         </TabsContent>
 
@@ -209,33 +236,45 @@ export default function SettingsPage() {
                 <p className="mt-2 text-xs text-warning">{s.defaults.squareNote}</p>
               )}
             </div>
-            {(
-              [
-                [s.defaults.platform, s.defaults.platforms],
-                [s.defaults.tone, s.defaults.tones],
-                [s.defaults.length, s.defaults.lengths],
-              ] as const
-            ).map(([label, options]) => (
-              <div key={label}>
-                <FieldLabel>
-                  <Soon label={label} />
-                </FieldLabel>
-                <OptionChips options={options} value={[options[0]!]} onChange={() => undefined} disabled />
-              </div>
-            ))}
+            <div>
+              <FieldLabel>{s.defaults.platform}</FieldLabel>
+              <OptionChips
+                options={PLATFORMS.map((value) => ({ value, label: t.config.options.platform?.[value] ?? value }))}
+                value={[workspace.default_platform]}
+                onChange={([next]) => next && setWorkspace({ ...workspace, default_platform: next as ContentPlatform })}
+              />
+            </div>
+            <div>
+              <FieldLabel>{s.defaults.tone}</FieldLabel>
+              <OptionChips
+                options={TONES.map((value) => ({ value, label: t.config.options.tone?.[value] ?? value }))}
+                value={[workspace.default_tone]}
+                onChange={([next]) => next && setWorkspace({ ...workspace, default_tone: next as ContentTone })}
+              />
+            </div>
+            <div>
+              <FieldLabel htmlFor="ws-duration">{s.defaults.length}</FieldLabel>
+              <Input
+                id="ws-duration"
+                type="number"
+                min={5}
+                max={3600}
+                value={workspace.default_duration ?? ""}
+                placeholder={s.defaults.lengthAuto}
+                onChange={(e) =>
+                  setWorkspace({ ...workspace, default_duration: e.target.value ? Number(e.target.value) : null })
+                }
+                className="max-w-[12rem] bg-surface"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{s.defaults.lengthHint}</p>
+            </div>
+            <p className="text-xs text-muted-foreground">{s.defaults.appliesHint}</p>
           </div>
         </TabsContent>
 
         <TabsContent value="ai" className="mt-5">
           <div className="panel max-w-xl space-y-4 p-5 text-sm">
-            {[s.ai.recaps, s.ai.thumbnails, s.ai.providerIds].map((label) => (
-              <SettingRow key={label} label={<Soon label={label} />}>
-                <Switch disabled />
-              </SettingRow>
-            ))}
-            <div className="border-t border-border pt-4">
-              <DefaultModelsForm />
-            </div>
+            <DefaultModelsForm />
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
               <p className="text-xs text-muted-foreground">{s.ai.modelsHint}</p>
               <Button asChild variant="outline" size="sm">
@@ -253,9 +292,17 @@ export default function SettingsPage() {
                 onCheckedChange={(v) => setWorkspace({ ...workspace, approval_required: v })}
               />
             </SettingRow>
-            <SettingRow label={<Soon label={s.publishing.autoSchedule} />}>
-              <Switch disabled />
-            </SettingRow>
+            <div>
+              <FieldLabel htmlFor="ws-publish-time">{s.publishing.publishTime}</FieldLabel>
+              <Input
+                id="ws-publish-time"
+                type="time"
+                value={workspace.default_publish_time ?? ""}
+                onChange={(e) => setWorkspace({ ...workspace, default_publish_time: e.target.value || null })}
+                className="max-w-[10rem] bg-surface"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{s.publishing.publishTimeHint}</p>
+            </div>
           </div>
         </TabsContent>
 
@@ -270,17 +317,11 @@ export default function SettingsPage() {
                 <p className="mt-1 text-xs text-muted-foreground">{s.storage.pathHint}</p>
               </div>
             )}
-            <SettingRow label={<Soon label={s.storage.retention} />}>
-              <Switch disabled />
-            </SettingRow>
           </div>
         </TabsContent>
 
         <TabsContent value="security" className="mt-5">
           <div className="panel max-w-xl space-y-4 p-5 text-sm">
-            <SettingRow label={<Soon label={s.security.twoFactor} />}>
-              <Switch disabled />
-            </SettingRow>
             <SettingRow label={s.security.signOut}>
               <Button variant="outline" size="sm" onClick={() => void signOut()}>
                 {t.shell.signOut}

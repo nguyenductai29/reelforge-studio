@@ -37,7 +37,7 @@ The workers:
 
 ## Jobs and stuck work
 
-`GET /api/admin/jobs` (system admins; filters `state`, `queue`, `limit`, `offset`) lists recent jobs of every workspace. It returns safe fields only:
+`GET /api/admin/jobs` (system admins; filters `state`, `queue`, `limit`, `offset`; the response has `total`) lists recent jobs of every workspace, one page at a time. It returns safe fields only:
 
 - queue and channel;
 - state and attempt count;
@@ -80,6 +80,21 @@ Only files at least 24 hours old are touched (`--older-than-hours`, minimum 24).
 
 Run a dry run first, and keep a backup of the media folder.
 
+## Admin console (Phase 15)
+
+The Admin page fits the window and never scrolls itself. Each tab is one table with a sticky header, a body that scrolls on its own, and pagination at the bottom. Every collection is paginated and searched on the server; the browser never downloads the full user or studio list.
+
+| Endpoint (system admins) | Filters | Notes |
+| --- | --- | --- |
+| `GET /api/admin` | — | Summary only: `counts` (users, active users, admins, studios, plans, pending reconciliation, failed jobs in 24 h, pending payments, each a `COUNT` query; and stuck jobs from the stuck-work audit), the plans, and payment-provider readiness |
+| `GET /api/admin/users`, `/users/{id}` | `q` (email, case-insensitive), `role` (`admin`/`member`), `status` (`active`/`locked`) | Detail adds open sessions and studios |
+| `GET /api/admin/workspaces`, `/workspaces/{id}` | `q` (studio name or owner email), `plan`, `status` (`active`/`expired`/`paused`/`canceled`) | Detail adds members, counts, storage, recent ledger entries and orders |
+| `GET /api/admin/payments` | `q` (email, studio, provider reference, or order code), `provider`, `status` | No checkout URL or provider payload |
+| `POST /api/admin/payments/{id}/refresh` | — | Asks the order's provider server to server; there is no "mark paid" action |
+| `GET /api/admin/payment-providers` | — | `{provider, method, configured}` only |
+
+List responses are `{items, total, limit, offset}` (`limit` 20 by default, at most 100). `q` is matched with `LIKE` after escaping `%`, `_` and `\`, so it is always a literal substring. Account creation (`POST /api/admin/accounts`), locking (`PUT /api/admin/users/{id}`; an admin cannot lock themselves or the last active admin), plan and status changes and credit adjustments (an append-only ledger entry with a reason) are unchanged. Migration 0015 adds indexes on `workspaces.owner_id` and on `payment_orders (created_at)` and `(provider, status)` for these pages.
+
 ## Never logged or returned
 
-Provider keys, OAuth access and refresh tokens, signed media URLs, cookies and upload session URLs. Logs carry IDs, codes and sizes; job payloads are summarized to safe fields (`app/logs.py`).
+Provider keys, payment-provider credentials and hash keys, OAuth access and refresh tokens, signed media URLs, cookies and upload session URLs. Logs carry IDs, codes and sizes; job payloads are summarized to safe fields (`app/logs.py`).

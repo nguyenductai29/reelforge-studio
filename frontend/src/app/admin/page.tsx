@@ -8,134 +8,107 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { EmptyState, FieldLabel, PageHeader, StatCard, StatusBadge } from "@/components/reelforge/primitives";
+import { EmptyState, FieldLabel } from "@/components/reelforge/primitives";
+import { AdminPayments } from "@/components/reelforge/admin/admin-payments";
+import { AdminStudios } from "@/components/reelforge/admin/admin-studios";
+import { AdminUsers } from "@/components/reelforge/admin/admin-users";
 import { Operations } from "@/components/reelforge/operations";
 import { Reconciliation } from "@/components/reelforge/reconciliation";
 import { api, jsonRequest } from "@/lib/api";
-import { errorText } from "@/lib/errors";
+import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
-import type { Dictionary } from "@/lib/i18n/vi";
 import { keys, useAdmin, useDashboard } from "@/lib/queries";
 import type { Plan } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
-type Confirm = { title: string; description: string; run: () => Promise<unknown> };
+const TABS = ["users", "studios", "plans", "payments", "reconciliation", "operations"] as const;
+type Tab = (typeof TABS)[number];
 
-function PlanForm({ plan, busy, onSave }: { plan: Plan; busy: boolean; onSave: (body: object) => void }) {
+function PlanForm({ plan }: { plan: Plan }) {
   const { t } = useI18n();
   const p = t.admin.plans;
+  const client = useQueryClient();
+  const showError = useErrorToast();
   const [active, setActive] = useState(plan.is_active);
+  const [busy, setBusy] = useState(false);
   const number = (value: FormDataEntryValue | null) => (value ? Number(value) : null);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    try {
+      await api(`admin/plans/${plan.code}`, jsonRequest("PUT", {
+        name: form.get("name"),
+        project_limit: number(form.get("project_limit")),
+        workflow_limit: number(form.get("workflow_limit")),
+        monthly_credits: Number(form.get("monthly_credits")),
+        price_vnd: plan.code === "trial" ? null : number(form.get("price_vnd")),
+        is_active: active,
+      }));
+      await client.invalidateQueries({ queryKey: keys.admin });
+      toast.success(t.admin.saved);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (name: string, label: string, props: Record<string, unknown>) => (
+    <div>
+      <FieldLabel htmlFor={`${plan.code}-${name}`}>{label}</FieldLabel>
+      <Input id={`${plan.code}-${name}`} name={name} className="h-8 bg-surface-2" {...props} />
+    </div>
+  );
+
   return (
-    <form
-      className="panel space-y-4 p-5"
-      onSubmit={(event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        onSave({
-          name: form.get("name"),
-          project_limit: number(form.get("project_limit")),
-          workflow_limit: number(form.get("workflow_limit")),
-          monthly_credits: Number(form.get("monthly_credits")),
-          price_vnd: plan.code === "trial" ? null : number(form.get("price_vnd")),
-          is_active: active,
-        });
-      }}
-    >
-      <div className="flex items-center justify-between">
+    <form className="panel space-y-3 p-4" onSubmit={save}>
+      <div className="flex items-center justify-between gap-2">
         <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           {plan.code}
         </span>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <FieldLabel htmlFor={`${plan.code}-name`}>{p.name}</FieldLabel>
-          <Input id={`${plan.code}-name`} name="name" defaultValue={plan.name} required maxLength={80} className="bg-surface-2" />
-        </div>
-        <div>
-          <FieldLabel htmlFor={`${plan.code}-price`}>{p.price}</FieldLabel>
-          <Input
-            id={`${plan.code}-price`}
-            name="price_vnd"
-            type="number"
-            min={2000}
-            max={2000000000}
-            defaultValue={plan.price_vnd ?? ""}
-            placeholder={plan.code === "trial" ? t.billing.free : t.billing.notForSale}
-            disabled={plan.code === "trial"}
-            className="bg-surface-2"
-          />
-        </div>
-        <div>
-          <FieldLabel htmlFor={`${plan.code}-projects`}>{p.projectLimit}</FieldLabel>
-          <Input
-            id={`${plan.code}-projects`}
-            name="project_limit"
-            type="number"
-            min={1}
-            defaultValue={plan.project_limit ?? ""}
-            placeholder={t.common.unlimited}
-            required={plan.code === "trial"}
-            className="bg-surface-2"
-          />
-        </div>
-        <div>
-          <FieldLabel htmlFor={`${plan.code}-workflows`}>{p.workflowLimit}</FieldLabel>
-          <Input
-            id={`${plan.code}-workflows`}
-            name="workflow_limit"
-            type="number"
-            min={1}
-            defaultValue={plan.workflow_limit ?? ""}
-            placeholder={t.common.unlimited}
-            className="bg-surface-2"
-          />
-        </div>
-        <div>
-          <FieldLabel htmlFor={`${plan.code}-credits`}>{p.monthlyCredits}</FieldLabel>
-          <Input
-            id={`${plan.code}-credits`}
-            name="monthly_credits"
-            type="number"
-            min={0}
-            defaultValue={plan.monthly_credits}
-            required
-            className="bg-surface-2"
-          />
-        </div>
-        <label className="flex items-center justify-between gap-3 self-end text-sm">
+        <label className="flex items-center gap-2 text-xs">
           {p.active}
           <Switch checked={active} onCheckedChange={setActive} />
         </label>
       </div>
-      <div className="flex justify-end">
-        <Button type="submit" disabled={busy}>
-          {p.save}
-        </Button>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {field("name", p.name, { defaultValue: plan.name, required: true, maxLength: 80 })}
+        {field("price_vnd", p.price, {
+          type: "number", min: 2000, max: 2000000000, defaultValue: plan.price_vnd ?? "",
+          placeholder: plan.code === "trial" ? t.billing.free : t.billing.notForSale, disabled: plan.code === "trial",
+        })}
+        {field("project_limit", p.projectLimit, {
+          type: "number", min: 1, defaultValue: plan.project_limit ?? "", placeholder: t.common.unlimited,
+          required: plan.code === "trial",
+        })}
+        {field("workflow_limit", p.workflowLimit, {
+          type: "number", min: 1, defaultValue: plan.workflow_limit ?? "", placeholder: t.common.unlimited,
+        })}
+        {field("monthly_credits", p.monthlyCredits, { type: "number", min: 0, defaultValue: plan.monthly_credits, required: true })}
+        <div className="flex items-end justify-end">
+          <Button type="submit" size="sm" disabled={busy}>
+            {busy && <Loader2 className="size-3.5 animate-spin" />}
+            {p.save}
+          </Button>
+        </div>
       </div>
     </form>
   );
 }
 
+/**
+ * The admin console fits the window: the header, tabs, toolbars and pagination stay put, and only each
+ * table's body scrolls. Every collection is loaded one page at a time from the server.
+ */
 export default function AdminPage() {
-  const { t, formatDate, formatNumber } = useI18n();
+  const { t, formatNumber } = useI18n();
   useDocumentTitle(t.admin.title);
-  const client = useQueryClient();
   const { data: dashboard } = useDashboard();
   const admin = useAdmin(Boolean(dashboard?.is_admin));
-  const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [tab, setTab] = useState<Tab>("users");
   const a = t.admin;
 
   if (!dashboard?.is_admin) {
@@ -143,286 +116,67 @@ export default function AdminPage() {
   }
   const overview = admin.data;
   if (!overview) return <Loader2 className="mx-auto mt-10 size-5 animate-spin text-muted-foreground" />;
-
-  async function mutate(run: () => Promise<unknown>, message: string = a.saved) {
-    setBusy(true);
-    try {
-      await run();
-      await client.invalidateQueries({ queryKey: keys.admin });
-      toast.success(message);
-      return true;
-    } catch (error) {
-      toast.error(errorText(error, t));
-      return false;
-    } finally {
-      setBusy(false);
-      setConfirm(null);
-    }
-  }
-
-  const owner = (id: string) => overview.users.find((user) => user.id === id)?.email ?? id;
-  const subscription = (status: string) =>
-    t.status.subscription[status as keyof Dictionary["status"]["subscription"]] ?? status;
+  const counts = overview.counts;
+  const stats: [string, number, boolean][] = [
+    [a.stats.users, counts.users, false],
+    [a.stats.studios, counts.workspaces, false],
+    [a.stats.plans, counts.plans, false],
+    [a.stats.pendingPayments, counts.pending_payments, false],
+    [a.stats.pendingReconciliation, counts.pending_reconciliation, counts.pending_reconciliation > 0],
+    [a.stats.stuckJobs, counts.stuck_jobs, counts.stuck_jobs > 0],
+  ];
 
   return (
-    <div className="space-y-6">
-      <PageHeader title={a.title} subtitle={a.subtitle} />
-      <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard label={a.stats.users} value={formatNumber(overview.users.length)} />
-        <StatCard label={a.stats.studios} value={formatNumber(overview.workspaces.length)} />
-        <StatCard label={a.stats.plans} value={formatNumber(overview.plans.length)} />
-      </div>
+    // 100dvh minus the 3.5rem top bar and the 3rem of page padding: the page itself never scrolls.
+    <div className="flex h-[calc(100dvh-6.5rem)] min-h-0 flex-col gap-3 overflow-hidden">
+      <header className="flex shrink-0 flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold">{a.title}</h1>
+          <p className="truncate text-xs text-muted-foreground">{a.subtitle}</p>
+        </div>
+        <dl className="flex flex-wrap gap-2">
+          {stats.map(([label, value, warn]) => (
+            <div key={label} className="rounded-lg border border-border bg-surface px-2.5 py-1">
+              <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</dt>
+              <dd className={cn("text-sm font-semibold tabular-nums", warn && "text-warning")}>{formatNumber(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      </header>
 
-      <Tabs defaultValue="users">
-        <TabsList className="h-auto flex-wrap">
-          {(["users", "create", "studios", "plans", "reconciliation", "operations"] as const).map((key) => (
+      <Tabs value={tab} onValueChange={(value) => setTab(value as Tab)} className="flex min-h-0 flex-1 flex-col">
+        <TabsList className="scrollbar-thin h-auto w-full shrink-0 justify-start overflow-x-auto sm:w-fit">
+          {TABS.map((key) => (
             <TabsTrigger key={key} value={key}>
               {a.tabs[key]}
             </TabsTrigger>
           ))}
         </TabsList>
-
-        <TabsContent value="users" className="mt-5">
-          <div className="panel divide-y divide-border">
-            {overview.users.map((user) => (
-              <div key={user.id} className="flex flex-wrap items-center gap-3 p-4 text-sm">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{user.email}</p>
-                  <p className="text-xs text-muted-foreground">{user.is_admin ? a.users.admin : a.users.member}</p>
-                </div>
-                <StatusBadge
-                  status={user.is_active ? "connected" : "failed"}
-                  label={user.is_active ? a.users.active : a.users.locked}
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    setConfirm({
-                      title: user.is_active ? a.users.lockTitle : a.users.unlockTitle,
-                      description: user.is_active ? a.users.lockDescription(user.email) : a.users.unlockDescription(user.email),
-                      run: () => api(`admin/users/${user.id}`, jsonRequest("PUT", { is_active: !user.is_active })),
-                    })
-                  }
-                >
-                  {user.is_active ? a.users.lock : a.users.unlock}
-                </Button>
-              </div>
-            ))}
-          </div>
+        <TabsContent value="users" className="mt-3 flex min-h-0 flex-1 flex-col">
+          <AdminUsers plans={overview.plans} selfEmail={dashboard.user.email} />
         </TabsContent>
-
-        <TabsContent value="create" className="mt-5">
-          <form
-            className="panel max-w-2xl space-y-4 p-5"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const form = event.currentTarget;
-              const body = Object.fromEntries(new FormData(form));
-              void mutate(() => api("admin/accounts", jsonRequest("POST", body)), a.create.created).then(
-                (ok) => ok && form.reset(),
-              );
-            }}
-          >
-            <div>
-              <p className="text-sm font-medium">{a.create.title}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{a.create.hint}</p>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <FieldLabel htmlFor="admin-email">{a.create.email}</FieldLabel>
-                <Input id="admin-email" type="email" name="email" required className="bg-surface-2" />
-              </div>
-              <div>
-                <FieldLabel htmlFor="admin-password">{a.create.password}</FieldLabel>
-                <Input
-                  id="admin-password"
-                  type="password"
-                  name="password"
-                  minLength={12}
-                  required
-                  autoComplete="new-password"
-                  className="bg-surface-2"
-                />
-              </div>
-              <div>
-                <FieldLabel htmlFor="admin-studio">{a.create.studio}</FieldLabel>
-                <Input id="admin-studio" name="workspace_name" maxLength={100} required className="bg-surface-2" />
-              </div>
-              <div>
-                <FieldLabel>{a.create.plan}</FieldLabel>
-                <Select name="plan_code" defaultValue={overview.plans.find((p) => p.is_active)?.code}>
-                  <SelectTrigger className="bg-surface-2" aria-label={a.create.plan}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {overview.plans
-                      .filter((p) => p.is_active)
-                      .map((p) => (
-                        <SelectItem key={p.code} value={p.code}>
-                          {p.name}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="flex justify-end">
-              <Button type="submit" disabled={busy}>
-                {busy && <Loader2 className="size-4 animate-spin" />}
-                {a.create.submit}
-              </Button>
-            </div>
-          </form>
+        <TabsContent value="studios" className="mt-3 flex min-h-0 flex-1 flex-col">
+          <AdminStudios plans={overview.plans} />
         </TabsContent>
-
-        <TabsContent value="studios" className="mt-5 space-y-3">
-          <p className="text-xs text-muted-foreground">{a.studios.hint}</p>
-          <div className="panel divide-y divide-border">
-            {overview.workspaces.map((ws) => (
-              <div key={ws.id} className="space-y-3 p-4 text-sm">
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">{ws.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {owner(ws.owner_id)} · {t.common.credits(formatNumber(ws.credits))}
-                      {ws.ends_at ? ` · ${a.studios.expires(formatDate(ws.ends_at))}` : ""}
-                    </p>
-                  </div>
-                  <StatusBadge status={ws.status} label={subscription(ws.status)} />
-                  <Select
-                    value={ws.plan_code ?? undefined}
-                    disabled={busy}
-                    onValueChange={(code) =>
-                      setConfirm({
-                        title: a.studios.changePlanTitle,
-                        description: a.studios.changePlanDescription(ws.name, ws.plan_code ?? "—", code),
-                        run: () =>
-                          api(
-                            `admin/workspaces/${ws.id}/subscription`,
-                            jsonRequest("PUT", { plan_code: code, status: ws.status === "active" ? "active" : "paused" }),
-                          ),
-                      })
-                    }
-                  >
-                    <SelectTrigger className="h-8 w-36 bg-surface-2" aria-label={a.create.plan}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {overview.plans
-                        .filter((p) => p.is_active || p.code === ws.plan_code)
-                        .map((p) => (
-                          <SelectItem key={p.code} value={p.code}>
-                            {p.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      setConfirm({
-                        title: ws.status === "active" ? a.studios.pauseTitle : a.studios.activateTitle,
-                        description:
-                          ws.status === "active" ? a.studios.pauseDescription(ws.name) : a.studios.activateDescription(ws.name),
-                        run: () =>
-                          api(
-                            `admin/workspaces/${ws.id}/subscription`,
-                            jsonRequest("PUT", { plan_code: ws.plan_code, status: ws.status === "active" ? "paused" : "active" }),
-                          ),
-                      })
-                    }
-                  >
-                    {ws.status === "active" ? a.studios.pause : a.studios.activate}
-                  </Button>
-                </div>
-                <form
-                  className="flex flex-wrap gap-2"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const form = event.currentTarget;
-                    const values = new FormData(form);
-                    void mutate(() =>
-                      api(
-                        `admin/workspaces/${ws.id}/credits`,
-                        jsonRequest("POST", { delta: Number(values.get("delta")), reason: values.get("reason") }),
-                      ),
-                    ).then((ok) => ok && form.reset());
-                  }}
-                >
-                  <Input
-                    name="delta"
-                    type="number"
-                    min={-1000000}
-                    max={1000000}
-                    required
-                    placeholder={a.studios.delta}
-                    aria-label={`${a.studios.delta} · ${ws.name}`}
-                    className="h-8 w-32 bg-surface-2"
-                  />
-                  <Input
-                    name="reason"
-                    minLength={3}
-                    maxLength={80}
-                    required
-                    placeholder={a.studios.reason}
-                    aria-label={`${a.studios.reason} · ${ws.name}`}
-                    className="h-8 min-w-[160px] flex-1 bg-surface-2"
-                  />
-                  <Button type="submit" size="sm" variant="outline" disabled={busy}>
-                    {a.studios.adjust}
-                  </Button>
-                </form>
-              </div>
-            ))}
-          </div>
-        </TabsContent>
-
-        <TabsContent value="plans" className="mt-5 space-y-4">
-          <p className="text-xs text-muted-foreground">{a.plans.hint}</p>
-          <div className="grid gap-4 lg:grid-cols-2">
+        {/* relative: the switches' hidden form inputs are absolutely positioned and must not stretch the page. */}
+        <TabsContent value="plans" className="scrollbar-thin relative mt-3 min-h-0 flex-1 overflow-y-auto">
+          <p className="mb-3 text-xs text-muted-foreground">{a.plans.hint}</p>
+          <div className="grid gap-3 lg:grid-cols-3">
             {overview.plans.map((plan) => (
-              <PlanForm
-                key={`${plan.code}-${plan.name}-${plan.price_vnd}-${plan.is_active}`}
-                plan={plan}
-                busy={busy}
-                onSave={(body) => void mutate(() => api(`admin/plans/${plan.code}`, jsonRequest("PUT", body)))}
-              />
+              <PlanForm key={`${plan.code}-${plan.name}-${plan.price_vnd}-${plan.is_active}-${plan.monthly_credits}`} plan={plan} />
             ))}
           </div>
         </TabsContent>
-        <TabsContent value="reconciliation" className="mt-5">
+        <TabsContent value="payments" className="mt-3 flex min-h-0 flex-1 flex-col">
+          <AdminPayments providers={overview.payment_providers} />
+        </TabsContent>
+        <TabsContent value="reconciliation" className="mt-3 flex min-h-0 flex-1 flex-col">
           <Reconciliation />
         </TabsContent>
-        <TabsContent value="operations" className="mt-5">
+        <TabsContent value="operations" className="mt-3 flex min-h-0 flex-1 flex-col">
           <Operations />
         </TabsContent>
       </Tabs>
-
-      <AlertDialog open={Boolean(confirm)} onOpenChange={(open) => !open && !busy && setConfirm(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{confirm?.title}</AlertDialogTitle>
-            <AlertDialogDescription>{confirm?.description}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>{t.common.cancel}</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={busy}
-              onClick={(e) => {
-                e.preventDefault();
-                if (confirm) void mutate(confirm.run);
-              }}
-            >
-              {busy && <Loader2 className="size-4 animate-spin" />}
-              {t.common.confirm}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

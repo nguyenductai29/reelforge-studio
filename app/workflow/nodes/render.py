@@ -8,6 +8,9 @@ freezes the asset IDs, their scene order and the subtitle cues, so a later edit
 cannot change a queued render. Rendering is free by default
 (``RENDER_CREDITS_PER_JOB``); a price, when set, is reserved per render and
 refunded if the render fails. See app/render.py for the audio and timing rules.
+
+Since Phase 16, images (from an Image step or uploaded) are scenes too, shown as
+stills, and a Music step's track is mixed under the result.
 """
 from sqlalchemy import select
 
@@ -16,17 +19,18 @@ from app.media_paths import asset_path, stored_bytes, workspace_media_quota
 from app.models import Asset
 from app.workflow.nodes.base import INSUFFICIENT_CREDITS_DETAIL, NodeHandler
 from app.workflow.nodes.media import connected_inputs, references
-from app.workflow.ports import AUDIO_ASSETS, IMAGE_ASSETS, SUBTITLE_ASSET, VIDEO_ASSETS, InputPort, OutputPort
+from app.workflow.ports import AUDIO_ASSETS, IMAGE_ASSETS, MUSIC, SUBTITLE_ASSET, VIDEO_ASSETS, InputPort, OutputPort
 from app.workflow.results import JobRequest, NodeError, NodeExecutionResult, NodeReadiness, RunRequestError
 
 QUEUED_DETAIL = "Đã xếp hàng render video."
-MISSING_INPUT_DETAIL = "Chưa nối clip video vào bước Render."
-IMAGES_DETAIL = "Render hiện chỉ ghép video; trình chiếu từ ảnh chưa được hỗ trợ."
+MISSING_INPUT_DETAIL = "Chưa nối clip video hoặc ảnh vào bước Render."
 MISSING_FILE_DETAIL = "Không tìm thấy tệp đầu vào của bước Render trong kho media."
 STORAGE_FULL_DETAIL = "Kho media của workspace đã đầy; chưa render được."
 READY_DETAIL = "Sẵn sàng render bằng FFmpeg trên máy chủ."
 VIDEO_TYPES = frozenset({"video/mp4"})
+IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 AUDIO_TYPES = frozenset({"audio/wav", "audio/mpeg"})
+MUSIC_TYPES = frozenset({"audio/mpeg", "audio/wav", "audio/ogg"})
 
 
 def _rendered(output):
@@ -54,7 +58,8 @@ class RenderNodeHandler(NodeHandler):
     # Port names are the placeholder's, so saved edges still connect.
     inputs = (InputPort("media", (VIDEO_ASSETS, IMAGE_ASSETS), multiple=True),
               InputPort("audio", (AUDIO_ASSETS,), multiple=True),
-              InputPort("subtitle", (SUBTITLE_ASSET,)))
+              InputPort("subtitle", (SUBTITLE_ASSET,)),
+              InputPort("music", (MUSIC,)))
     outputs = (OutputPort("rendered_video", VIDEO_ASSETS, extract=_rendered),)
     requires = (("media",),)
     missing_input_detail = MISSING_INPUT_DETAIL
@@ -71,19 +76,22 @@ class RenderNodeHandler(NodeHandler):
         db, workspace_id = context.db, context.workspace.id
         media, voices = _entries(inputs.get("media")), _entries(inputs.get("audio"))
         subtitle = inputs.get("subtitle") if isinstance(inputs.get("subtitle"), dict) else None
-        ids = [entry["id"] for entry in media + voices] + ([subtitle["id"]] if subtitle and subtitle.get("id") else [])
+        music = inputs.get("music") if isinstance(inputs.get("music"), dict) else None
+        ids = [entry["id"] for entry in media + voices] + ([subtitle["id"]] if subtitle and subtitle.get("id") else []) \
+            + ([music["asset_id"]] if music and isinstance(music.get("asset_id"), str) else [])
         rows = {row.id: row for row in db.scalars(select(Asset).where(Asset.workspace_id == workspace_id,
                                                                        Asset.id.in_(ids)))} if ids else {}
-        if any(rows.get(entry["id"]) is not None and rows[entry["id"]].content_type.startswith("image/")
-               for entry in media):
-            return NodeExecutionResult.blocked(IMAGES_DETAIL, NodeError("unsupported_media", "Image slideshows"))
         clips = [entry for entry in media if rows.get(entry["id"]) is not None
-                 and rows[entry["id"]].content_type in VIDEO_TYPES]
+                 and rows[entry["id"]].content_type in VIDEO_TYPES | IMAGE_TYPES]
         if not clips:
             return NodeExecutionResult.blocked(MISSING_INPUT_DETAIL, NodeError("missing_input", "No video clips"))
         tracks = [entry for entry in voices if rows.get(entry["id"]) is not None
                   and rows[entry["id"]].content_type in AUDIO_TYPES]
         subtitle_row = rows.get(subtitle.get("id")) if subtitle else None
+        music_row = rows.get(music.get("asset_id")) if music else None
+        if music and (music_row is None or music_row.content_type not in MUSIC_TYPES
+                      or not asset_path(db, workspace_id, music_row.id).is_file()):
+            return NodeExecutionResult.blocked(MISSING_FILE_DETAIL, NodeError("input_missing", "Music file missing"))
         if (len(clips) != len(media) or len(tracks) != len(voices)
                 or (subtitle and (subtitle_row is None or subtitle_row.content_type not in subtitles.CONTENT_TYPES))
                 or not all(asset_path(db, workspace_id, entry["id"]).is_file() for entry in clips + tracks)
@@ -96,13 +104,17 @@ class RenderNodeHandler(NodeHandler):
         step, cost = context.step_for(node), render.render_credit_cost()
         payload = {"kind": "render.generate", "node_type": self.node_type, "node_id": node["id"], "provider": "ffmpeg",
                    "model": "local", "credits": cost,
-                   "clips": [{"asset_id": entry["id"], "scene_index": _scene(entry), "duration": entry.get("duration")}
+                   "clips": [{"asset_id": entry["id"], "scene_index": _scene(entry), "duration": entry.get("duration"),
+                              **({"still": True} if rows[entry["id"]].content_type in IMAGE_TYPES else {})}
                              for entry in clips],
                    "audio": [{"asset_id": entry["id"], "scene_index": _scene(entry), "duration": entry.get("duration")}
                              for entry in tracks],
                    "subtitle": {"asset_id": subtitle_row.id, "timing": subtitle.get("timing"),
                                 "style": subtitle.get("style"), "cues": subtitle.get("cues") or [],
                                 "segments": subtitle.get("segments") or []} if subtitle_row else None}
+        if music_row is not None:
+            volume = music.get("volume") if isinstance(music.get("volume"), int) else 15
+            payload["music"] = {"asset_id": music_row.id, "volume": min(100, max(1, volume))}
         metadata = {}
         if cost:
             refs = references("render", step.id, "final")
@@ -115,6 +127,11 @@ class RenderNodeHandler(NodeHandler):
             metadata = {"credits_reserved": cost, "credit_reference": refs["reserve_reference"]}
         output = {"clip_count": len(clips), "audio_count": len(tracks), "subtitles": subtitle_row is not None,
                   "audio_policy": "voice" if tracks else "clips"}
+        stills = sum(1 for entry in clips if rows[entry["id"]].content_type in IMAGE_TYPES)
+        if stills:
+            output["still_count"] = stills
+        if music_row is not None:
+            output["music"] = True
         return NodeExecutionResult.queued(QUEUED_DETAIL, JobRequest("render", payload,
                                                                     logical_key=f"render:{step.id}:final"),
                                           output, metadata=metadata)

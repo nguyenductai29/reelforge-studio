@@ -16,16 +16,16 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, jsonRequest } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
 import { keys, useReconciliation, useRefreshStudio } from "@/lib/queries";
 import type { ReconciliationItem } from "@/lib/types";
+import { DataTable, type Column } from "./data-table";
 import { FieldLabel, StatusBadge } from "./primitives";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 20;
 type Decision = "confirm-charge" | "refund";
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
@@ -98,78 +98,85 @@ export function Reconciliation() {
     }
   }
 
+  const columns: Column<ReconciliationItem>[] = [
+    { key: "studio", header: r.columns.studio, className: "max-w-[220px]",
+      cell: (item) => (
+        <div className="min-w-0">
+          <p className="truncate font-medium" title={item.workspace_name}>{item.workspace_name}</p>
+          <p className="truncate text-xs text-muted-foreground" title={item.user_email}>{item.user_email}</p>
+        </div>
+      ) },
+    { key: "step", header: r.columns.step, className: "max-w-[240px]",
+      cell: (item) => (
+        <div className="min-w-0 text-xs">
+          <p className="truncate">{item.workflow_name} · {item.node_type}
+            {item.scene_index != null ? ` · ${r.fields.scene} ${item.scene_index}` : ""}</p>
+          <p className="truncate text-muted-foreground">{item.provider} / {item.model}</p>
+        </div>
+      ) },
+    { key: "error", header: r.columns.error, className: "max-w-[260px]",
+      cell: (item) => (
+        <span className="block truncate text-xs text-muted-foreground" title={item.error_message || item.error_category || undefined}>
+          {item.error_message || item.error_category || "—"}
+        </span>
+      ) },
+    { key: "credits", header: r.columns.credits, className: "whitespace-nowrap text-right tabular-nums",
+      cell: (item) => t.common.credits(formatNumber(item.credits)) },
+    { key: "date", header: r.columns.date, className: "whitespace-nowrap text-xs text-muted-foreground",
+      cell: (item) => date(item.reconciled_at ?? item.created_at) },
+    { key: "status", header: r.columns.status, className: "whitespace-nowrap", cell: (item) => badge(item) },
+    { key: "actions", header: <span className="sr-only">{r.details}</span>, className: "text-right",
+      cell: (item) => (
+        <Button variant="outline" size="sm" className="h-7" onClick={() => setSelected(item)}>{r.details}</Button>
+      ) },
+  ];
+
   return (
-    <div className="space-y-4">
-      <p className="max-w-3xl text-sm text-muted-foreground">{r.description}</p>
-      <Tabs
-        value={status}
-        onValueChange={(value) => {
-          setStatus(value === "resolved" ? "resolved" : "pending");
-          setOffset(0);
-        }}
-      >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
-            <TabsTrigger value="pending">{r.pending}</TabsTrigger>
-            <TabsTrigger value="resolved">{r.history}</TabsTrigger>
-          </TabsList>
-          <Button variant="outline" size="sm" disabled={query.isFetching || busy} onClick={() => void query.refetch()}>
-            {query.isFetching ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-            {r.refresh}
-          </Button>
-        </div>
-
-        <TabsContent value={status} className="mt-4 space-y-4">
-      {query.isPending ? (
-        <p role="status" className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> {t.common.loading}
-        </p>
-      ) : query.isError ? (
-        <p role="alert" className="panel p-4 text-sm text-destructive">{errorText(query.error, t)}</p>
-      ) : items.length === 0 ? (
-        <p className="panel p-6 text-sm text-muted-foreground">{status === "pending" ? r.emptyPending : r.emptyHistory}</p>
-      ) : (
-        <div className="panel divide-y divide-border">
-          {items.map((item) => (
-            <div key={item.job_id} className="flex flex-wrap items-center gap-3 p-4 text-sm">
-              <div className="min-w-0 flex-1 basis-60">
-                <p className="truncate font-medium">{item.workspace_name} · {item.user_email}</p>
-                <p className="mt-1 truncate text-xs text-muted-foreground">
-                  {item.workflow_name} · {item.node_type}
-                  {item.scene_index != null ? ` · ${r.fields.scene} ${item.scene_index}` : ""} · {item.provider} / {item.model}
-                </p>
-                <p className="mt-1 truncate text-xs text-muted-foreground" title={item.error_message || item.error_category || undefined}>
-                  {r.fields.errorMessage}: {item.error_message || item.error_category || "—"}
-                </p>
-                <p className="mt-1 truncate text-xs text-muted-foreground" title={item.remote_request_id ?? undefined}>
-                  {r.fields.remoteRequestId}: {item.remote_request_id ?? "—"}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">{date(item.reconciled_at ?? item.created_at)}</p>
-              </div>
-              <span className="text-xs font-medium">{t.common.credits(formatNumber(item.credits))}</span>
-              {badge(item)}
-              <Button variant="outline" size="sm" onClick={() => setSelected(item)}>{r.details}</Button>
+    <>
+      <DataTable
+        columns={columns}
+        rows={items}
+        rowKey={(item) => item.job_id}
+        loading={query.isFetching}
+        error={query.isError ? errorText(query.error, t) : null}
+        empty={status === "pending" ? r.emptyPending : r.emptyHistory}
+        total={total}
+        limit={PAGE_SIZE}
+        offset={offset}
+        onOffset={setOffset}
+        minWidth={980}
+        toolbar={
+          <>
+            <div className="inline-flex rounded-lg bg-muted p-1 text-sm">
+              {(["pending", "resolved"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={status === value}
+                  onClick={() => {
+                    setStatus(value);
+                    setOffset(0);
+                  }}
+                  className={
+                    status === value
+                      ? "rounded-md bg-background px-3 py-1 font-medium shadow"
+                      : "rounded-md px-3 py-1 text-muted-foreground"
+                  }
+                >
+                  {value === "pending" ? r.pending : r.history}
+                </button>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
-
-      {query.data && (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
-          <p>{r.range(formatNumber(items.length ? offset + 1 : 0), formatNumber(items.length ? offset + items.length : 0), formatNumber(total))}</p>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={offset === 0 || query.isFetching} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
-              {r.previous}
+            <Button variant="outline" size="sm" className="h-8" disabled={query.isFetching || busy} onClick={() => void query.refetch()}>
+              {query.isFetching ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+              {r.refresh}
             </Button>
-            <Button variant="outline" size="sm" disabled={offset + PAGE_SIZE >= total || query.isFetching} onClick={() => setOffset(offset + PAGE_SIZE)}>
-              {r.next}
-            </Button>
-          </div>
-        </div>
-      )}
-
-        </TabsContent>
-      </Tabs>
+            <p className="min-w-0 flex-1 basis-64 truncate text-xs text-muted-foreground" title={r.description}>
+              {r.description}
+            </p>
+          </>
+        }
+      />
 
       <Dialog open={Boolean(selected) && !decision} onOpenChange={(open) => !open && setSelected(null)}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
@@ -248,6 +255,6 @@ export function Reconciliation() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }

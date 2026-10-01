@@ -8,7 +8,8 @@
 * **Uploaded Media Source** (``source_media``): one file of the workspace. TXT, MD,
   SRT and VTT documents are read at once (subtitle cues keep their times); audio
   and video files are passed on for the Transcript step, and a video also feeds
-  Render or Match Source Scenes as the source clip.
+  Render or Match Source Scenes as the source clip. An image (PNG, JPEG, WEBP)
+  feeds Render as a still (Phase 16).
 * **Transcript** (``transcribe``): speech to text with timed segments, through the
   workspace's transcription model (task ``transcription``), as one durable paid
   job. A source that already has text (a document, a page or subtitles) passes
@@ -30,14 +31,15 @@ from app.providers.transcription import (TRANSCRIPTION_PROVIDERS, TRANSCRIPTION_
 from app.workflow.config import ASSET, SELECT, TEXT as TEXT_FIELD, TOOL, ConfigField
 from app.workflow.nodes.base import INSUFFICIENT_CREDITS_DETAIL, NodeHandler
 from app.workflow.nodes.media import references
-from app.workflow.ports import AUDIO_ASSETS, SOURCE, TEXT, VIDEO_ASSETS, InputPort, OutputPort, bind_edges
+from app.workflow.ports import AUDIO_ASSETS, IMAGE_ASSETS, SOURCE, TEXT, VIDEO_ASSETS, InputPort, OutputPort, bind_edges
 from app.workflow.results import JobRequest, NodeError, NodeExecutionResult, NodeReadiness, RunRequestError
 
 LANGUAGES = ("auto", "vi", "en", "ja")
 DOCUMENT_TYPES = tuple(sources.DOCUMENT_TYPES)
 VIDEO_TYPES = ("video/mp4", "video/webm")
 AUDIO_TYPES = ("audio/mpeg", "audio/wav", "audio/ogg")
-MEDIA_TYPES = DOCUMENT_TYPES + VIDEO_TYPES + AUDIO_TYPES
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp")
+MEDIA_TYPES = DOCUMENT_TYPES + VIDEO_TYPES + AUDIO_TYPES + IMAGE_TYPES
 MAX_TEXT_CHARS = 7000  # a node's settings hold at most 8,000 characters; upload a TXT file for more
 
 TEXT_DONE_DETAIL = "Đã nhận văn bản nguồn."
@@ -46,7 +48,7 @@ URL_MISSING_DETAIL = "Nhập địa chỉ https:// của trang cần lấy nội
 URL_BLOCKED_DETAIL = "Chỉ lấy được trang web công khai qua https://; địa chỉ nội bộ hoặc riêng tư bị chặn."
 URL_QUEUED_DETAIL = "Đã xếp hàng tải nội dung trang web."
 URL_READY_DETAIL = "Sẵn sàng tải trang web (miễn phí, không chạy JavaScript)."
-MEDIA_MISSING_DETAIL = "Chọn tệp nguồn (TXT, MD, SRT, VTT, âm thanh hoặc video) đã tải lên."
+MEDIA_MISSING_DETAIL = "Chọn tệp nguồn (TXT, MD, SRT, VTT, ảnh, âm thanh hoặc video) đã tải lên."
 MEDIA_UNAVAILABLE_DETAIL = "Không tìm thấy tệp nguồn đã chọn trong kho media."
 DOCUMENT_DONE_DETAIL = "Đã đọc tài liệu nguồn."
 MEDIA_DONE_DETAIL = "Đã chọn tệp nguồn; nối bước Phiên âm để lấy lời thoại."
@@ -150,7 +152,8 @@ class MediaSourceNodeHandler(NodeHandler):
     node_type = "source_media"
     outputs = (OutputPort("source", SOURCE, extract=_source("source")), OutputPort("text", TEXT, extract=_source_text),
                OutputPort("video", VIDEO_ASSETS, keys=("video_assets",)),
-               OutputPort("audio", AUDIO_ASSETS, keys=("audio_assets",)))
+               OutputPort("audio", AUDIO_ASSETS, keys=("audio_assets",)),
+               OutputPort("image", IMAGE_ASSETS, keys=("image_assets",)))
     config_fields = (
         ConfigField("asset_id", ASSET, label="source_file", content_types=MEDIA_TYPES, code="invalid_asset"),
         ConfigField("language", SELECT, default="auto", options=LANGUAGES, code="invalid_language"),
@@ -175,7 +178,8 @@ class MediaSourceNodeHandler(NodeHandler):
                 return NodeExecutionResult.failed(NodeError(exc.code, str(exc)), detail=str(exc))
             source["language"] = language
             return _completed(DOCUMENT_DONE_DETAIL, source)
-        media = "video" if asset.content_type in VIDEO_TYPES else "audio"
+        media = ("video" if asset.content_type in VIDEO_TYPES
+                 else "image" if asset.content_type in IMAGE_TYPES else "audio")
         source = sources.make_source(media, title=asset.filename, language=language, asset_id=asset.id,
                                      metadata={"content_type": asset.content_type, "bytes": asset.bytes})
         entry = {"id": asset.id, "asset_id": asset.id, "filename": asset.filename,

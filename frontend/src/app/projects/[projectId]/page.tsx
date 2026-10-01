@@ -5,18 +5,13 @@ import { useParams } from "next/navigation";
 import { ArrowLeft, Download, FolderKanban, Play, Workflow as WorkflowIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  ComingSoonBanner,
-  EmptyState,
-  PlatformBadge,
-  StatusBadge,
-} from "@/components/reelforge/primitives";
+import { EmptyState, PlatformBadge, StatusBadge } from "@/components/reelforge/primitives";
 import { MediaThumb, assetKindIcon } from "@/components/reelforge/media-preview";
 import { MiniDiagram } from "@/components/workflow/mini-diagram";
 import { assetUrl } from "@/lib/api";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
-import { useDashboard, usePublications, useRun, useRuns } from "@/lib/queries";
+import { useDashboard, usePublications, useRun, useRuns, useScripts } from "@/lib/queries";
 import { assetKind, formatBytes, projectStatus, tintFor } from "@/lib/studio";
 import { cn } from "@/lib/utils";
 import { previewKinds } from "@/lib/workflow";
@@ -35,6 +30,7 @@ export default function ProjectDetailPage() {
   const runs = allRuns.filter((run) => run.project_id === projectId);
   const lastRun = runs[0] ?? null;
   const lastRunDetail = useRun(lastRun?.id ?? null).data;
+  const latestScript = useScripts(0, projectId, 1).data?.items[0] ?? null;
 
   if (!data || !project) {
     return (
@@ -86,7 +82,9 @@ export default function ProjectDetailPage() {
           </p>
           {publications.length > 0 && (
             <div className="mt-2 flex gap-1.5">
-              <PlatformBadge platform="youtube" withLabel />
+              {[...new Set(publications.map((p) => p.channel))].map((channel) => (
+                <PlatformBadge key={channel} platform={channel} withLabel />
+              ))}
             </div>
           )}
         </div>
@@ -150,7 +148,9 @@ export default function ProjectDetailPage() {
               </div>
               <div className="panel p-5">
                 <p className="text-sm font-medium">{t.project.latestScript}</p>
-                <p className="mt-2 text-sm text-muted-foreground">{t.project.scriptSoon}</p>
+                <p className="mt-2 line-clamp-6 whitespace-pre-wrap text-sm text-muted-foreground">
+                  {latestScript?.text ?? t.project.noScript}
+                </p>
               </div>
             </div>
             <div className="space-y-4">
@@ -201,7 +201,7 @@ export default function ProjectDetailPage() {
                   {publications.length === 0 && <p className="text-sm text-muted-foreground">{t.project.noPublications}</p>}
                   {publications.map((publication) => (
                     <div key={publication.id} className="flex items-center justify-between gap-3">
-                      <PlatformBadge platform="youtube" withLabel />
+                      <PlatformBadge platform={publication.channel} withLabel />
                       <StatusBadge status={publication.state} label={t.status.publication[publication.state]} />
                     </div>
                   ))}
@@ -212,7 +212,21 @@ export default function ProjectDetailPage() {
         </TabsContent>
 
         <TabsContent value="script" className="mt-5 space-y-4">
-          <ComingSoonBanner title={t.project.latestScript} description={t.project.scriptSoon} />
+          <div className="panel p-5">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">{t.project.latestScript}</p>
+            {latestScript ? (
+              <>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {t.nodes[latestScript.node_type]?.name ?? latestScript.node_type} · {formatDateTime(latestScript.created_at)}
+                  {" · "}
+                  {t.workspace.words(latestScript.words)}
+                </p>
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed">{latestScript.text}</p>
+              </>
+            ) : (
+              <p className="mt-2 text-sm text-muted-foreground">{t.project.noScript}</p>
+            )}
+          </div>
           <div className="panel p-5">
             <p className="text-xs uppercase tracking-wider text-muted-foreground">{t.project.topic}</p>
             <p className="mt-2 whitespace-pre-wrap text-sm">{project.topic.trim() || t.project.noTopic}</p>
@@ -273,7 +287,7 @@ export default function ProjectDetailPage() {
             {publications.length === 0 && <p className="p-4 text-sm text-muted-foreground">{t.project.noPublications}</p>}
             {publications.map((publication) => (
               <div key={publication.id} className="flex flex-wrap items-center gap-3 p-4 text-sm">
-                <PlatformBadge platform="youtube" />
+                <PlatformBadge platform={publication.channel} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{publication.title}</p>
                   <p className="text-xs text-muted-foreground">{formatDate(publication.created_at)}</p>

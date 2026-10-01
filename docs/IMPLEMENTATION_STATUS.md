@@ -12,6 +12,8 @@
 
 > Phases 10–13 add content sources and transcription, Movie Recap with source-clip extraction, TikTok and Facebook publishing through their official APIs, scheduled publishing, and operations tooling (default models, worker heartbeats, admin job views, a stuck-work audit, storage and cleanup), with migration 0014; see [Phase 10, 11, 12 and 13 changes](#phase-10-11-12-and-13-changes), [CONTENT_SOURCES.md](CONTENT_SOURCES.md), [REPURPOSING.md](REPURPOSING.md), [MOVIE_RECAP.md](MOVIE_RECAP.md), [MULTI_PLATFORM_PUBLISHING.md](MULTI_PLATFORM_PUBLISHING.md), [SCHEDULING.md](SCHEDULING.md) and [OPERATIONS.md](OPERATIONS.md). Offline tests only: no paid call, no real TikTok, Facebook or YouTube post, no real FFmpeg run.
 
+> Phases 14–16 add card payments (OnePAY) beside VietQR (payOS) through one provider abstraction and one settlement path, rebuild the admin console as server-paginated tables that fit the window, and remove every "coming soon" control by implementing it (Background Music, image slideshows, the Movie Review, Article → Video and Product Video templates, scripts in the Library, display name and content defaults) or hiding it (Instagram, voice clone, timeline and other advanced steps), with migration 0015; see [Phase 14, 15 and 16 changes](#phase-14-15-and-16-changes), [PAYMENTS.md](PAYMENTS.md) and [FINAL_PRODUCT_AUDIT.md](FINAL_PRODUCT_AUDIT.md). Offline tests only: no real OnePAY, payOS, TikTok, Facebook or YouTube call and no paid AI call.
+
 > Phase 3.7 adds credit reconciliation and `needs_attention` resolution; see [Phase 3.7 changes](#phase-37-changes) and [operator procedure](CREDIT_RECONCILIATION.md). Gemini text, Runway `gen4.5` and the full workflow were live-verified by the operator before this handoff; Phase 3.7 uses offline tests only.
 
 Each item uses the same fields:
@@ -499,17 +501,43 @@ The workflow engine, durable jobs, credits, typed ports and publishing records a
   - `test_channels_migration.py`.
 - **Not verified live:** TikTok and Facebook app review and real uploads, OpenAI transcription, and FFmpeg clip cutting on real media. See the final report.
 
+### Phase 14, 15 and 16 changes
+
+The workflow engine, jobs, credits ledger, subscriptions and publishing are reused as they are; old workflows, orders and publications keep working.
+
+- **Phase 14 — payments** ([PAYMENTS.md](PAYMENTS.md)):
+  - `app/payment_providers/`: `PayOSProvider` (VietQR, the existing `app/billing.py`) and `OnePayProvider` (`onepay.py`: checkout URL, HMAC-SHA256 signature check, QueryDR); `METHODS = {"vietqr": "payos", "card": "onepay"}`; readiness without credentials.
+  - `payments.apply_paid(..., provider=...)` refuses evidence from another provider; `payments.settle` applies paid evidence once (exact amount, row lock) and closes pending orders on failed/cancelled/expired evidence.
+  - `POST /api/billing/checkout` takes `method`; `GET /api/billing` returns `methods` (configured only) and `orders_total`; `GET /api/billing/orders` pages the history.
+  - OnePAY: `GET /api/billing/onepay/return` (a signed paid return is confirmed by QueryDR before settling; never by the browser alone) and `GET|POST /api/webhooks/onepay` (signed IPN). Card orders reuse `payment_orders`.
+- **Phase 15 — admin console** ([OPERATIONS.md](OPERATIONS.md#admin-console-phase-15)):
+  - `GET /api/admin` returns `COUNT`-based summary counts, plans and payment-provider readiness only.
+  - `GET /api/admin/users|workspaces|payments` (+ `/{id}` details) page and search on the server (`q` escaped for `LIKE`, filters, `limit` ≤ 100); `POST /api/admin/payments/{id}/refresh`; `GET /api/admin/payment-providers`; jobs return `total`.
+  - The Admin page fits the viewport (tabs Users, Studios & credits, Plans, Payments, Credit reconciliation, Operations); `DataTable` (`frontend/src/components/reelforge/data-table.tsx`) gives a sticky header, an internally scrolling body and pagination. Account creation moved into a dialog.
+- **Phase 16 — product completion** ([FINAL_PRODUCT_AUDIT.md](FINAL_PRODUCT_AUDIT.md)):
+  - `music` step (`app/workflow/nodes/music.py`, port type `music_track`) and Render mixing (`amix` under the narration, looped, configurable volume).
+  - Render accepts still images (`-loop 1`, timed by narration or `RENDER_STILL_SECONDS`); `source_media` outputs images.
+  - Templates `movie_review`, `article_to_video` and `product_video` (`_slideshow` graph).
+  - Workspace defaults `default_platform`, `default_tone`, `default_duration` (applied by text steps that leave them empty) and `default_publish_time`; `PUT /api/settings/profile` (display name).
+  - `GET /api/scripts`, `PATCH /api/assets/{id}` (attach an upload to a project), paginated `GET /api/publications` (`total`, calendar `start`/`end`).
+  - Library entries are executable steps or presets of them; advanced items, Instagram, the `/ai/*` tool pages, the assistant panel and every Soon control were removed. `SoonBadge` and `ComingSoonBanner` were deleted.
+- **Schema:** migration `0015_admin_payments_profiles` adds `user_profiles` and indexes `ix_workspaces_owner_id`, `ix_payment_orders_created_at`, `ix_payment_orders_provider_status`. Tested from 0014 and back on SQLite (`test_admin_payments_migration.py`; PostgreSQL with `REELFORGE_TEST_DATABASE_URL`).
+- **Tests (offline):** `test_payments.py`, `test_admin_console.py`, `test_product_features.py`, `test_product_audit.py`, `test_admin_payments_migration.py`; existing tests updated where behaviour intentionally changed (music no longer a placeholder, image scenes render, new templates).
+- **Not verified live:** OnePAY (sandbox and real), payOS after the refactor, a real FFmpeg render with music and stills, and the new templates with paid providers.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional `payos` credentials.
 - **`system_settings` table:** `frontend_origin`, `secure_cookies`, `storage_dir`, `trial_project_limit`, `registration_enabled`.
-- **`workspace_settings` table:** `default_language`, `video_orientation`, `approval_required`.
+- **`workspace_settings` table:** `default_language`, `video_orientation`, `approval_required`, `default_platform`, `default_tone`, `default_duration`, `default_publish_time` (Phase 16).
+- **`user_profiles` table:** optional `display_name` (Phase 16).
 - **Environment variables (API and workers):**
   - Video provider keys: `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN`, `RUNWAYML_API_SECRET`, `DOLA_API_KEY`.
   - Text provider keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`.
   - Provider settings: `DOLA_EXPERIMENTAL_ENABLED`, `DOLA_BASE_URL`, `DOLA_MEDIA_BASE_URL`, `DOLA_MAX_JOB_AGE_SECONDS`, `RUNWAY_OUTPUT_HOSTS`.
   - Limits and prices: `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `IMAGE_CREDITS_PER_GENERATION`, `VIDEO_JOB_MAX_AGE_SECONDS`, `IMAGE_JOB_MAX_AGE_SECONDS`, `VOICE_CREDITS_PER_GENERATION`, `VOICE_JOB_MAX_AGE_SECONDS`, `RENDER_CREDITS_PER_JOB`, `RENDER_TIMEOUT_SECONDS`, `WORKSPACE_MEDIA_QUOTA_BYTES`.
-  - Rendering: `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`, `RENDER_SUBTITLE_FONT`.
+  - Rendering: `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`, `RENDER_SUBTITLE_FONT`, `RENDER_STILL_SECONDS`.
+  - Card payments (Phase 14): `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`.
   - YouTube OAuth: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `REELFORGE_TOKEN_ENCRYPTION_KEY`.
   - Runtime file and logs: `REELFORGE_ENV_FILE` (default `.env.runtime`), `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL`.
   - Live smoke tests: `REELFORGE_SMOKE_TEXT_PROVIDER`, `REELFORGE_SMOKE_TEXT_MODEL`, `REELFORGE_SMOKE_VIDEO_PROVIDER`, `REELFORGE_SMOKE_VIDEO_MODEL`, `REELFORGE_SMOKE_IMAGE_PROVIDER`, `REELFORGE_SMOKE_IMAGE_MODEL`, `REELFORGE_SMOKE_VOICE_PROVIDER`, `REELFORGE_SMOKE_VOICE_MODEL`; `REELFORGE_LIVE_TESTS=1` and `REELFORGE_LIVE_VIDEO=1` only from the shell.
@@ -561,6 +589,8 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 | FFmpeg (local) | render | system `ffmpeg` | yes (fake runner) | no | — | Real render test skipped: FFmpeg not installed on the development machine |
 | Dola (experimental) | video | `seedance-2.0`, `seedance-2.5` | yes | no | — | Mock tested only; out of scope |
 | YouTube Data API | publishing | — | yes | no | — | Mock tested only (visibility and tags since Phase 9) |
+| payOS | payment (VietQR) | — | yes | no | — | Mock tested only; checkout and webhook unchanged by the Phase 14 refactor |
+| OnePAY | payment (card) | `vpc_Version` 2, QueryDR | yes | no | — | Mock tested only (signed fake gateway); sandbox and one real payment required |
 
 "Mock tested" means the adapter's request shape, response parsing, error mapping and timeouts are covered offline with `httpx.MockTransport` or fake clients, and the workflow path is covered with fake providers. Additional providers still require live verification. Preserve the exact date/model/command and latency/tokens or job ID/duration/size when further operator evidence becomes available.
 
@@ -1269,58 +1299,31 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 
 ## UI Only / Mocked
 
-These screens or controls are disabled and labelled "Sắp có" (coming soon), or they save a value that nothing uses. A spot check of the redesigned screens found no fabricated metrics presented as real data.
+Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắp có" (coming soon) control remains. [FINAL_PRODUCT_AUDIT.md](FINAL_PRODUCT_AUDIT.md) lists every decision; `tests/test_product_audit.py` keeps it that way.
 
-### U1. AI tool pages
+### U1. AI tool pages (resolved: removed)
 
-- **Files:** `frontend/src/app/ai/{writer,image,video,repurpose,movie-recap}/page.tsx`, `frontend/src/components/reelforge/ai-tool.tsx`.
-- **Current:**
-  - Full prototype layouts. The inputs keep local state only. The same settings now work on workflow nodes (F13).
-  - The submit buttons are disabled, with a "Sắp có" banner linking to Workflows.
-  - `/ai/video` does show real recent runs of workflows that contain a video node, and the real enabled video tools. Its own generate form is still disabled.
-- **Missing:** backend endpoints for standalone writing, image, repurpose or movie-recap generation. None exist.
-- **Depends on:** P5 (non-video providers), plus M2 executors or dedicated endpoints.
+- `/ai/{writer,image,video,repurpose,movie-recap}` redirect to `/create`; `ai-tool.tsx` was deleted. The same features are workflow templates.
 
-### U2. Node library entries and templates without a backend type
+### U2. Node library entries and templates without a backend type (resolved)
 
-- **Files:** `frontend/src/lib/workflow.ts` (`nodeLibrary`, `workflowTemplates`), `frontend/src/components/workflow/workflow-editor.tsx` (`NodeLibrary`).
-- **Current:**
-  - 41 of the 60 library items show as "Sắp có" and cannot be dragged. Examples: research, movie analysis/recap/review, storyboard, thumbnail, image-to-video, voice clone, audio mixer, crop, overlay, transition, timeline, TikTok, Facebook, Shorts, schedule, and the URL, YouTube and upload inputs. The seven text items became real nodes in Phase 2, and "Chia kịch bản thành cảnh" (`scenes`) became one in Phase 3.
-  - 6 of the 10 templates show only a preview diagram: `youtube-video`, `movie-recap`, `movie-review`, `repurpose`, `article-to-video`, `product-video`.
-- **Missing:** backend node types and executors for them.
-- **Depends on:** F13, M2.
+- Every library entry adds an executable step, either a node type or a preset of one (for example Short script = AI Writer, 60 s). Items without a backend (voice clone, sound effects, audio mixer, timeline, transitions, overlays, crop, stock media, image-to-video, research, storyboard, scene planner, YouTube URL, download) are not listed.
+- Every template builds a backend graph: Movie Review, Article → Video and Product Video became real templates.
 
-### U3. Previews for nodes that do not execute
+### U3. Previews for nodes that do not execute (resolved)
 
-- **Files:** `frontend/src/components/workflow/studio-node.tsx` (`Preview`).
-- **Current:**
-  - The voice and music waveform, the subtitle lines and the script placeholder are static decoration.
-  - The publish node says "YouTube private", but it never runs.
-  - The image and render previews stay empty. The video preview shows a real MP4 once its step outputs an `asset_id`, which only the video node does today.
-- **Missing:** outputs from the corresponding executors.
-- **Depends on:** M2.
+- Every listed node executes and its preview shows its output; the Background Music step plays its chosen track. Only the legacy `script` type (kept so old workflows open) still blocks, and the inspector asks to replace it.
 
-### U4. Project brief and workspace editor
+### U4. Project brief and workspace editor (resolved: removed or real)
 
-- **Files:** `frontend/src/app/workspace/[projectId]/page.tsx`, `frontend/src/app/projects/[projectId]/page.tsx`.
-- **Current:**
-  - Real: editing the title and topic (`PATCH /api/projects/{id}`), and the project's runs, videos and publications.
-  - Disabled, "Sắp có": the goal, platform, format, language, tone and duration chips, the audience field, the AI rewrite actions, the storyboard tab, the assistant panel and the "latest script" section.
-- **Missing:** schema fields for the project brief, script storage and an assistant backend.
-- **Depends on:** F13, and M2 (script executor).
+- The brief chips, AI rewrite actions, storyboard tab and assistant panel were removed. The latest script is real (`GET /api/scripts`).
 
-### U5. Placeholders in settings, channels, publishing, billing, library, media and calendar
+### U5. Placeholders in settings, channels, publishing, billing, library, media and calendar (resolved)
 
-- **Files:** `frontend/src/app/settings/page.tsx`, `frontend/src/app/channels/page.tsx`, `frontend/src/app/publishing/page.tsx`, `frontend/src/app/billing/page.tsx`, `frontend/src/app/library/page.tsx`, `frontend/src/app/media/page.tsx`, `frontend/src/app/calendar/page.tsx`.
-- **Current:** these are disabled or marked "Sắp có":
-  - Settings: teammates, profile name, 2FA, storage retention, auto-schedule and several preference switches.
-  - Channels and Publishing: the TikTok, Facebook and Instagram cards.
-  - Billing: card payment.
-  - Library: the Scripts tab.
-  - Media: "Add to project".
-  - Calendar: scheduling. The calendar does list real publications.
-- **Missing:** the backend features behind each control.
-- **Depends on:** M3, M5, M7, M8.
+- Settings: display name, content defaults and the default publishing time are real; teammates, 2FA, retention, auto-schedule and the unused toggles were removed.
+- Channels and Publishing: YouTube, TikTok and Facebook are real; Instagram is hidden.
+- Billing: card payment (OnePAY) is real when configured.
+- Library: the Scripts tab is real. Media: "Add to project" is real. Calendar: real scheduling by visible range.
 
 ### U6. The `approval_required` workspace setting
 

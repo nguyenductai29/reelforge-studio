@@ -18,6 +18,14 @@ Movie Recap / Review (use only content you are authorized to use)::
                                           → Extract Source Clips → Render ←── Subtitle ←────┘
                                           → Review → Publish  (Recap Script → Metadata → Publish)
 
+Movie Review is the same graph with the Recap Script set to a review with light
+spoilers. Article to Video and Product Video illustrate each scene with an AI
+image instead of an AI clip (Render shows the images as stills)::
+
+    URL Source | Idea → AI Writer → Scene Splitter ─┬→ Image ─────────────┐
+                                                     ├→ Voice ─┬───────────┤
+                                                     └→ Subtitle ←┘ (audio) ├→ Render → Review → Publish
+
 Templates never name an AI tool: every AI step leaves ``tool_id`` empty, so the
 run uses the workspace's default model for its task, else the first enabled
 compatible one (``ExecutionContext.find_tool``). Source steps are left empty:
@@ -41,6 +49,14 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                   "max_scenes": 12, "clip": "6s", "aspect_ratio": "9:16", "line_chars": 32},
     "movie_recap": {"kind": "movie_recap", "platform": "youtube_shorts", "script_seconds": 90, "scene_count": 8,
                     "line_chars": 32, "notice": RIGHTS_NOTICE},
+    "movie_review": {"kind": "movie_recap", "platform": "youtube_shorts", "script_seconds": 90, "scene_count": 8,
+                     "line_chars": 32, "style": "review", "spoiler_level": "light", "notice": RIGHTS_NOTICE},
+    "article_to_video": {"kind": "slideshow", "source": "source_url", "platform": "youtube_shorts",
+                         "script_seconds": 60, "scene_seconds": 6, "max_scenes": 10, "aspect_ratio": "9:16",
+                         "line_chars": 32},
+    "product_video": {"kind": "slideshow", "source": "idea", "platform": "youtube_shorts", "script_seconds": 30,
+                      "scene_seconds": 5, "max_scenes": 6, "aspect_ratio": "9:16", "line_chars": 32,
+                      "instructions": "A product promo: a hook, three concrete benefits, then one call to action."},
 }
 X = 300
 
@@ -90,13 +106,53 @@ def _social(settings: dict, *, repurpose: bool) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def _slideshow(settings: dict) -> dict:
+    """A source or idea → script → scenes → one AI image, narration and subtitles per scene → render."""
+    from_page = settings["source"] == "source_url"
+    writer = {"platform": settings["platform"], "duration": settings["script_seconds"]}
+    if settings.get("instructions"):
+        writer["instructions"] = settings["instructions"]
+    nodes = [
+        _node("source", "source_url", 0, 1) if from_page else _node("idea", "idea", 0, 1),
+        _node("writer", "ai_writer", 1, 1, writer),
+        _node("scenes", "scenes", 2, 1, {"scene_duration": settings["scene_seconds"],
+                                         "max_scenes": settings["max_scenes"]}),
+        _node("image", "image", 3, 0, {"aspect_ratio": settings["aspect_ratio"]}),
+        _node("voice", "voice", 3, 1),
+        _node("subtitle", "subtitle", 4, 2, {"max_chars": settings["line_chars"]}),
+        _node("render", "render", 5, 1),
+        _node("review", "review", 6, 1),
+        _node("metadata", "metadata", 3, 3, {"platform": settings["platform"]}),
+        _node("publish", "publish", 7, 1),
+    ]
+    edges = [
+        _edge("source", "text", "writer", "source") if from_page else _edge("idea", "topic", "writer", "prompt"),
+        _edge("writer", "script", "scenes", "script"),
+        _edge("scenes", "scenes", "image", "scenes"),
+        _edge("scenes", "scenes", "voice", "scenes"),
+        _edge("scenes", "scenes", "subtitle", "scenes"),
+        _edge("voice", "audio_assets", "subtitle", "audio"),
+        _edge("image", "image_assets", "render", "media"),
+        _edge("voice", "audio_assets", "render", "audio"),
+        _edge("subtitle", "subtitle_asset", "render", "subtitle"),
+        _edge("render", "rendered_video", "review", "media"),
+        _edge("review", "video_assets", "publish", "video"),
+        *([] if from_page else [_edge("idea", "topic", "metadata", "topic")]),
+        _edge("writer", "script", "metadata", "source"),
+        _edge("metadata", "metadata", "publish", "metadata"),
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
 def _movie_recap(settings: dict) -> dict:
+    recap = {"platform": settings["platform"], "duration": settings["script_seconds"],
+             "scene_count": settings["scene_count"]}
+    recap.update({key: settings[key] for key in ("style", "spoiler_level") if key in settings})
     nodes = [
         _node("source", "source_media", 0, 1),
         _node("transcript", "transcribe", 1, 1),
         _node("analysis", "story_analysis", 2, 0),
-        _node("recap", "recap_script", 3, 1, {"platform": settings["platform"], "duration": settings["script_seconds"],
-                                              "scene_count": settings["scene_count"]}),
+        _node("recap", "recap_script", 3, 1, recap),
         _node("voice", "voice", 4, 0),
         _node("match", "match_scenes", 4, 2),
         _node("clips", "extract_clips", 5, 2),
@@ -135,6 +191,8 @@ def template_graph(template_id: str) -> dict:
     settings = TEMPLATES[template_id]
     if settings["kind"] == "movie_recap":
         return _movie_recap(settings)
+    if settings["kind"] == "slideshow":
+        return _slideshow(settings)
     return _social(settings, repurpose=settings["kind"] == "repurpose")
 
 

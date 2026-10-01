@@ -92,8 +92,9 @@ class RegistryTest(unittest.TestCase):
                     "review": ReviewNodeHandler}
         for node_type, handler_type in expected.items():
             self.assertIsInstance(default_registry.resolve(node_type), handler_type)
-        for node_type in ("script", "music"):
-            self.assertIsInstance(default_registry.resolve(node_type), PendingAITaskHandler)
+        # "script" stays a placeholder for old workflows; "music" became Background Music in Phase 16.
+        self.assertIsInstance(default_registry.resolve("script"), PendingAITaskHandler)
+        self.assertNotIsInstance(default_registry.resolve("music"), PendingAITaskHandler)
         self.assertIsInstance(default_registry.resolve("image"), ImageNodeHandler)
         self.assertIsInstance(default_registry.resolve("voice"), VoiceNodeHandler)
         self.assertIsInstance(default_registry.resolve("publish"), PublishNodeHandler)

@@ -196,6 +196,26 @@ function Preview({ data }: { data: StudioNode["data"] }) {
       );
     }
     case "voice": {
+      if (data.type === "music") {
+        // The chosen track, once the step has run; before that, where it will show.
+        const music = output?.music as { asset_id?: unknown; filename?: unknown; volume?: unknown } | undefined;
+        if (music && typeof music.asset_id === "string") {
+          return (
+            <div className="space-y-1">
+              <audio src={assetUrl(music.asset_id)} controls preload="none" className="nodrag h-8 w-full" />
+              <p className="truncate text-[10px] text-muted-foreground">
+                {typeof music.filename === "string" ? music.filename : ""}
+                {typeof music.volume === "number" ? ` · ${music.volume}%` : ""}
+              </p>
+            </div>
+          );
+        }
+        return (
+          <p className="rounded-lg bg-surface-2 p-2.5 text-center text-[10px] text-muted-foreground">
+            {t.editor.node.previewHere}
+          </p>
+        );
+      }
       const segments = outputMedia(output, "audio_assets");
       const progress = outputJobs(output);
       // One narration plays on the node; scene segments show their count (each plays in the inspector).

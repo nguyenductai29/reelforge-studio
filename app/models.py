@@ -24,11 +24,20 @@ class LoginSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class UserProfile(Base):
+    """Optional profile fields of a user (migration 0015); ``users`` itself is unchanged."""
+
+    __tablename__ = "user_profiles"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    display_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
-    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     plan: Mapped[str] = mapped_column(String(20), default="trial")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -111,7 +120,11 @@ class Subscription(Base):
 
 
 class PaymentOrder(Base):
+    """One checkout. ``provider`` is ``payos`` (VietQR) or ``onepay`` (card); ``order_code`` is the
+    reference both providers know the order by, and ``provider_reference`` their transaction ID."""
+
     __tablename__ = "payment_orders"
+    __table_args__ = (Index("ix_payment_orders_provider_status", "provider", "status"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
     plan_code: Mapped[str] = mapped_column(ForeignKey("plans.code"))
@@ -122,7 +135,7 @@ class PaymentOrder(Base):
     status: Mapped[str] = mapped_column(String(24), default="pending")
     checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

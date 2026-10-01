@@ -4,19 +4,13 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Eye, FolderKanban, Loader2, Play, Save, Send, Sparkles, Wand2 } from "lucide-react";
+import { ArrowLeft, Eye, FolderKanban, Loader2, Play, Save, Send, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  EmptyState,
-  FieldLabel,
-  OptionChips,
-  SoonBadge,
-  StatusBadge,
-} from "@/components/reelforge/primitives";
+import { EmptyState, FieldLabel, StatusBadge } from "@/components/reelforge/primitives";
 import { MediaThumb } from "@/components/reelforge/media-preview";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
@@ -25,15 +19,6 @@ import { useI18n } from "@/lib/i18n";
 import { keys, useDashboard, usePublications, useRuns } from "@/lib/queries";
 import { assetKind, isActiveRun, projectStatus, tintFor } from "@/lib/studio";
 import { cn } from "@/lib/utils";
-
-function DisabledChips({ label, options, initial }: { label: string; options: string[]; initial: number[] }) {
-  return (
-    <div>
-      <FieldLabel>{label}</FieldLabel>
-      <OptionChips options={options} value={initial.map((i) => options[i] ?? "")} onChange={() => undefined} disabled />
-    </div>
-  );
-}
 
 export default function WorkspacePage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -70,7 +55,6 @@ export default function WorkspacePage() {
   const lastRun = runs.find((run) => run.project_id === project.id);
   const workflowId = lastRun?.workflow_id ?? data.workflows[0]?.id;
   const workflowHref = workflowId ? `/workflows/${workflowId}?project=${project.id}` : "/workflows";
-  const c = t.workspace.config;
 
   async function save() {
     setSaving(true);
@@ -120,29 +104,12 @@ export default function WorkspacePage() {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_300px]">
-        <aside className="panel scrollbar-thin space-y-5 p-4 xl:sticky xl:top-20 xl:max-h-[calc(100vh-11rem)] xl:overflow-y-auto">
-          <div className="flex items-start justify-between gap-2 rounded-lg bg-surface-2 p-2.5 text-xs text-muted-foreground">
-            <span>{c.soon}</span>
-            <SoonBadge />
-          </div>
-          <DisabledChips label={c.goal} options={c.goals} initial={[0]} />
-          <DisabledChips label={c.platform} options={c.platforms} initial={[0, 1]} />
-          <DisabledChips label={c.format} options={c.formats} initial={[1]} />
-          <DisabledChips label={c.language} options={c.languages} initial={[1]} />
-          <DisabledChips label={c.tone} options={c.tones} initial={[3]} />
-          <DisabledChips label={c.duration} options={c.durations} initial={[2]} />
-          <div>
-            <FieldLabel>{c.audience}</FieldLabel>
-            <Input disabled placeholder={c.audiencePlaceholder} className="bg-surface-2" />
-          </div>
-        </aside>
-
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
         <section className="min-w-0">
           <Tabs value={tab} onValueChange={setTab}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <TabsList>
-                {(["script", "storyboard", "media", "preview"] as const).map((key) => (
+                {(["script", "media", "preview"] as const).map((key) => (
                   <TabsTrigger key={key} value={key}>
                     {t.workspace.tabs[key]}
                   </TabsTrigger>
@@ -178,42 +145,6 @@ export default function WorkspacePage() {
                   className="resize-y border-0 bg-transparent px-0 text-[15px] leading-relaxed shadow-none focus-visible:ring-0"
                 />
                 <p className="text-xs text-muted-foreground">{t.workspace.topicHelp}</p>
-                <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
-                  {t.workspace.aiActions.map((action) => (
-                    <button
-                      key={action}
-                      type="button"
-                      disabled
-                      className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2 py-1 text-[11px] text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <Wand2 className="size-3" />
-                      {action}
-                    </button>
-                  ))}
-                  <SoonBadge />
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="storyboard" className="mt-4 space-y-3">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                {t.workspace.storyboardSoon} <SoonBadge />
-              </div>
-              <div className="grid gap-3 opacity-60 sm:grid-cols-3">
-                {[1, 2, 3].map((n) => (
-                  <div key={n} className="panel overflow-hidden">
-                    <div
-                      className={cn(
-                        "flex aspect-video items-center justify-center bg-gradient-to-br text-xs text-muted-foreground",
-                        n % 2
-                          ? "from-[oklch(0.3_0.05_250)] to-[oklch(0.19_0.02_270)]"
-                          : "from-[oklch(0.33_0.09_52)] to-[oklch(0.2_0.03_40)]",
-                      )}
-                    >
-                      {t.workspace.scene(n)}
-                    </div>
-                  </div>
-                ))}
               </div>
             </TabsContent>
 
@@ -257,24 +188,6 @@ export default function WorkspacePage() {
         </section>
 
         <aside className="space-y-4 xl:sticky xl:top-20 xl:self-start">
-          <div className="panel p-4">
-            <p className="flex items-center justify-between gap-2 text-sm font-medium">
-              {t.workspace.assistantTitle} <SoonBadge />
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">{t.workspace.assistantHint}</p>
-            <div className="mt-3 space-y-1.5">
-              {t.workspace.assistantSuggestions.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  disabled
-                  className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-left text-xs disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
           <div className="panel p-4">
             <p className="text-sm font-medium">{t.workspace.generationTitle}</p>
             {lastRun ? (

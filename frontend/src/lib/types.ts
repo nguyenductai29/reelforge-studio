@@ -200,10 +200,16 @@ export type Plan = {
   is_active: boolean;
   price_vnd: number | null;
 };
+export type PaymentMethod = "vietqr" | "card";
 export type Order = {
   id: string;
   plan_code: string;
   provider: string;
+  /** vietqr (payOS bank transfer) or card (OnePAY). */
+  method: PaymentMethod | null;
+  /** Our order reference, which both providers know the order by. */
+  reference: string;
+  provider_reference: string | null;
   amount_vnd: number;
   status: string;
   created_at: string;
@@ -213,8 +219,12 @@ export type Billing = {
   plans: Plan[];
   subscription: { plan_code: string; status: string; ends_at: string | null };
   orders: Order[];
+  orders_total: number;
+  /** Only the payment methods this server can take. */
+  methods: { id: PaymentMethod; provider: string }[];
   payos_ready: boolean;
 };
+export type Page<T> = { items: T[]; total: number; limit: number; offset: number };
 export type Usage = {
   balance: number;
   ledger: { id: string; delta: number; reason: string; created_at: string }[];
@@ -312,6 +322,9 @@ export type StuckJob = Pick<
 >;
 export type AdminJobs = {
   jobs: AdminJob[];
+  total: number;
+  limit: number;
+  offset: number;
   counts: Record<string, Partial<Record<AdminJob["state"], number>>>;
   stuck: {
     expired_leases: StuckJob[];
@@ -360,10 +373,26 @@ export type RunSummary = {
 };
 export type YouTubeConnection = { connected: boolean; expires_at: string | null; scope: string | null };
 
+export type ContentPlatform = "generic" | "youtube" | "youtube_shorts" | "tiktok" | "facebook";
+export type ContentTone =
+  | "neutral"
+  | "casual"
+  | "professional"
+  | "cinematic"
+  | "storytelling"
+  | "documentary"
+  | "dramatic"
+  | "funny";
 export type WorkspaceSettings = {
   default_language: "vi" | "en" | "ja";
   video_orientation: "vertical" | "horizontal" | "square";
   approval_required: boolean;
+  /** Text steps that leave these empty use them. */
+  default_platform: ContentPlatform;
+  default_tone: ContentTone;
+  default_duration: number | null;
+  /** "HH:MM" in the viewer's time zone; prefills scheduled posts. */
+  default_publish_time: string | null;
 };
 export type SystemSettings = {
   frontend_origin: string;
@@ -372,18 +401,73 @@ export type SystemSettings = {
   trial_project_limit: number;
   registration_enabled: boolean;
 };
-export type Settings = { workspace: WorkspaceSettings; system: SystemSettings | null };
+export type Settings = {
+  workspace: WorkspaceSettings;
+  system: SystemSettings | null;
+  profile: { display_name: string | null };
+};
 
+export type PaymentProviderStatus = { provider: "payos" | "onepay"; method: PaymentMethod; configured: boolean };
+/** GET /api/admin: counts from COUNT queries; the collections have paginated endpoints of their own. */
 export type AdminOverview = {
-  users: { id: string; email: string; is_admin: boolean; is_active: boolean }[];
-  workspaces: {
-    id: string;
-    name: string;
-    owner_id: string;
-    plan_code: string | null;
-    status: string;
-    ends_at: string | null;
-    credits: number;
-  }[];
+  counts: {
+    users: number;
+    active_users: number;
+    admins: number;
+    workspaces: number;
+    plans: number;
+    pending_reconciliation: number;
+    failed_jobs_24h: number;
+    stuck_jobs: number;
+    pending_payments: number;
+  };
   plans: Plan[];
+  payment_providers: PaymentProviderStatus[];
+};
+export type AdminUser = {
+  id: string;
+  email: string;
+  display_name: string | null;
+  is_admin: boolean;
+  is_active: boolean;
+  created_at: string | null;
+  workspace: { id: string; name: string; role: string } | null;
+  plan_code: string | null;
+  subscription_status: string | null;
+};
+export type AdminUserDetail = AdminUser & {
+  active_sessions: number;
+  workspaces: { id: string; name: string; role: string; plan_code: string | null; status: string; credits: number }[];
+};
+export type AdminWorkspace = {
+  id: string;
+  name: string;
+  owner_id: string;
+  owner_email: string;
+  plan_code: string | null;
+  status: string;
+  ends_at: string | null;
+  credits: number;
+  created_at: string | null;
+};
+export type AdminWorkspaceDetail = AdminWorkspace & {
+  members: { email: string; role: string }[];
+  counts: { projects: number; workflows: number; runs: number };
+  storage_bytes: number;
+  ledger: { id: string; delta: number; reason: string; created_at: string }[];
+  orders: Order[];
+};
+export type AdminPayment = Order & { workspace_id: string; workspace_name: string; owner_email: string };
+
+export type ScriptItem = {
+  step_id: string;
+  run_id: string;
+  project_id: string;
+  workflow_id: string;
+  node_type: NodeType;
+  node_id: string;
+  text: string;
+  words: number;
+  truncated: boolean;
+  created_at: string;
 };

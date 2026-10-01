@@ -21,8 +21,8 @@ assert upload("x.srt", "không có mốc thời gian".encode(), "application/x-s
 assert upload("x.exe", b"MZ", "application/octet-stream").status_code == 415
 image = upload("a.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "image/png").json()["id"]
 
-# A source file must be this workspace's own upload, of a type the step reads.
-workflow, saved = save_graph([node("src", "source_media", {"asset_id": image})], [])
+# A file setting must name this workspace's own upload, of a type the step reads (Music reads audio only).
+workflow, saved = save_graph([node("bgm", "music", {"asset_id": image})], [])
 assert saved.status_code == 422 and saved.json()["detail"]["code"] == "invalid_asset", saved.text
 created = client.post("/api/admin/accounts", json={"email": "other@example.com", "password": "long-password-123",
                                                    "workspace_name": "Other", "plan_code": "trial"})

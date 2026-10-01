@@ -18,24 +18,17 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { FieldLabel } from "@/components/reelforge/primitives";
-import {
-  PageHeader,
-  PlatformIcon,
-  SoonBadge,
-  StatusBadge,
-  platformLabel,
-  type Platform,
-} from "@/components/reelforge/primitives";
+import { PageHeader, PlatformIcon, StatusBadge, platformLabel } from "@/components/reelforge/primitives";
 import { ChannelBadge, ScheduleDialog } from "@/components/reelforge/publication-actions";
 import { PublishDialog, splitTags, tagsLength } from "@/components/reelforge/publish-dialog";
 import { api, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
-import { keys, useChannels, usePublications } from "@/lib/queries";
+import { keys, useChannels, usePublicationsPage } from "@/lib/queries";
 import type { PrivacyStatus, Publication } from "@/lib/types";
 
-const soonPlatforms: Platform[] = ["instagram"];
+const PAGE = 20;
 const PRIVACY: Record<Publication["channel"], PrivacyStatus[]> = {
   youtube: ["private", "unlisted", "public"],
   tiktok: ["private"],
@@ -172,7 +165,10 @@ export default function PublishingPage() {
   useDocumentTitle(t.publishing.title);
   const channels = useChannels().data ?? [];
   const status = (channel: Publication["channel"]) => channels.find((c) => c.channel === channel);
-  const publications = usePublications().data ?? [];
+  const [offset, setOffset] = useState(0);
+  const page = usePublicationsPage(offset, PAGE);
+  const publications = page.data?.publications ?? [];
+  const total = page.data?.total ?? 0;
   const [retrying, setRetrying] = useState<Publication | null>(null);
   const [scheduling, setScheduling] = useState<{ publication: Publication; mode: "reschedule" | "cancel" } | null>(null);
 
@@ -194,7 +190,7 @@ export default function PublishingPage() {
 
       <section>
         <h2 className="mb-4 text-base font-semibold">{t.publishing.connectedChannels}</h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-3">
           {(["youtube", "tiktok", "facebook"] as const).map((channel) => {
             const state = status(channel);
             return (
@@ -221,23 +217,6 @@ export default function PublishingPage() {
               </div>
             );
           })}
-          {soonPlatforms.map((platform) => (
-            <div key={platform} className="panel space-y-3 p-4">
-              <div className="flex items-center justify-between">
-                <span className="flex size-9 items-center justify-center rounded-lg bg-surface-2">
-                  <PlatformIcon platform={platform} />
-                </span>
-                <SoonBadge />
-              </div>
-              <div>
-                <p className="text-sm font-medium">{platformLabel[platform]}</p>
-                <p className="text-xs text-muted-foreground">{t.channels.soonHandle}</p>
-              </div>
-              <Button variant="outline" size="sm" className="w-full" disabled>
-                {t.publishing.connect}
-              </Button>
-            </div>
-          ))}
         </div>
       </section>
 
@@ -366,6 +345,19 @@ export default function PublishingPage() {
           ))}
         </div>
       </section>
+      {total > PAGE && (
+        <div className="-mt-4 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+          <span>{t.table.range(String(offset + 1), String(Math.min(offset + PAGE, total)), String(total))}</span>
+          <div className="flex gap-1.5">
+            <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
+              {t.table.previous}
+            </Button>
+            <Button variant="outline" size="sm" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>
+              {t.table.next}
+            </Button>
+          </div>
+        </div>
+      )}
       <RetryDialog publication={retrying} onClose={() => setRetrying(null)} />
       <ScheduleDialog
         publication={scheduling?.publication ?? null}

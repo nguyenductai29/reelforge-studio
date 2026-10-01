@@ -978,6 +978,30 @@ Verify the actual proxy path and callback configuration before accepting payment
 
 Never commit real payOS credentials.
 
+### Optional OnePAY card payments
+
+Card payment appears in Billing only when OnePAY is configured. Add the merchant values to the private `.env.runtime` of the API service (see [PAYMENTS.md](PAYMENTS.md)):
+
+```text
+ONEPAY_MERCHANT_ID=...
+ONEPAY_ACCESS_CODE=...
+ONEPAY_HASH_KEY=...            # hex
+ONEPAY_QUERY_USER=...          # QueryDR, recommended
+ONEPAY_QUERY_PASSWORD=...
+# ONEPAY_PAYMENT_URL / ONEPAY_QUERY_URL default to OnePAY production; set the sandbox URLs while testing.
+```
+
+Register these addresses with OnePAY:
+
+```text
+IPN:    https://studio.imokome-cloud.com/api/webhooks/onepay
+Return: https://studio.imokome-cloud.com/api/billing/onepay/return
+```
+
+Restart `reelforge-api` after changing them. **Admin → Payments** shows payOS and OnePAY as Configured or Missing, never their values. A browser return alone never marks an order paid: the IPN or a QueryDR check must confirm it. Test with OnePAY's sandbox, then one small real payment, before accepting customers.
+
+Migration `0015_admin_payments_profiles` (display names and indexes for the paginated admin tables) is applied by `python -m alembic upgrade head`, as usual; card orders need no other schema change.
+
 ---
 
 ## 16. Updating the deployment
@@ -1212,7 +1236,7 @@ Before treating the service as production-ready:
 - Do not expose the worker processes.
 - Set `frontend_origin` to the HTTPS production hostname.
 - Enable secure cookies after HTTPS is active.
-- Keep provider, payOS, Google OAuth and Fernet secrets out of the repository.
+- Keep provider, payOS, OnePAY, Google OAuth and Fernet secrets out of the repository.
 - Back up PostgreSQL and `/srv/data/reelforge/media` together.
 - Back up `REELFORGE_TOKEN_ENCRYPTION_KEY` separately and securely.
 - Apply Alembic migrations before restarting application services after an update.

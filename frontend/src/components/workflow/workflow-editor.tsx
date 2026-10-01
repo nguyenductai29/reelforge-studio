@@ -53,7 +53,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FieldLabel, SoonBadge, StatusBadge } from "@/components/reelforge/primitives";
+import { FieldLabel, StatusBadge } from "@/components/reelforge/primitives";
 import { NewProjectDialog } from "@/components/reelforge/new-project-dialog";
 import { PublishDialog } from "@/components/reelforge/publish-dialog";
 import { RunSummaryPanel } from "./run-summary";
@@ -85,7 +85,17 @@ import type {
   RunStep,
   Workflow,
 } from "@/lib/types";
-import { EXECUTABLE, MAX_NODES, SOURCE_NODES, TEXT_NODES, kindOf, newNodeId, nodeLibrary } from "@/lib/workflow";
+import {
+  EXECUTABLE,
+  MAX_NODES,
+  SOURCE_NODES,
+  TEXT_NODES,
+  kindOf,
+  libraryItemById,
+  newNodeId,
+  nodeLibrary,
+  type LibraryItem,
+} from "@/lib/workflow";
 import { kindIcon } from "./kind-icon";
 import { ConfigFields, type ConfigChange, type WorkspaceDefaults } from "./config-fields";
 import { blocksSaving, configErrors, toolChoices, withValue } from "./node-config";
@@ -133,7 +143,7 @@ const toEdges = (graph: Graph): Edge[] =>
     targetHandle: edge.targetHandle ?? null,
   }));
 
-function NodeLibrary({ onAdd, className }: { onAdd: (type: NodeType) => void; className?: string }) {
+function NodeLibrary({ onAdd, className }: { onAdd: (item: LibraryItem) => void; className?: string }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<string[]>(["input", "ai", "script", "visual", "output"]);
@@ -179,32 +189,21 @@ function NodeLibrary({ onAdd, className }: { onAdd: (type: NodeType) => void; cl
                 <div className="space-y-0.5 pb-2">
                   {items.map((item) => {
                     const Icon = kindIcon[item.kind];
-                    const type = item.type;
-                    return type ? (
+                    return (
                       <button
                         key={item.id}
                         type="button"
                         draggable
                         onDragStart={(e) => {
-                          e.dataTransfer.setData(DRAG_TYPE, type);
+                          e.dataTransfer.setData(DRAG_TYPE, item.id);
                           e.dataTransfer.effectAllowed = "move";
                         }}
-                        onClick={() => onAdd(type)}
+                        onClick={() => onAdd(item)}
                         className="flex w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-sm hover:border-border hover:bg-surface active:cursor-grabbing"
                       >
                         <Icon className="size-3.5 shrink-0 text-primary" />
                         <span className="truncate">{lib.items[item.id]}</span>
                       </button>
-                    ) : (
-                      <div
-                        key={item.id}
-                        title={lib.soonHint}
-                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground/70"
-                      >
-                        <Icon className="size-3.5 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate">{lib.items[item.id]}</span>
-                        <SoonBadge className="px-1.5" />
-                      </div>
                     );
                   })}
                 </div>
@@ -411,9 +410,8 @@ function Inspector({
         </div>
 
         {!EXECUTABLE.has(d.type) && d.type !== "publish" && (
-          <div className="flex items-start gap-2 rounded-lg border border-border bg-surface p-3 text-xs text-muted-foreground">
-            <SoonBadge />
-            <span>{i.executorSoon}</span>
+          <div className="rounded-lg border border-warning/40 bg-surface p-3 text-xs text-muted-foreground">
+            {i.legacyStep}
           </div>
         )}
 
@@ -1031,7 +1029,7 @@ function Editor({
   };
 
   const addNode = useCallback(
-    (type: NodeType, position?: { x: number; y: number }) => {
+    (type: NodeType, position?: { x: number; y: number }, preset?: LibraryItem) => {
       if (latest.current.nodes.length >= MAX_NODES) {
         toast.error(t.editor.maxNodes);
         return;
@@ -1042,7 +1040,16 @@ function Editor({
         screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
       setNodes((ns) => [
         ...ns.map((n) => ({ ...n, selected: false })),
-        { id: newNodeId(), type: "studio", position: at, selected: true, data: { type, status: "idle" } },
+        {
+          id: newNodeId(),
+          type: "studio",
+          position: at,
+          selected: true,
+          // A preset entry (e.g. "Short script") keeps its name and settings; plain entries start empty.
+          data: preset?.config
+            ? { type, status: "idle", config: preset.config, label: t.editor.library.items[preset.id] }
+            : { type, status: "idle" },
+        },
       ]);
       setLibraryOpen(false);
     },
@@ -1149,9 +1156,9 @@ function Editor({
   const onDrop = useCallback(
     (e: DragEvent) => {
       e.preventDefault();
-      const type = e.dataTransfer.getData(DRAG_TYPE) as NodeType;
-      if (!type || !(type in kindOf)) return;
-      addNode(type, screenToFlowPosition({ x: e.clientX, y: e.clientY }));
+      const item = libraryItemById(e.dataTransfer.getData(DRAG_TYPE));
+      if (!item || !(item.type in kindOf)) return;
+      addNode(item.type, screenToFlowPosition({ x: e.clientX, y: e.clientY }), item);
     },
     [addNode, screenToFlowPosition],
   );
@@ -1387,7 +1394,7 @@ function Editor({
           </header>
 
           <div className="relative flex min-h-0 flex-1">
-            <NodeLibrary onAdd={(type) => addNode(type)} className="hidden lg:flex" />
+            <NodeLibrary onAdd={(item) => addNode(item.type, undefined, item)} className="hidden lg:flex" />
             <div
               className="relative min-w-0 flex-1 bg-background"
               onDragOver={(e) => {
@@ -1573,7 +1580,7 @@ function Editor({
         <Sheet open={libraryOpen} onOpenChange={setLibraryOpen}>
           <SheetContent side="left" className="w-72 p-0 [&>button]:hidden">
             <SheetTitle className="sr-only">{t.editor.library.title}</SheetTitle>
-            <NodeLibrary onAdd={(type) => addNode(type)} className="flex h-full w-full border-r-0" />
+            <NodeLibrary onAdd={(item) => addNode(item.type, undefined, item)} className="flex h-full w-full border-r-0" />
           </SheetContent>
         </Sheet>
         <RunDialog

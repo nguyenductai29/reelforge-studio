@@ -2,17 +2,19 @@
 
 import { useState } from "react";
 import { FileText, LibraryBig, Search } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { EmptyState, PageHeader, SoonBadge } from "@/components/reelforge/primitives";
+import { EmptyState, PageHeader } from "@/components/reelforge/primitives";
 import { MediaThumb } from "@/components/reelforge/media-preview";
 import Link from "next/link";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
-import { useDashboard, usePublications } from "@/lib/queries";
+import { useDashboard, usePublications, useScripts } from "@/lib/queries";
 import { assetKind, formatBytes } from "@/lib/studio";
 
 const tabs = ["all", "videos", "images", "scripts", "audio", "published"] as const;
+const SCRIPT_PAGE = 12;
 type Tab = (typeof tabs)[number];
 
 export default function LibraryPage() {
@@ -22,6 +24,8 @@ export default function LibraryPage() {
   const publications = usePublications().data ?? [];
   const [tab, setTab] = useState<Tab>("all");
   const [query, setQuery] = useState("");
+  const [scriptOffset, setScriptOffset] = useState(0);
+  const scripts = useScripts(scriptOffset, undefined, SCRIPT_PAGE);
   const assets = data?.assets ?? [];
   const published = new Set(publications.filter((p) => p.state === "succeeded").map((p) => p.asset_id));
   const q = query.trim().toLocaleLowerCase();
@@ -69,7 +73,43 @@ export default function LibraryPage() {
       </div>
 
       {tab === "scripts" ? (
-        <EmptyState icon={FileText} title={t.library.tabs.scripts} description={t.library.scriptsSoon} action={<SoonBadge />} />
+        !scripts.data?.items.length ? (
+          <EmptyState icon={FileText} title={t.library.tabs.scripts} description={t.library.noScripts} />
+        ) : (
+          <div className="space-y-3">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {scripts.data.items.map((script) => {
+                const project = data?.projects.find((p) => p.id === script.project_id);
+                return (
+                  <Link
+                    key={script.step_id}
+                    href={`/workflows/${script.workflow_id}?run=${script.run_id}`}
+                    className="panel group flex flex-col gap-2 p-4 transition-colors hover:border-border-strong"
+                  >
+                    <p className="text-[11px] text-muted-foreground">
+                      {t.nodes[script.node_type]?.name ?? script.node_type} · {t.workspace.words(script.words)} ·{" "}
+                      {formatRelative(script.created_at)}
+                    </p>
+                    <p className="line-clamp-6 whitespace-pre-line text-sm leading-relaxed">{script.text}</p>
+                    <span className="mt-auto inline-block max-w-full truncate rounded-md bg-surface-2 px-2 py-0.5 text-[11px] text-muted-foreground group-hover:text-primary">
+                      {project?.title ?? t.library.origin.workflowOnly}
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button variant="outline" size="sm" disabled={scriptOffset === 0}
+                      onClick={() => setScriptOffset(Math.max(0, scriptOffset - SCRIPT_PAGE))}>
+                {t.table.previous}
+              </Button>
+              <Button variant="outline" size="sm" disabled={scriptOffset + SCRIPT_PAGE >= scripts.data.total}
+                      onClick={() => setScriptOffset(scriptOffset + SCRIPT_PAGE)}>
+                {t.table.next}
+              </Button>
+            </div>
+          </div>
+        )
       ) : assets.length === 0 ? (
         <EmptyState icon={LibraryBig} title={t.library.empty} description={t.library.emptyHint} />
       ) : visible.length === 0 ? (
