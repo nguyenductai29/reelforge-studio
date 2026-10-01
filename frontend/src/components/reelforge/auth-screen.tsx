@@ -84,6 +84,14 @@ export function AuthScreen() {
             </div>
           ) : secondStep ? (
             <TwoFactorStep onDone={signedIn} onBack={() => setSecondStep(false)} />
+          ) : setup && status.data?.setup_here === false ? (
+            // First-run setup reaches the API only from the server itself; a public visitor gets the instructions.
+            <div className="space-y-3">
+              <h1 className="text-2xl font-semibold">{t.auth.setupTitle}</h1>
+              <p className="text-sm text-muted-foreground">{t.auth.setupServerOnly}</p>
+              <code className="block rounded-md bg-surface-2 px-3 py-2 font-mono text-xs">cd frontend &amp;&amp; npm run create-admin</code>
+              <p className="text-xs text-muted-foreground">{t.auth.setupServerOnlyHint}</p>
+            </div>
           ) : (
             <>
               <h1 className="text-2xl font-semibold">{copy[0]}</h1>

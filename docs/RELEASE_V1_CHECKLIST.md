@@ -7,22 +7,22 @@ check themselves.** Admin → Verification has the same live items as an in-app 
 
 Related: [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) · [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md) ·
 [SECURITY.md](SECURITY.md) · [EMAIL.md](EMAIL.md) · [TEAMS.md](TEAMS.md) · [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) ·
-[LOAD_BASELINE.md](LOAD_BASELINE.md)
+[LOAD_BASELINE.md](LOAD_BASELINE.md) · the release audit: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md)
 
-## Automated evidence (development machine, 2026-10-02)
+## Automated evidence (development machine, 2026-10-02, after the Phase 27 release audit)
 
 Results of the automated suites on the release candidate. They do not replace the manual checks below; CI must show
 the same on the commit that is deployed (see *Live verification*).
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Backend tests, SQLite | `python -m unittest discover -s tests` | Passed: 566 tests, 19 skipped (12 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks) |
-| Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 566 tests, 7 skipped (live providers, FFmpeg, symlinks) |
+| Backend tests, SQLite | `python -m unittest discover -s tests` | Passed: 576 tests, 19 skipped (12 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks) |
+| Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 576 tests, 7 skipped (live providers, FFmpeg, symlinks) |
 | Alembic: upgrade head, `alembic check`, downgrade base, upgrade head, `alembic check` (PostgreSQL 16) | CI job *migrations* | Passed: no drift |
 | Frontend typecheck and production build | `npm run typecheck`, `npm run build` | Passed |
-| Browser tests (10 flows: sign-in, forgot/reset, sessions, 2FA, invitations and switching, project and workflow, manual VietQR confirmed by an admin, support and notifications, admin pages, non-admin refusal) | `e2e/` on SQLite and on PostgreSQL | Passed: 10 / 10 on each |
-| Load baseline | `tests/load_check.py` | Recorded in LOAD_BASELINE.md; no errors, no double claim, no double credit |
-| Responsive and accessibility pass: 33 pages at 390×844, 768×1024, 1366×768, 1680×1050; axe-core (WCAG 2.1 A/AA rules) at 1366×768; keyboard: skip link, dialog focus trap, Escape, named controls | QA scripts on the E2E stack | No horizontal scrolling of the page; no axe violation; keyboard checks passed. Automated rules catch only part of accessibility: this is not a compliance claim |
+| Browser tests (10 flows: first-run setup refused from a public address then done locally, sign-in, forgot/reset, sessions and a session lost in an open tab, 2FA, invitations and switching, project and workflow, manual VietQR confirmed by an admin, support and notifications, admin pages, non-admin refusal) | `e2e/` on SQLite and on PostgreSQL | Passed: 10 / 10 on each |
+| Load baseline | `tests/load_check.py` | Recorded in LOAD_BASELINE.md and re-run after Phase 27; no errors, no double claim, no double credit |
+| Responsive and accessibility pass: 33 pages at 390×844, 768×1024, 1366×768, 1680×1050; axe-core (WCAG 2.1 A/AA rules) at 1366×768; keyboard: skip link, dialog focus trap, Escape, named controls | QA scripts on the E2E stack | No horizontal scrolling of the page; no axe violation; keyboard checks passed. Automated rules catch only part of accessibility: this is not a compliance claim (run on the Phase 26 build; the Phase 27 interface changes are covered by the browser tests) |
 
 ## Bootstrap
 
@@ -32,7 +32,8 @@ the same on the commit that is deployed (see *Live verification*).
 | B2 | Admin → System settings → General: `https://studio.imokome-cloud.com`, Secure cookies on | Not checked | | |
 | B3 | `ss -ltnp`: the API listens on `127.0.0.1:8000` and Next.js on `127.0.0.1:3001` only | Not checked | | |
 | B4 | Cloudflare Tunnel: `studio.imokome-cloud.com` → `http://127.0.0.1:3001`; the site opens over HTTPS | Not checked | | |
-| B5 | `./deploy.sh` finished with "ReelForge deployment completed OK" on the release commit | Not checked | | |
+| B5 | `./deploy.sh` finished with "ReelForge deployment completed OK" on the release commit, listing every service as active | Not checked | | |
+| B6 | The first administrator was created on the server (`npm run create-admin`) before the tunnel was opened; `/health/ready` shows no `setup_open` warning | Not checked | | |
 
 ## Database
 
@@ -85,6 +86,8 @@ the same on the commit that is deployed (see *Live verification*).
 | SE8 | Browser devtools: `rf_session` is `HttpOnly`, `Secure`, `SameSite=Strict` | Not checked | | |
 | SE9 | Admin → Audit log lists the sign-ins and changes above, with no password, token or key | Not checked | | |
 | SE10 | After installing the hardened units: `systemctl --failed` is empty and every worker is active | Not checked | | |
+| SE11 | The break-glass command is known and runs: `.venv/bin/python -m app.account_recovery --help` on the server (do not reset a real account to test it) | Not checked | | |
+| SE12 | A fresh browser session through the public site with an account that does not exist answers "The email or password is not correct.", the same as a wrong password | Not checked | | |
 
 ## Email
 

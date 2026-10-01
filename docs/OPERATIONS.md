@@ -91,7 +91,7 @@ The Admin page fits the window and never scrolls itself. Each tab is one table w
 | `GET /api/admin/users`, `/users/{id}` | `q` (email, case-insensitive), `role` (`admin`/`member`), `status` (`active`/`locked`) | Detail adds open sessions and studios |
 | `GET /api/admin/workspaces`, `/workspaces/{id}` | `q` (studio name or owner email), `plan`, `status` (`active`/`expired`/`paused`/`canceled`) | Detail adds members, counts, storage, recent ledger entries and orders |
 | `GET /api/admin/payments` | `q` (email, studio, provider reference, or order code), `provider`, `status` | No checkout URL or provider payload |
-| `POST /api/admin/payments/{id}/refresh` | — | Asks the order's provider server to server; there is no "mark paid" action |
+| `POST /api/admin/payments/{id}/refresh` | — | Asks the order's provider server to server. There is no "mark paid" action for payOS or OnePAY orders; only a manual VietQR transfer is confirmed by hand (`/confirm`, exact amount, audited) |
 | `GET /api/admin/payment-providers` | — | `{provider, method, configured}` only |
 
 Phase 18 adds two tabs. All eight tabs (Người dùng, Studio & credits, Cấu hình gói, Thanh toán, Hỗ trợ, Đối soát credits, Vận hành, Kiểm định) still fit the window with no page scroll.

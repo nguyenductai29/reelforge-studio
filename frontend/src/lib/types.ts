@@ -786,6 +786,8 @@ export type TotpSetup = { secret: string; uri: string; qr: string };
 export type LoginResult = { email: string; two_factor_required: boolean };
 export type AuthStatus = {
   setup_required: boolean;
+  /** v1.0: whether this visitor may create the first administrator (only from the server itself). */
+  setup_here?: boolean;
   registration_enabled: boolean;
   /** Phase 22/26; absent from older APIs. */
   email_delivery?: boolean;

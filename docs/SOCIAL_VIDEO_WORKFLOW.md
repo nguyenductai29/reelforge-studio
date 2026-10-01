@@ -43,7 +43,7 @@ Publishing stays a human decision. The run stops at Review until a person approv
 
    Subtitles need no worker. See `docs/home-server-deployment.md`.
 2. **AI models** (AI Models page): enable one Text model, one Video model and one Voice model (Google · Gemini 2.5 Flash TTS). The runtime file needs their keys, for example `GEMINI_API_KEY`, `RUNWAYML_API_SECRET` and `RUNWAY_OUTPUT_HOSTS`.
-3. **YouTube** (Channels page): connect a channel. This needs `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` and `REELFORGE_TOKEN_ENCRYPTION_KEY`, and the `youtube.upload` scope.
+3. **YouTube** (Channels page): connect a channel. This needs the Google OAuth app (Admin → System settings → Social OAuth), a usable master key, and the `youtube.upload` scope.
 4. **Project:** create one with a title and a topic. The Idea step reads them at run time; they are not copied into the workflow.
 5. **Credits:**
    - 1 per text step (AI Writer and Metadata);
@@ -142,7 +142,7 @@ A ledger or usage entry belongs to the run when its reference names the run or o
 
 ## Known limitations
 
-- **YouTube only:** TikTok and Facebook publishing, scheduling, thumbnails, playlists and categories are not implemented.
+- **As of Phase 9, YouTube only.** Phases 12–13 added TikTok, Facebook and scheduling ([MULTI_PLATFORM_PUBLISHING.md](MULTI_PLATFORM_PUBLISHING.md), [SCHEDULING.md](SCHEDULING.md)); thumbnails, playlists and categories are still not implemented.
 - **Processing status:** `uploaded` is YouTube's status right after the upload. ReelForge does not poll processing afterwards: that would need a read scope (`youtube.readonly`) beyond the `youtube.upload` scope it asks for.
 - **One publication per run and channel.** Publishing the same render again needs a new run.
 - **Unverified Google projects** publish privately whatever visibility is chosen; the Publishing page shows the actual visibility.

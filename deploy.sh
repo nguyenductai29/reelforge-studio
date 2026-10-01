@@ -52,19 +52,20 @@ sudo systemctl restart reelforge-frontend
 
 echo "== 8. Restart workers if enabled =="
 # Both layouts: one unit per worker (reelforge-text-worker) or the template (reelforge-worker@text).
+workers=()
 for worker in text image video voice render source youtube social scheduler; do
   for unit in "reelforge-${worker}-worker" "reelforge-worker@${worker}"; do
     if systemctl is-enabled --quiet "${unit}" 2>/dev/null; then
       sudo systemctl restart "${unit}"
+      workers+=("${unit}")
     fi
   done
 done
+if [ "${#workers[@]}" -eq 0 ]; then
+  echo "warning: no worker unit is enabled; workflows, publishing, email retries and alerts will not run." >&2
+fi
 
-echo "== 9. Check service status =="
-systemctl is-active reelforge-api
-systemctl is-active reelforge-frontend
-
-echo "== 10. Health checks =="
+echo "== 9. Health checks =="
 # /health/ready: the database answers, migrations are at head, the master key is usable (app/health.py).
 ready=no
 for _ in $(seq 1 30); do
@@ -80,7 +81,31 @@ if [ "$ready" != yes ]; then
   echo >&2
   exit 1
 fi
-curl -fsSI http://127.0.0.1:3001 >/dev/null
+frontend=no
+for _ in $(seq 1 30); do
+  if curl -fsSI http://127.0.0.1:3001 >/dev/null 2>&1; then
+    frontend=yes
+    break
+  fi
+  sleep 1
+done
+if [ "$frontend" != yes ]; then
+  echo "The frontend (127.0.0.1:3001) does not answer after 30 s: journalctl -u reelforge-frontend -n 50" >&2
+  exit 1
+fi
+
+echo "== 10. Check every service =="
+# A unit that crashes at start is only visible a few seconds later (Restart=always); never report success then.
+sleep 5
+failed=()
+for unit in reelforge-api reelforge-frontend ${workers[@]+"${workers[@]}"}; do
+  if systemctl is-active --quiet "${unit}"; then
+    printf '  %-36s active\n' "${unit}"
+  else
+    printf '  %-36s %s\n' "${unit}" "$(systemctl is-active "${unit}" 2>/dev/null || true)"
+    failed+=("${unit}")
+  fi
+done
 # The public origin as stored in System Settings. Not fatal: the Cloudflare Tunnel runs on its own.
 public_origin="$(python - <<'EOF' 2>/dev/null || true
 import json
@@ -113,6 +138,22 @@ if systemctl list-unit-files reelforge-backup.timer --no-legend 2>/dev/null | gr
   :
 else
   echo "note: the daily database backup timer is not enabled: sudo systemctl enable --now reelforge-backup.timer"
+fi
+
+# No administrator yet: the first one is created on this server (public setup is refused through Cloudflare).
+if curl -fsS http://127.0.0.1:8000/health/ready 2>/dev/null | python -c 'import json, sys
+sys.exit(0 if "setup_open" in json.load(sys.stdin).get("warnings", []) else 1)'; then
+  echo
+  echo "!! No administrator exists yet. Create it now, on this server:" >&2
+  echo "!!     (cd frontend && npm run create-admin)" >&2
+  echo "!! The public site refuses first-run setup; see docs/PRODUCTION_BOOTSTRAP.md." >&2
+fi
+
+if [ "${#failed[@]}" -gt 0 ]; then
+  echo >&2
+  echo "FAILED: these services are not running: ${failed[*]-}" >&2
+  echo "Look at: journalctl -u <unit> -n 100 --no-pager" >&2
+  exit 1
 fi
 
 echo

@@ -1,491 +1,284 @@
-# Final product audit (Phases 14–21)
+# Final product audit (v1.0: Phases 14–27)
 
-> Snapshot: branch `feat/studio-foundation`, after Phases 14–21, 2026-10-01. Database head: `0020_manual_payment_statuses`.
+> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-02. Database head: `0024_operations`.
+> The release audit itself (findings, fixes, test results, what remains manual) is [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md);
+> the operator's gate is [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md).
 
-**Production readiness (Phase 21).**
+**Production readiness**
 
-- **Bootstrap:** a fresh installation runs with only the database URL and `/etc/reelforge/master.key`; no `.env.runtime`.
-- **Environment variables:** every one the backend still reads is classified (bootstrap, legacy fallback, experimental, dev) and enforced by a test.
-- **No restarts:** a running worker picks up a changed provider key, VietQR mode or card switch without a restart.
-- **Services:** systemd units (`deploy/systemd/`) need no provider secret, and `deploy.sh` refuses to restart without a usable master key.
+- **Bootstrap:** a fresh installation runs with only the database URL (`instance/bootstrap.json`) and
+  `/etc/reelforge/master.key`; no `.env.runtime`. The first administrator is created on the server itself
+  (`npm run create-admin`); first-run setup is refused from public addresses.
+- **Configuration:** everything else in Admin → System settings and Admin → Payments, stored in PostgreSQL with secrets
+  encrypted, applied without restarts. Every environment variable the backend still reads is classified and tested.
+- **Services:** hardened systemd units (`deploy/systemd/`) need no secret; `deploy.sh` stops without a usable master key,
+  waits for `/health/ready`, and fails when a service did not start.
+- **Security, teams, email, observability, backups:** see §§ 2–6.
 
-See [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) and [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md).
-
-**Rule applied:** every control in the production interface works. An unfinished feature was either built now, when it reuses existing capabilities cheaply, or removed from the interface. No "coming soon" badge, banner, disabled placeholder switch or preview-only template remains.
-
-`tests/test_product_audit.py` enforces this. It fails on:
-
-- a `SoonBadge` or `ComingSoonBanner`;
-- a "coming soon" string in any language;
-- a hard-coded disabled switch;
-- a step-library entry or preset the backend cannot run;
-- a template without a backend graph;
-- Instagram in the channel lists.
+**Rule applied since Phase 16:** every control in the production interface works. An unfinished feature was built or
+removed; no "coming soon" badge, banner, disabled placeholder switch or preview-only template remains.
+`tests/test_product_audit.py` fails on a `SoonBadge` or `ComingSoonBanner`, a "coming soon" string in any language, a
+hard-coded disabled switch, a step-library entry or preset the backend cannot run, a template without a backend graph,
+or Instagram in the channel lists.
 
 ## 1. Implemented features
 
 **Content creation**
 
-- **Templates** (`/create`). Each one creates a workflow that the backend builds and runs:
-  - Social video;
-  - YouTube Short and YouTube (16:9);
-  - TikTok video;
-  - Facebook Reel;
-  - Repurpose existing content;
-  - Movie Recap;
-  - **Movie Review**: Movie Recap with the review style and light spoilers;
-  - **Article → Video**: URL source → AI Writer → scenes → AI image per scene → voice → subtitles → render;
-  - **Product Video**: idea → 30-second promo script → scenes → images → voice → subtitles → render;
-  - Blank.
-- **Step library**: 47 entries, all executable. Several are presets of an existing step rather than new node types:
+- **Templates** (`/create`), each a workflow the backend builds and runs: Social video; YouTube Short and YouTube
+  (16:9); TikTok video; Facebook Reel; Repurpose existing content; Movie Recap; Movie Review; Article → Video; Product
+  Video; Blank.
+- **Step library:** 47 entries, all executable (some are presets of an existing step: short and long scripts, movie
+  review, ending explained, thumbnail, key moments, text to video, merge clips, preview, schedule post, upload image).
+- **Background Music** under the narration (1–100 %, loop or play once); **image slideshows**; workspace content
+  defaults (platform, tone, length).
 
-  | Entry | Step it adds |
-  | --- | --- |
-  | Short script | AI Writer, 60 s, YouTube Shorts |
-  | Long script | AI Writer, 600 s, YouTube |
-  | Movie review | Recap Script, review style, light spoilers |
-  | Ending explained | Recap Script, explainer style, full spoilers |
-  | Thumbnail | Image, 16:9, high quality |
-  | Key moments | Story Analysis |
-  | Text to video | Video |
-  | Merge clips | Render |
-  | Preview | Review |
-  | Schedule post | Publish (scheduling happens in the publish dialog) |
-  | Upload image | Media source (images are accepted) |
+**Library, media and storage:** scripts in the Library; add uploads to a project; Media page filters and owner-confirmed
+deletion; storage used / quota with warnings at 70, 80, 90 and 100 %; "Delete intermediate media" after a preview.
 
-- **Background Music** (`music` step). It takes an MP3, WAV or OGG file that the user uploaded and owns:
-  - Render mixes it under the narration at 1–100 % volume (default 15 %);
-  - a track shorter than the video either loops or plays once (`mode`);
-  - a longer track is cut where the video ends.
-- **Image slideshows.** Render accepts still images as scenes. Each image shows for:
-  - its scene's narration;
-  - else a share of the single narration;
-  - else `RENDER_STILL_SECONDS` (default 5).
-- **Workspace content defaults**: platform, tone and length, used by writing steps that leave them empty.
+**Accounts and security (Phase 22):** email verification, forgot/reset password (generic answer, 60-minute single-use
+link, every session revoked), change password, optional TOTP 2FA with ten single-use recovery codes, session list with
+per-session and "all other" sign-out, account data export, account closure request, Terms/Privacy acceptance with
+version and time. [SECURITY.md](SECURITY.md)
 
-**Library, media and storage**
+**Transactional email (Phase 22):** SMTP or Resend; 15 templates in Vietnamese, English and Japanese (HTML and text);
+an outbox written in the same transaction, delivered at once and retried with back-off. [EMAIL.md](EMAIL.md)
 
-- The Library **Scripts** tab lists every run's AI-written scripts, one page at a time. Each project shows its latest script.
-- **Add to project** for uploads.
-- **Media page:**
-  - filter by project;
-  - select several files and **delete** them after confirming;
-  - delete the open file.
-- **Storage:**
-  - Settings → Storage shows used / quota / percent with warnings at 70, 80, 90 and 100 %;
-  - a banner appears from 80 %;
-  - "Delete intermediate media" removes media of all projects or one project, after a preview and a confirmation.
+**Teams (Phase 23):** owner / admin / editor / viewer, enforced by the API; email invitations (7 days, single use);
+studio switcher; own-studio creation; ownership transfer with re-authentication; immediate removal. [TEAMS.md](TEAMS.md)
 
-**Billing**
+**Billing:** VietQR / Bank Transfer (manual bank QR confirmed by an administrator, or payOS) and Credit / Debit Card
+(OnePAY). Only configured methods appear; owners buy, owners and admins see the history; the manual transfer shows its
+"awaiting confirmation" state until an administrator confirms it.
 
-- VietQR / Bank transfer (payOS) and Bank card (OnePAY). Only configured methods appear.
-- Paginated order history: plan, method, amount, status, created, paid, order code.
-- Plan cards show their storage.
+**Notifications and support:** a live notification bell (Server-Sent Events with polling fallback) for runs,
+publishing, payments, credits, storage and support; in-app support requests with replies.
 
-**Notifications and support** (Phase 18)
+**Legal (Phase 26):** `/terms` and `/privacy` templates in every language, linked from every public page and the
+registration form. They are templates with `[bracketed]` operator items and a visible notice; legal review is a
+release gate.
 
-- **Notification bell** in the header, between the generation center and the account menu:
-  - an unread badge (up to "99+");
-  - the latest notifications, mark read, mark all read;
-  - `/notifications` with All/Unread and pagination.
-- **What it reports:** runs that complete, fail, need attention or wait for review; publishing (scheduled, published, failed, needs attention); payments; low credits and admin adjustments; storage at 80/90/100 %; support replies.
-- **Realtime:** Server-Sent Events, with polling as the fallback. See [NOTIFICATIONS.md](NOTIFICATIONS.md).
-- **Support:** account menu → **Hỗ trợ**: the user's requests, a new request with a category, and a thread with replies from "ReelForge support". See [SUPPORT.md](SUPPORT.md).
-
-**Administration**
-
-The console fits the window and never scrolls; each table body scrolls inside it, with sticky headers and pagination always visible. It has nine tabs:
+**Administration:** the console fits the window, each table scrolls inside it. Ten tabs:
 
 | Tab | What it shows and does |
 | --- | --- |
-| Users | Search, role and status filters; create account in a dialog; view, lock, unlock |
-| Studios & credits | Search, plan and status filters, a **storage** column; view, change plan, adjust credits, pause, activate |
-| Plans | Name, price, limits, monthly credits, **storage limit**, and whether the plan is purchasable (and why not: inactive, no price, no gateway enabled) |
-| Payments | Search, provider and status filters; view; refresh provider state; **Cổng thanh toán** (Phase 19): configure VietQR (payOS) and cards (OnePAY): write-only secrets encrypted at rest, enable/disable, OnePAY Sandbox/Production/Advanced with a persistent mode badge and a production confirmation, source (Admin/Bootstrap/Environment/Missing), why a gateway is unavailable, callback URLs, activity, change history, a safe check |
-| Support | Search, status, category and priority filters; open a ticket, reply, change status or priority, resolve, close |
-| Credit reconciliation | The Phase 3.7 review of held credits |
-| Operations | Worker heartbeats, the job table, the stuck-work audit, and storage: disk free space, studios per warning level, fullest studios |
-| Verification | Readiness checks (database, migration, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security: the master key, configuration: settings still from the environment and a loaded runtime file), a browser stream check, and the 31-item manual live checklist, grouped (payments split per gateway) |
-| System settings (Phase 20) | Security (master key status), General, AI providers (switch, write-only key, connection test), Social OAuth (app credentials, derived redirect URLs), Storage (validated root, no silent moves, ceiling, retention), Runtime, Credit pricing, Notifications; every value's source (Admin / Environment / Default) |
+| Users | Search, role and status filters; create account; view, lock, unlock; reset a user's 2FA; sign a user out everywhere |
+| Studios & credits | Search, plan and status filters, storage; change plan, adjust credits, pause, activate |
+| Plans | Name, price, limits, monthly credits, storage limit, and why a plan is not purchasable |
+| Payments | Search, provider and status filters; confirm or reject manual VietQR transfers (exact amount); refresh with the provider; gateway configuration (write-only secrets, enable/disable, OnePAY Sandbox/Production/Advanced) |
+| Support | Filters; reply, change status or priority, resolve, close |
+| Credit reconciliation | The review of held credits |
+| Operations | Worker heartbeats, jobs, stuck-work audit, media disk and studios per storage level |
+| Verification | Readiness (database, migrations, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security, configuration, backups, email, accounts, alerts), a stream check, and the 41-item manual live checklist |
+| System settings | Security (master key, trusted proxies), General, Email, AI providers, Social OAuth, Storage, Backups, Runtime, Credit pricing, Notifications; each value's source |
+| Audit log | Security and administration events, filtered and paginated on the server |
 
-**Publishing and scheduling**: see § 5 and § 6.
+## 2. Security architecture (Phases 22, 24, 27)
 
-## 2. Hidden/deferred features
+| Area | Behaviour |
+| --- | --- |
+| Passwords | scrypt; 12 characters minimum, not the email. An unknown or deactivated account costs the same work at sign-in (no timing oracle) |
+| Sessions | `rf_session`: HttpOnly, SameSite=Strict, Secure in production, 7 days; only its SHA-256 is stored; listed and revocable without tokens |
+| Second factor | TOTP with replay protection under a row lock; recovery codes hashed and single use; a separate 5-minute challenge cookie with 5 tries |
+| Emailed tokens | 256 random bits, stored hashed, expiring, single use, carried in the URL fragment |
+| First administrator | Only while no account exists, and only from the server itself (`npm run create-admin` or an SSH tunnel); a public address gets 403; `/health/ready` and `deploy.sh` warn while setup is open |
+| Client address | `CF-Connecting-IP` believed only from trusted proxies (loopback by default); `X-Forwarded-For` never used |
+| Cross-site requests | `SameSite=Strict` plus an Origin/Referer check on every state-changing `/api/` request; provider webhooks exempt (signed) |
+| Rate limits | Durable PostgreSQL counters for sign-in, setup, registration, password reset, verification, 2FA, account changes, support, checkout, invitations, test email and export |
+| Headers | API: strict CSP, nosniff, Referrer-Policy, X-Frame-Options DENY, Permissions-Policy, COOP, HSTS on HTTPS; pages: their own CSP with `frame-ancestors 'none'` |
+| Errors | `{detail, code, request_id}`, no stack trace, `X-Request-ID` on every response |
+| Audit | Sign-ins, account and 2FA changes, sessions, team changes, checkouts, channel connections, terms acceptance, admin changes, payment confirmations and rejected callbacks; secret-looking detail keys dropped |
+| Recovery | `python -m app.account_recovery` (server only) resets a password or turns 2FA off when no administrator can, audited and emailed |
 
-They are not shown anywhere in the production interface.
+Details: [SECURITY.md](SECURITY.md).
+
+## 3. Teams and isolation (Phase 23)
+
+| Permission | Owner | Admin | Editor | Viewer |
+| --- | :---: | :---: | :---: | :---: |
+| See the studio | ✓ | ✓ | ✓ | ✓ |
+| Create and edit content, run workflows | ✓ | ✓ | ✓ | |
+| Publish | ✓ | ✓ | ✓ (unless turned off) | |
+| Channels, default models, studio settings, members | ✓ | ✓ | | |
+| Payment history | ✓ | ✓ | | |
+| Buy a plan, transfer ownership | ✓ | | | |
+
+Every request resolves the active studio (session, then the account's last studio, then its oldest membership) and
+checks the membership and permission on the server. Records of another studio answer 404 through every endpoint that
+takes their ID (`tests/test_phase27.py` walks them all). Studio deletion is not part of v1.0.
+
+## 4. Billing providers
+
+| Provider | Method | Credentials | Callback URLs |
+| --- | --- | --- | --- |
+| Manual VietQR (bank QR) | VietQR / Bank Transfer | Bank BIN, account number and holder, transfer prefix | None: an administrator confirms the exact amount in Admin → Payments |
+| payOS | VietQR / Bank Transfer | Client ID, API Key, Checksum Key (Admin → Payments, encrypted) | Webhook `https://<origin>/api/webhooks/payos` |
+| OnePAY | Credit / Debit Card | Merchant ID, Access Code, Hash Key, QueryDR user and password; Sandbox / Production / Advanced | IPN `https://<origin>/api/webhooks/onepay`; return `https://<origin>/api/billing/onepay/return` |
+
+- One settlement path (`payments.apply_paid`): the provider must be the order's, the amount exact; the subscription is
+  extended and the credits posted once, under row locks. Duplicate and late callbacks are idempotent; a payment for an
+  order that already expired still settles, because the money arrived.
+- A browser return never pays. The only manual path is the manual VietQR confirmation: system admins only, exact
+  amount, recorded as an order event and in the audit log.
+- Credentials are write-only and encrypted with the master key (HKDF per purpose); a saved configuration that cannot
+  be decrypted is an error, never a silent fallback. Disabling a gateway never strands a pending order.
+- Receipts and failure emails are deduplicated, and an email problem never undoes a settlement.
+
+Details: [PAYMENTS.md](PAYMENTS.md).
+
+## 5. Observability (Phase 24)
+
+`/health/live`; `/health/ready` (database, migrations at head, master key usable and decrypting a sample of the stored
+secrets; never a paid provider; a `setup_open` warning while no account exists); `/internal/metrics` (Prometheus, for a
+scraper on the server or a system admin; bounded labels: methods, route templates, states, channels, providers, worker
+kinds); alerts for stale workers, disk 80 / 90 %, overdue or failed backups, failed jobs, rejected payment callbacks,
+the master key and failing email, with a 12-hour cooldown. JSON logs with request IDs.
+
+## 6. Backups and recovery (Phase 25)
+
+A daily `pg_dump` timer (checked archive, chmod 600, 14 daily / 8 weekly / 6 monthly, newest never removed, a
+relative or system directory refused); restore checks into a scratch database with a copy of the master key; media
+manifests with checksums; the master key backed up separately and confirmed by fingerprint. [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)
+
+## 7. Hidden or deferred features
 
 | Feature | Decision | Why |
 | --- | --- | --- |
-| **Instagram** publishing | Hidden | Needs an Instagram professional account linked to a Page, `instagram_content_publish`, its own container/publish flow and Meta review: new scope beyond the Facebook Page integration |
-| YouTube URL input | Hidden | Downloading YouTube media conflicts with YouTube's terms; users upload media they own |
-| Research, Scene planner, Storyboard | Hidden | No backend; AI Writer, Story Analysis and Scene Splitter cover the released flows |
-| Stock media | Hidden | Needs a licensed stock provider |
-| Image → video | Hidden | No image-conditioned video provider is integrated |
-| Voice clone | Hidden | Consent, abuse and provider work are out of scope |
-| Sound effects, Audio mixer | Hidden | Background Music covers the released need |
-| Crop/resize, Aspect ratio, Overlay text, Transition, Timeline | Hidden | They need an editing timeline; Render already sets the aspect ratio |
-| Download step | Hidden | Not a pipeline step. Final videos download from Library, Media and the project page |
+| Instagram publishing | Hidden | Needs an Instagram professional account, its own publish flow and Meta review |
+| YouTube URL input | Hidden | Downloading YouTube media conflicts with YouTube's terms |
+| Research, Scene planner, Storyboard, Stock media, Image → video, Voice clone, Sound effects, Audio mixer, timeline editing steps | Hidden | No backend, licensing or consent work in scope |
 | `/ai/*` single-tool pages | Redirect to `/create` | The same features are templates |
-| Workspace brief chips, AI rewrite, storyboard tab, assistant panel | Removed | No backend |
-| Settings: teammates, 2FA, "auto-schedule at best time", recap/thumbnail/provider-ID toggles | Removed | Larger features, or no behavior |
-| Automatic deletion of uploads | Not offered | Never without an explicit user action (§ 9) |
-| Legacy `script` node | Opens only in old workflows | A run blocks it with a reason |
+| "Auto-schedule at best time", recap/thumbnail/provider-ID toggles | Removed | No behaviour |
+| Studio deletion | Not in v1.0 | No safe way yet to settle its subscription, credits, media and publications |
+| Automatic deletion of uploads | Not offered | Never without an explicit user action |
 | Crypto payments | Not offered | Out of scope |
 
-## 3. Billing providers
-
-| Provider | Method | Credentials | Where | Callback URLs |
-| --- | --- | --- | --- | --- |
-| payOS | VietQR / Bank Transfer | Client ID, API Key, Checksum Key | Admin → Cổng thanh toán (encrypted); legacy fallback: `payos` object in `instance/bootstrap.json` | Webhook `https://<frontend>/api/webhooks/payos` |
-| OnePAY | Credit / Debit Card | Merchant ID, Access Code, Hash Key (hex); recommended QueryDR User and Password; mode Sandbox / Production / Advanced | Admin → Cổng thanh toán (encrypted); legacy fallback: `ONEPAY_*` in the runtime environment | IPN `https://<frontend>/api/webhooks/onepay`; return `https://<frontend>/api/billing/onepay/return` |
-
-**Configuration (Phase 19).** `app/payment_config.py` resolves every provider's configuration:
-
-- **Precedence:** the admin-managed configuration first, then the legacy bootstrap/env one.
-- **Errors are not hidden:** a saved configuration that cannot be decrypted is an error, never a silent fallback.
-- **Immediate:** saved changes apply on the next request, with no restart.
-- **Availability:** a provider is offered to buyers only when enabled and valid. Disabling never strands a pending order: callbacks and checks still use its credentials.
-- **Encryption:** credentials are one Fernet ciphertext per provider, keyed by `REELFORGE_TOKEN_ENCRYPTION_KEY` through an HKDF-derived per-purpose key (`app/secret_box.py`).
-- **Audit:** every change and test is recorded in `payment_config_audit` by field name.
-
-**How settlement works**
-
-- Both providers settle through `payments.settle` → `apply_paid`.
-- `apply_paid` checks that the evidence comes from the provider that created the order and that the amount matches exactly.
-- It extends the subscription and posts the credits once, under a row lock.
-
-**Never trusted on its own**
-
-- A browser return never pays an order. Only OnePAY's signed IPN, or a server-side QueryDR check, can.
-- No admin "mark paid" action exists.
-- Credentials are write-only. Once saved, no API, error, log or audit entry returns them; the admin view shows field statuses, with only the payOS client ID and the OnePAY merchant ID masked. It is system-admin only, enforced by the API.
-- ReelForge never collects or stores card data: both methods pay on the provider's hosted page.
-- The admin check never charges: a local validation, and for OnePAY one QueryDR about a reference that cannot exist.
-
-See [PAYMENTS.md](PAYMENTS.md).
-
-## 4. Admin architecture
-
-- `GET /api/admin` returns `COUNT`-based summary counts, `storage_levels`, plans and payment-provider readiness. It never returns user or studio lists.
-- These endpoints page and filter on the server:
-  - `/api/admin/users`;
-  - `/api/admin/workspaces` (with `storage` per studio);
-  - `/api/admin/payments`;
-  - `/api/admin/jobs`;
-  - `/api/admin/storage`;
-  - `/api/admin/reconciliation`;
-  - `/api/admin/support` (Phase 18).
-- Phase 18 adds `/api/admin/payment-config` (and `/check`), `/api/admin/readiness` and `/api/admin/verification`. Phase 19 adds `PUT /api/admin/payment-config/{provider}` and `POST …/{provider}/check|enable|disable`. They are system-admin only, same-origin protected for changes, and never return a secret.
-- `q` is a case-insensitive literal substring (`LIKE` with `%`, `_` and `\` escaped).
-- List responses are `{items, total, limit, offset}`, with `limit` 20 by default and at most 100.
-- The frontend's `DataTable` (`frontend/src/components/reelforge/data-table.tsx`) provides the toolbar, loading and empty states, sticky header, internal scroll, pagination and horizontal scroll.
-
-See [OPERATIONS.md](OPERATIONS.md#admin-console-phase-15).
-
-## 5. Social publishing
+## 8. Social publishing and scheduling
 
 | Channel | How | Approval |
 | --- | --- | --- |
-| YouTube | Google OAuth `youtube.upload`, resumable upload | Unverified Google API projects upload only private videos |
+| YouTube | Google OAuth `youtube.upload`, resumable upload | Unverified Google projects upload private videos only |
 | TikTok | Login Kit + Content Posting API (`video.upload`), inbox drafts | App approved for `video.upload` |
-| Facebook | Facebook Login, Page Reels (`pages_show_list`, `pages_read_engagement`, `pages_manage_posts`) | Meta app review for accounts outside the app's roles |
-| Instagram | Hidden (§ 2) | — |
+| Facebook | Facebook Login, Page Reels | Meta app review for accounts outside the app's roles |
 
-- One approved video can go to several channels. Each channel gets its own metadata, publication and upload job.
-- Tokens are encrypted with `REELFORGE_TOKEN_ENCRYPTION_KEY`.
-- Uncertain uploads become `needs_attention`; they are never reported as a false success.
+One approved video can go to several channels, each with its own metadata and job. Tokens are encrypted with the
+master key. Uncertain uploads become `needs_attention`, never a false success. A publication can be scheduled (UTC),
+moved or cancelled until its upload starts; the scheduler worker queues it on time. [MULTI_PLATFORM_PUBLISHING.md](MULTI_PLATFORM_PUBLISHING.md),
+[SCHEDULING.md](SCHEDULING.md)
 
-See [MULTI_PLATFORM_PUBLISHING.md](MULTI_PLATFORM_PUBLISHING.md).
+## 9. Storage, quotas and retention
 
-## 6. Scheduling
+One media root (Admin → System settings → Storage); files at `<root>/<workspace_id>/<asset_id>`. Plan storage limits
+(Trial 1 GB, Standard 10 GB, Pro 30 GB by default) are enforced before anything is stored, under the studio's row lock.
+Final renders and uploaded sources are kept; intermediates expire 30 days after their run has a final render and no
+publication uses them; scratch folders 3 days; `.part` files 1 day. The daily cleanup (`reelforge-media-maintenance.timer`,
+03:00) deletes only verified files inside the root. [STORAGE.md](STORAGE.md)
 
-- A publication can be scheduled (UTC), moved or cancelled until its upload starts. `python -m app.scheduler_worker` queues it on time.
-- The Calendar loads only the visible date range and shows scheduled, queued, uploading, succeeded, failed and cancelled items.
-- The default publishing time (Settings → Publishing) prefills the dialog.
-
-See [SCHEDULING.md](SCHEDULING.md).
-
-## 7. Storage policy
-
-See [STORAGE.md](STORAGE.md).
-
-- **One root.** `REELFORGE_STORAGE_ROOT`, else the `storage_dir` setting. Files live at `<root>/<workspace_id>/<asset_id>`; paths contain IDs only and never reach users.
-- **Kinds.** Every asset has a `kind`: `source`, `generated_image`, `scene_video`, `voice`, `subtitle`, `extracted_clip`, `final_render` or `other`. It is set where the asset is created; older assets were labelled from their step's node type by migration 0016.
-- **Expired or deleted media** keeps its row (lineage, run history, publications) with `bytes = 0`, `expired_at`, `expired_reason` and `expired_bytes`. Its file is removed, and downloading it answers 410 `media_expired`.
-- **Users can delete:**
-  - files on the Media page;
-  - the intermediate media of all projects or one project, from Settings → Storage.
-
-  The workspace owner confirms each deletion. Media that an unfinished publication needs is kept.
-
-## 8. Quota rules
-
-| Plan | Storage limit (default, editable in Admin → Plans) |
-| --- | --- |
-| Trial | 1 GB |
-| Standard | 10 GB |
-| Pro | 30 GB |
-
-- `WORKSPACE_MEDIA_QUOTA_BYTES`, when set, caps every plan. It is also the limit of a plan without one (1 GiB if unset).
-- Usage counts uploads, generated images, scene videos, narration, subtitles, render outputs and extracted clips.
-- Enforcement happens before anything is stored, under the studio's row lock:
-  - uploads are refused with 413;
-  - image, voice and video jobs are refused before the provider call, and their credits are refunded;
-  - Render, Extract Source Clips and Subtitle are blocked.
-
-  Concurrent uploads cannot both use the last room.
-- **Warning levels:**
-
-  | Usage | Level |
-  | --- | --- |
-  | ≥ 70 % | notice |
-  | ≥ 80 % | warning (banner on every page) |
-  | ≥ 90 % | critical |
-  | ≥ 100 % | full: no new media |
-
-  Reading, downloading and publishing keep working at every level.
-
-## 9. Retention rules
-
-| What | Kept | Variable |
-| --- | --- | --- |
-| Final renders | **Always** | — |
-| Uploaded sources | **Until the user deletes them** | — |
-| Subtitles, unclassified assets | Always | — |
-| Scene videos, narration, generated images, extracted clips | 30 days, and only once their run has a final render and no publication uses them | `REELFORGE_RETENTION_INTERMEDIATE_DAYS` (0 = keep) |
-| Worker scratch folders | 3 days | `REELFORGE_RETENTION_TEMP_DAYS` |
-| `.part` files | 1 day | `REELFORGE_RETENTION_PARTIAL_DAYS` |
-| Orphan files (`--orphans`) | 3 days | `REELFORGE_RETENTION_ORPHAN_DAYS` |
-
-**Daily cleanup** at 03:00 (systemd timer; [STORAGE.md](STORAGE.md#schedule-it-daily-at-0300-systemd)):
-
-```bash
-python -m app.media_maintenance --apply --intermediates
-```
-
-- It is a dry run without `--apply`.
-- A file is deleted only at `<root>/<workspace_id>/<asset_id>`, as a regular file reached through no link.
-- Each asset is re-checked under a row lock before it is marked expired.
-- An expired row whose file survived an interrupted run is swept on the next run.
-
-## 10. Required workers
+## 10. Required processes
 
 | Process | Needed for |
 | --- | --- |
-| API (`uvicorn app.main:app`) and Next.js frontend | Always |
-| `python -m app.text_worker` | Every writing step |
-| `python -m app.image_worker` | Image steps, including slideshow templates |
-| `python -m app.video_worker` | AI video clips |
-| `python -m app.voice_worker` | Narration |
-| `python -m app.render_worker` | Render (music, slideshows) and source-clip extraction |
-| `python -m app.source_worker` | URL sources and transcription |
-| `python -m app.youtube_worker` | YouTube uploads |
-| `python -m app.social_worker` | TikTok and Facebook uploads |
-| `python -m app.scheduler_worker` | Scheduled publications |
-| `reelforge-media-maintenance.timer` | Daily cleanup at 03:00 |
-
-Payments, notifications and support need no worker: the API serves the notification stream. Admin → Operations shows each worker's heartbeat.
+| API (`uvicorn app.main:app`, 127.0.0.1:8000) and Next.js (127.0.0.1:3001) | Always |
+| `reelforge-worker@text`, `@image`, `@video`, `@voice`, `@render`, `@source` | Writing, images, AI video, narration, render and clip extraction, sources and transcription |
+| `reelforge-worker@youtube`, `@social` | YouTube, TikTok and Facebook uploads |
+| `reelforge-worker@scheduler` | Scheduled publications, email retries, system alerts |
+| `reelforge-media-maintenance.timer` | Daily media cleanup at 03:00 |
+| `reelforge-backup.timer` | Daily database backup at 02:30 |
 
 ## 11. Bootstrap and configuration
 
-**Since Phase 20, production needs only:**
+Production needs only `instance/bootstrap.json` (the database URL) and `/etc/reelforge/master.key` (chmod 600,
+`python -m app.master_key init`). Admin → System settings and Admin → Payments hold the rest. The legacy environment
+variables (`/etc/reelforge/runtime.env`, optional) remain a fallback for settings nobody saved; a saved value always
+wins. `REELFORGE_TOKEN_ENCRYPTION_KEY` is only the legacy source of the master key, copied into the key file by
+`python -m app.master_key init`. [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md), [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md)
 
-- `instance/bootstrap.json` with the database URL;
-- the master key file `/etc/reelforge/master.key` (chmod 600; `python -m app.master_key init`).
+## 12. Database migration head
 
-**Everything else is in the admin UI:**
-
-- **Admin → Cài đặt hệ thống:** AI providers, social OAuth, storage, runtime, credit pricing, notifications.
-- **Admin → Thanh toán → Cổng thanh toán:** VietQR manual/payOS, OnePAY.
-
-Values are stored in PostgreSQL (secrets encrypted) and picked up without restarts. See [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md).
-
-**Legacy variables.** The variables below remain a fallback for settings nobody saved in the admin UI; a saved value always wins. They live in `/etc/reelforge/runtime.env` (optional, `EnvironmentFile=-…`) or in `.env.runtime` in development. A blank `KEY=` line means "use the default". Only the logging variables, `REELFORGE_MASTER_KEY_FILE`, the live smoke-test choices and the experimental `DOLA_*` stay environment-only.
-
-| Area | Variables |
-| --- | --- |
-| Text, transcription, voice | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` |
-| Image and video | `RUNWAYML_API_SECRET`, `RUNWAY_OUTPUT_HOSTS`, `FAL_KEY`, `RUNWARE_API_KEY`, `REPLICATE_API_TOKEN` (`DOLA_*` experimental) |
-| Credits and limits | `*_CREDITS_PER_*`, `*_JOB_MAX_AGE_SECONDS`, `TRANSCRIPTION_MAX_SECONDS` |
-| Rendering | `RENDER_FFMPEG_PATH`, `RENDER_FFPROBE_PATH`, `RENDER_SUBTITLE_FONT`, `RENDER_TIMEOUT_SECONDS`, `RENDER_STILL_SECONDS` |
-| Storage | `REELFORGE_STORAGE_ROOT`, `WORKSPACE_MEDIA_QUOTA_BYTES`, `REELFORGE_RETENTION_INTERMEDIATE_DAYS`, `REELFORGE_RETENTION_TEMP_DAYS`, `REELFORGE_RETENTION_PARTIAL_DAYS`, `REELFORGE_RETENTION_ORPHAN_DAYS` |
-| YouTube | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` |
-| TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_REDIRECT_URI`, `TIKTOK_APPROVED_SCOPES` |
-| Facebook | `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `FACEBOOK_REDIRECT_URI` |
-| Master key | `/etc/reelforge/master.key` (or `REELFORGE_MASTER_KEY_FILE`); legacy `REELFORGE_TOKEN_ENCRYPTION_KEY`. Encrypts OAuth tokens and every admin-managed secret. Back it up; never change it |
-| Card payments (legacy fallback; normally configured in Admin) | `ONEPAY_MERCHANT_ID`, `ONEPAY_ACCESS_CODE`, `ONEPAY_HASH_KEY`, `ONEPAY_QUERY_USER`, `ONEPAY_QUERY_PASSWORD`, `ONEPAY_PAYMENT_URL`, `ONEPAY_QUERY_URL` |
-| Notifications | `REELFORGE_SSE_POLL_SECONDS` (3), `REELFORGE_SSE_MAX_SECONDS` (300), `CREDITS_LOW_THRESHOLD` (20) |
-| Logs | `REELFORGE_LOG_FORMAT`, `REELFORGE_LOG_LEVEL` |
-
-The database URL stays in `instance/bootstrap.json`; payOS keys there are a legacy fallback.
-
-## 12. DB migration head
-
-`0020_manual_payment_statuses`. Migrations 0001–0019 are unchanged.
+`0024_operations`. Migrations 0001–0021 are unchanged; 0022–0024 only add nullable columns to existing tables and new
+tables, so code that predates them keeps working on the new schema.
 
 | Migration | Adds | Test |
 | --- | --- | --- |
-| `0015_admin_payments_profiles` | `user_profiles` (display name); indexes for the admin and payment pages | `tests/test_admin_payments_migration.py`: 0014 → 0015 and back |
-| `0016_storage_lifecycle` | `plans.storage_limit_bytes` (Trial 1, Standard 10, Pro 30 GiB); `assets.kind` (back-filled from each asset's step); `assets.expired_at`, `expired_reason`, `expired_bytes`; index `ix_assets_kind_created_at` | `tests/test_storage_migration.py`: 0015 → 0016 and back |
-| `0017_notify_support_verify` | `notifications` (integer IDs, which are also the stream's event IDs; unique `(user_id, dedupe_key)`; indexes `(user_id, created_at)` and `(user_id, read_at)`); `support_tickets` and `support_messages` (categories, statuses, priorities and author types checked); `verification_checks` | `tests/test_phase18_migration.py`: 0016 → 0017 and back (SQLite, and PostgreSQL 16 with `REELFORGE_TEST_DATABASE_URL`); every revision ID fits PostgreSQL's 32-character version column |
-| `0018_admin_payment_config` | `payment_provider_configs` (one row per provider: `enabled`, `mode`, `config_ciphertext`, who and when; no secret column); `payment_config_audit` (action, admin, time, field names) | `tests/test_phase19_migration.py`: 0017 → 0018 and back, keeping orders, subscriptions, ledger and `payment_activity` (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
-| `0019_system_configuration` | `system_config` (one row per admin-managed setting: JSON value or ciphertext, never both); `system_config_audit`; `payment_orders.transfer_reported_at`; `payment_order_events` (manual VietQR reported/confirmed/rejected) | `tests/test_phase20_migration.py`: 0018 → 0019 and back (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
-| `0020_manual_payment_statuses` | Data only: manual VietQR orders the buyer reported become `awaiting_confirmation`, rejected ones `rejected`; no schema change | `tests/test_phase21.py`: 0019 → 0020 and back (SQLite, and PostgreSQL with `REELFORGE_TEST_DATABASE_URL`) |
+| `0015_admin_payments_profiles` | `user_profiles`; indexes for the admin and payment pages | `test_admin_payments_migration.py` |
+| `0016_storage_lifecycle` | Plan storage limits; asset kinds and expiry columns | `test_storage_migration.py` |
+| `0017_notify_support_verify` | `notifications`, `support_tickets`, `support_messages`, `verification_checks` | `test_phase18_migration.py` |
+| `0018_admin_payment_config` | `payment_provider_configs`, `payment_config_audit` | `test_phase19_migration.py` |
+| `0019_system_configuration` | `system_config`, `system_config_audit`, `payment_orders.transfer_reported_at`, `payment_order_events` | `test_phase20_migration.py` |
+| `0020_manual_payment_statuses` | Data only: `awaiting_confirmation` and `rejected` manual orders | `test_phase21.py` |
+| `0021_default_production_origin` | Data only: the production origin with Secure cookies, replacing only the old defaults | `test_production_origin.py` |
+| `0022_account_security` | User verification, 2FA and terms columns; session ids, devices and activity; `account_tokens`, `recovery_codes`, `email_outbox`, `audit_events`, `rate_limit_buckets`; existing accounts marked verified | `test_phase22.py` |
+| `0023_workspace_team` | `workspace_invites`; the active studio per session and per user; membership dates | `test_phase23.py` |
+| `0024_operations` | `backup_runs`, `system_alerts` | `test_phase25.py` |
 
-The tests keep every existing row. Set `REELFORGE_TEST_DATABASE_URL` to also run them on PostgreSQL. Apply with `python -m alembic upgrade head` before restarting the services.
+Every migration test runs on SQLite and, with `REELFORGE_TEST_DATABASE_URL`, on PostgreSQL 16, in both directions,
+keeping every row. CI also runs `alembic check` after upgrading and after a full downgrade and upgrade.
 
 ## 13. FFmpeg requirements
 
-- System `ffmpeg` and `ffprobe` (`RENDER_FFMPEG_PATH` / `RENDER_FFPROBE_PATH`), plus Noto fonts for burned-in subtitles. On Ubuntu: `sudo apt install -y ffmpeg fonts-noto-core fonts-noto-cjk`.
-- Check with `python -m app.render_worker --check`.
-- They are needed by the API, the render worker (renders and clip extraction) and the source worker (transcription).
+System `ffmpeg` and `ffprobe` plus Noto fonts (`sudo apt install -y ffmpeg fonts-noto-core fonts-noto-cjk`); check with
+`python -m app.render_worker --check`. Needed by the API, the render worker and the source worker.
 
 ## 14. Recommended home-server directories
 
 | Disk | Holds |
 | --- | --- |
-| SSD 256 GB | OS, application, virtualenv, PostgreSQL, Docker/system files |
-| HDD 1 TB, mounted at `/srv/data` | Media and backups |
+| SSD | OS, application, virtualenv, PostgreSQL, `/etc/reelforge` |
+| HDD at `/srv/data` | `videos/reelforge` (media root) and `backups/reelforge` (daily dumps, chmod 700) |
 
-```
-/srv/data/
-├── backups/reelforge/   daily pg_dump (copy it off the HDD too)
-├── images/              other projects
-├── uploads/             other projects
-└── videos/reelforge/    REELFORGE_STORAGE_ROOT: all ReelForge media
-```
+A backup on the same HDD does not survive that disk failing: copy the dumps off the server, and keep the master key
+separately from them.
 
-- PostgreSQL metadata is small next to the videos.
-- A backup on the same HDD does not survive that disk failing.
-- Do not duplicate the video tree on the same disk by default.
+## 15. Verification
 
-See [home-server-deployment.md](home-server-deployment.md) § 11.
+**Automated (no paid or live service):** backend tests on SQLite and PostgreSQL 16, Alembic upgrade/check/downgrade,
+frontend typecheck and build, ten browser flows on SQLite and PostgreSQL, a load baseline
+([LOAD_BASELINE.md](LOAD_BASELINE.md)), a responsive and accessibility pass. Results: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md).
 
-## 15. Live verification requirements
-
-All Phase 14–20 tests are offline; no paid or live API was called. An operator must verify the following, then tick it in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
-
-**Payments**
-
-- Configure both gateways in Admin → Cổng thanh toán, with no SSH.
-- Manual VietQR: scan the QR with a real banking app, transfer a small amount, report it, confirm it in Admin; the credits are posted once.
-- Move the master key into `/etc/reelforge/master.key` and back it up.
-- OnePAY sandbox, then one real payment ([PAYMENTS.md](PAYMENTS.md#sandbox--production-onepay)):
-  - checkout;
-  - return;
-  - IPN through the proxy (`responsecode=1`);
-  - QueryDR;
-  - a cancelled payment;
-  - credits posted once.
-- payOS: one payment after deployment, with the webhook received.
-- Confirm the sandbox endpoints (`mtf.onepay.vn`) against OnePAY's integration guide.
-
-**Rendering**
-
-- A real FFmpeg render of an image slideshow with Background Music: volume, loop or play-once, still timing.
-- Movie Recap and Movie Review on a real source video.
-
-**Templates**
-
-- One live run each of Article → Video and Product Video. They use paid text, image and voice providers.
-
-**Storage**
-
-- On the real HDD:
-  - set `REELFORGE_STORAGE_ROOT`;
-  - run `python -m app.media_maintenance --intermediates` (dry run) and read its list;
-  - enable the timer;
-  - after the first 03:00 run, check `journalctl -u reelforge-media-maintenance` and that final videos still play.
-- Check that the disk free space shows in Admin → Operations.
-
-**Publishing**
-
-- Real TikTok inbox and Facebook Reel uploads.
-- Scheduled publishing on time.
-
-**Notifications and support**
-
-- **Kiểm tra luồng thông báo** passes through the public domain (Cloudflare Tunnel, and nginx if used).
-- A notification arrives without reloading.
-- One support round trip between a user and an admin.
-
-**UI**
-
-The Admin layout, card checkout and storage screens were checked in headless Chromium on an isolated stack:
-
-- Admin at 1366×768, 1680×1050 and 390×844: the page never scrolls, table bodies scroll inside it, headers stay sticky, pagination stays visible.
-- Card checkout against a fake gateway that was never reached.
-- Phase 18, against an isolated API and Next.js server:
-  - a notification reached the bell through the Next.js proxy in under a second;
-  - the support round trip worked;
-  - the payment setup showed no secret;
-  - the stream check passed;
-  - the checklist persisted;
-  - none of the eight Admin tabs scrolled at 1366×768;
-  - the bell did not overflow at 360 px.
-- Phase 19, same isolated stack:
-  - both gateways were configured from the admin UI;
-  - no secret appeared in the page or in any API response, and the inputs were empty after saving;
-  - the masked client ID showed;
-  - the SANDBOX/PRODUCTION badges showed, and production needed the confirmation;
-  - Billing showed "VietQR / Chuyển khoản" and "Thẻ tín dụng / ghi nợ" without provider names, and disabling VietQR removed it at once;
-  - plans showed why they were not purchasable;
-  - Admin still did not scroll.
-  - Nothing was sent to payOS or OnePAY.
-
-Real devices remain to be checked.
-
-**Providers**
-
-- Operator-verified: Gemini text, Runway `gen4.5` and `gen4_image`.
-- Mocked only: the rest (see `IMPLEMENTATION_STATUS.md` → Live Provider Verification).
+**Manual, on the real server:** every item of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) and the 41-item
+checklist in Admin → Verification ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)): real email, real AI providers, real
+payments (manual VietQR, payOS, OnePAY sandbox and one small production card payment), real YouTube / TikTok / Facebook
+uploads and scheduling, the client address through Cloudflare, backups and a restore rehearsal, a server reboot, and the
+legal review. Operator-verified before v1.0: Gemini text, Runway `gen4.5` and `gen4_image`.
 
 ## 16. Known limitations
 
+**Accounts and teams**
+
+- Password reset needs working email; otherwise only the server command (`python -m app.account_recovery`) or another
+  administrator (2FA reset) helps.
+- No single sign-on, no studio deletion, no per-studio audit view (the audit log is for system admins).
+- Account closure is a support request handled by an administrator; nothing is deleted automatically.
+- Registration answers "Email already exists" for a taken address (rate limited); sign-in and password reset do not
+  reveal accounts.
+- Expired sessions and used tokens stay in their tables (ignored everywhere); a periodic cleanup is not part of v1.0.
+
 **Payments**
 
-- Manual VietQR depends on an administrator checking the bank account; there is no bank statement integration.
-- Card payment has not been tested live.
-- Changing the encryption key makes saved gateway credentials unreadable; they must be re-entered. There is no key rotation.
-- One configuration per provider: no separate sandbox and production profiles to switch between.
-- Without QueryDR credentials, a card order waits for the IPN.
-- Refunds are handled outside the app.
-- Renewal is manual.
+- Manual VietQR depends on an administrator checking the bank account; no bank statement integration.
+- No key rotation: changing the master key makes saved credentials unreadable (re-enter them).
+- One configuration per provider (no separate sandbox and production profiles); refunds outside the app; renewal is
+  manual.
 
-**Music and slideshows**
+**Operations**
 
-- One looped (or play-once) track per render; no ducking curve or fades.
-- Stills have no motion or transitions.
-- Product Video uses AI images; uploaded product photos are connected manually through a media source.
+- Alerts are in-app notifications to system admins only (no email or push to an operator).
+- One API process by default; the load baseline shows ample room for a studio ([LOAD_BASELINE.md](LOAD_BASELINE.md)).
+- Rate limits are fixed in code.
+- Each open notification stream polls the database every few seconds: fine for a home server, a pub/sub channel would
+  be needed for thousands of concurrent users.
 
-**Storage**
+**Content**
 
-- One root only.
-- One retention period for all intermediate kinds.
-- Sources are never removed automatically.
-- Plan limits can add up to more than the disk. Watch the disk line in Admin → Operations, and use `WORKSPACE_MEDIA_QUOTA_BYTES` as a ceiling.
-- A run whose intermediates expired cannot be re-rendered; start a new run.
+- One background track per render, no ducking or fades; stills have no motion; Product Video uses AI images.
+- One media root and one retention period for all intermediates; a run whose intermediates expired cannot be
+  re-rendered.
+- TikTok uploads are inbox drafts; YouTube uploads from an unverified Google project stay private.
 
-**Notifications and support**
+**Legal**
 
-- In-app only: no email or push notifications.
-- Each open stream checks the database every few seconds, which is fine for a home server and would need a pub/sub channel for thousands of concurrent users.
-- Support has no attachments and no assignment to a particular admin.
-
-**Admin**
-
-- User search matches email only.
-- `LIKE '%q%'` scans the table: fine for thousands of rows, and would need a trigram index for many more.
-
-**Scope**
-
-- No team collaboration, 2FA, password recovery or email delivery.
-- payOS keys cannot be proven without a real payment link; verify them with one small payment.
-- TikTok uploads are inbox drafts.
-- YouTube uploads from an unverified Google project stay private.
+- `/terms` and `/privacy` are templates: an operator must fill them in and have them reviewed before launch.
 
 ## Remaining SoonBadge / ComingSoonBanner
 
-**Count: 0.** Both components were deleted from `frontend/src/components/reelforge/primitives.tsx`. No source file, dictionary or test refers to them, and `tests/test_product_audit.py` fails if one comes back.
-
-The only other copies are in `frontend/.next-dev/`, the git-ignored build cache of a running `next dev` server. They are not shipped.
+**Count: 0.** Both components were deleted; `tests/test_product_audit.py` fails if one comes back.

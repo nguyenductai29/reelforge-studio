@@ -111,10 +111,19 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    - `EnvironmentFile=-/etc/reelforge/runtime.env` is optional; leave the file out.
    - `/etc/reelforge/master.key` is the default path, so the units need no variable for it.
    - The API listens on `127.0.0.1:8000` and the frontend on `127.0.0.1:3001` (`npm start -- --hostname 127.0.0.1`). Neither is reachable from the network.
-8. **Public access:** a Cloudflare Tunnel route `studio.imokome-cloud.com` → `http://127.0.0.1:3001` (home-server-deployment.md § 14). Cloudflare terminates HTTPS.
-9. **In the browser:**
-   1. Create the first admin (accepting the Terms and Privacy Policy). Then turn on two-factor authentication for it
-      (**Cài đặt → Bảo mật**) and store its recovery codes.
+8. **The first administrator, on the server, before the site is public:**
+
+   ```bash
+   (cd frontend && npm run create-admin)      # asks for the email and a password of at least 12 characters
+   ```
+
+   The API accepts first-run setup only from the server itself; through Cloudflare it answers 403, so nobody else can
+   claim the administrator even if the tunnel is already open. `deploy.sh` and `/health/ready` remind you while no
+   account exists.
+9. **Public access:** a Cloudflare Tunnel route `studio.imokome-cloud.com` → `http://127.0.0.1:3001` (home-server-deployment.md § 14). Cloudflare terminates HTTPS.
+10. **In the browser:**
+   1. Sign in as the administrator and accept the Terms and Privacy Policy (the banner). Then turn on two-factor
+      authentication (**Cài đặt → Bảo mật**) and store its recovery codes off the server.
    2. In **Cài đặt hệ thống**:
       - **Chung:** check the public frontend origin, `https://studio.imokome-cloud.com`, with secure cookies on (the defaults). Change it only for another hostname.
       - **Email:** SMTP or Resend, the sender address; press **Gửi email thử** ([EMAIL.md](EMAIL.md)). Until email works,
@@ -129,7 +138,7 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
       - VietQR: manual (bank account) or payOS;
       - Card: OnePAY, sandbox first.
    4. In **Cấu hình gói:** the plan prices.
-10. **Check:** `curl -fsS http://127.0.0.1:8000/health/ready`, then open **Kiểm định**. Every readiness section should be green (backups, email and the master key backup included). **Cấu hình** should read "no setting from the environment" and no runtime file. Then work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)) and the release checklist ([RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md)), including a recovery rehearsal ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)).
+11. **Check:** `curl -fsS http://127.0.0.1:8000/health/ready`, then open **Kiểm định**. Every readiness section should be green (backups, email and the master key backup included). **Cấu hình** should read "no setting from the environment" and no runtime file. Then work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)) and the release checklist ([RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md)), including a recovery rehearsal ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)).
 
 ## Updates
 
@@ -149,9 +158,12 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    `/etc/reelforge` belongs to root, so a new key is created as the service account in a private staging directory and installed with `sudo install` (owner `tai`, 600). Run `deploy.sh` as the account the services run as.
 4. migrates and builds;
 5. restarts the API, the frontend and every enabled worker (`reelforge-<name>-worker` or `reelforge-worker@<name>`);
-6. waits up to 30 s for `http://127.0.0.1:8000/health/ready` (database, migrations at head, master key usable; no paid provider is called), then checks `http://127.0.0.1:3001`;
-7. checks the public origin stored in System Settings. A failure there is a warning only, since the tunnel runs on its own;
-8. notes every unit in `deploy/systemd/` that differs from the installed copy or is not installed yet, and reminds you when the backup timer is not enabled.
+6. waits up to 30 s for `http://127.0.0.1:8000/health/ready` (database, migrations at head, master key usable and decrypting; no paid provider is called) and up to 30 s for `http://127.0.0.1:3001`;
+7. checks, a few seconds later, that the API, the frontend and every worker it restarted are still active;
+8. checks the public origin stored in System Settings. A failure there is a warning only, since the tunnel runs on its own;
+9. notes every unit in `deploy/systemd/` that differs from the installed copy or is not installed yet, and reminds you when the backup timer is not enabled;
+10. warns loudly while no administrator exists yet (create it with `npm run create-admin`);
+11. **fails** (exit status 1) when a service is not running, naming it, instead of reporting success.
 
 Configuration changes never need a deploy: save them in the admin UI.
 

@@ -34,7 +34,7 @@ import threading
 import uuid
 
 from sqlalchemy import func, inspect, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app import email_templates, secret_box, system_config
 from app.logs import log_event
@@ -246,9 +246,15 @@ def enqueue(db, *, to: str, template: str, locale: str | None, params: dict, use
         log_event(logger, "email_skipped", template=template, reason=trouble)
         return None
     now = datetime.now(timezone.utc)
+    # An email never breaks the change that caused it (a settled payment, a reset password): trouble here is
+    # logged and the email skipped; the caller's transaction goes on.
+    try:
+        payload = secret_box.encrypt_json(PURPOSE, {"params": _plain(params)})
+    except Exception:  # noqa: BLE001 - see above
+        log_event(logger, "email_skipped", level=logging.WARNING, template=template, reason="encrypt_failed")
+        return None
     row = EmailOutbox(id=str(uuid.uuid4()), user_id=user_id, to_address=to.strip()[:320], template=template,
-                      locale=email_templates.locale_of(locale),
-                      payload_ciphertext=secret_box.encrypt_json(PURPOSE, {"params": _plain(params)}),
+                      locale=email_templates.locale_of(locale), payload_ciphertext=payload,
                       status="queued", attempts=0, dedupe_key=dedupe[:160] if dedupe else None,
                       created_at=now, next_attempt_at=now)
     try:
@@ -257,6 +263,9 @@ def enqueue(db, *, to: str, template: str, locale: str | None, params: dict, use
             db.flush()
     except IntegrityError:
         return None  # the same dedupe key was queued before
+    except SQLAlchemyError:
+        log_event(logger, "email_skipped", level=logging.WARNING, template=template, reason="queue_failed")
+        return None
     return row.id
 
 

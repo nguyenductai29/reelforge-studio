@@ -52,8 +52,8 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def conditions(db, now: datetime) -> list[Condition]:
-    from app import heartbeat, master_key, secret_box, storage, system_config
-    from app.models import AuditEvent, BackupRun, EmailOutbox, SystemConfig, User, WorkflowJob
+    from app import health, heartbeat, master_key, storage, system_config
+    from app.models import AuditEvent, BackupRun, EmailOutbox, User, WorkflowJob
 
     found: list[Condition] = []
     for row in heartbeat.worker_health(db, now):
@@ -102,15 +102,8 @@ def conditions(db, now: datetime) -> list[Condition]:
     if key["problem"]:
         found.append(Condition("master_key", "critical", "The master encryption key is not usable",
                                {"problem": key["problem"]}))
-    elif secret_box.available() and inspect(db.connection()).has_table("system_config"):
-        sample = db.execute(select(SystemConfig.key, SystemConfig.ciphertext)
-                            .where(SystemConfig.ciphertext.is_not(None)).limit(3)).all()
-        unreadable = 0
-        for name, ciphertext in sample:
-            try:
-                secret_box.decrypt_json(f"system-config:{name}", ciphertext)
-            except secret_box.SecretBoxError:
-                unreadable += 1
+    else:
+        unreadable = health.undecryptable_secrets(db.connection())
         if unreadable:
             found.append(Condition("master_key", "critical", "Stored secrets cannot be decrypted with this key",
                                    {"problem": "cannot_decrypt", "count": unreadable}))

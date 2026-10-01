@@ -45,7 +45,9 @@ What a run does (`app/backup.py`):
    fails.**
 
 Settings in **Admin → System settings → Backups**: directory, `keep_daily`, `keep_weekly`, `keep_monthly`,
-`max_age_hours`. By hand:
+`max_age_hours`. The directory must be an absolute path to a dedicated folder: a run refuses a relative path or a
+system or shared folder (`/`, `/etc`, `/home`, `/srv`, `/srv/data`, …) before touching anything, because it makes its
+folder chmod 700. By hand:
 
 ```bash
 deploy/backup.sh                       # one backup now (same as the timer)
@@ -147,6 +149,12 @@ deploy/restore-check.sh --dump /srv/data/backups/reelforge/reelforge-20261002-02
 7. Start the services (`sudo systemctl start reelforge-api reelforge-frontend 'reelforge-worker@*'`, then the timers),
    check `curl -fsS http://127.0.0.1:8000/health/ready`, open Admin → Verification, and run the live checks of
    the critical paths (sign-in, a payment, a publish).
+
+## Locked out of the administrator account
+
+If the only administrator cannot sign in (forgotten password while email does not work, or lost authenticator and
+recovery codes), use the server command: [SECURITY.md](SECURITY.md#break-glass-recovery). A restore is never needed for
+that.
 
 ## Logs
 

@@ -1,8 +1,19 @@
 import {
-  ADMIN, adminApi, apiAs, enableEmail, expect, latestMail, linkIn, registerApi, signIn, signOut, test, totp,
+  ADMIN, adminApi, apiAs, enableEmail, english, expect, latestMail, linkIn, registerApi, signIn, signOut, test, totp,
 } from "./helpers";
 
-test("the first administrator creates the studio, signs out and signs in again", async ({ page }) => {
+test("the first administrator creates the studio, signs out and signs in again", async ({ page, browser }) => {
+  // A visitor from the internet (a public address, as Cloudflare reports it) cannot claim the first administrator.
+  const visitor = await browser.newContext({ extraHTTPHeaders: { "CF-Connecting-IP": "93.184.216.34" } });
+  await english(visitor);
+  const outsider = await visitor.newPage();
+  await outsider.goto("/");
+  await expect(outsider.getByText(/created on the server itself/)).toBeVisible();
+  await expect(outsider.getByText("cd frontend && npm run create-admin")).toBeVisible();
+  await expect(outsider.getByRole("button", { name: "Create studio" })).toHaveCount(0);
+  await visitor.close();
+
+  // On the server's side of the proxy (here a TEST-NET address, never a public one), the form works.
   await page.goto("/");
   await expect(page.getByText("Create your studio")).toBeVisible();
   await page.getByLabel("Email").fill(ADMIN.email);
@@ -65,6 +76,13 @@ test("sessions: the list shows this device, and the other sessions can be signed
   expect((await other.get("/api/dashboard")).status()).toBe(401);
   await expect(page.getByRole("button", { name: "Account", exact: true })).toBeVisible();
   await other.dispose();
+
+  // Signed out from another device: the next request of this tab brings back the sign-in screen.
+  const elsewhere = await apiAs(email, "sessions-password-1");
+  expect((await elsewhere.post("/api/account/sessions/revoke-others")).status()).toBe(200);
+  await page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: "Library" }).click();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+  await elsewhere.dispose();
 });
 
 test("2FA: enrolment needs a correct code; sign-in asks for it; a recovery code works once", async ({ page }) => {

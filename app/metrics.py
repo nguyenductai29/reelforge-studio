@@ -32,7 +32,12 @@ _counters: dict[tuple[str, tuple], int] = defaultdict(int)
 _gauges: dict[str, float] = {}
 
 
+# Any token is a valid HTTP method; labels must stay bounded whatever a client sends.
+_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+
+
 def observe_http(method: str, route: str, status: int, seconds: float) -> None:
+    method = method if method in _METHODS else "OTHER"
     with _lock:
         _requests[(method, route, str(status))] += 1
         entry = _durations.setdefault((method, route), [0.0, 0, [0] * len(BUCKETS)])

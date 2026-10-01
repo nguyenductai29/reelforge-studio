@@ -46,6 +46,23 @@ Correctness under load (checked by the script, a failure stops it):
 
 A second run on the same machine was within a few percent of these numbers.
 
+### Re-run after the Phase 27 release audit (same machine, 2026-10-02)
+
+Sign-in now spends the same scrypt work for unknown accounts, and a few audit events were added; the numbers stay
+within run-to-run noise:
+
+| Scenario | Requests | Concurrency | Per second | p50 ms | p95 ms | p99 ms | Max ms | Errors |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| register | 50 | 10 | 53.8 | 161.3 | 268.4 | 307.1 | 307.1 | 0 |
+| login | 100 | 10 | 102.4 | 91.0 | 130.4 | 142.5 | 149.9 | 0 |
+| dashboard | 1000 | 20 | 171.5 | 115.2 | 138.6 | 156.1 | 177.6 | 0 |
+| notifications unread-count | 1000 | 20 | 470.4 | 37.2 | 75.3 | 85.0 | 95.2 | 0 |
+| notifications list | 500 | 20 | 328.5 | 55.9 | 98.7 | 110.2 | 117.8 | 0 |
+| job claim (SKIP LOCKED) | 2016 | 8 | 1282.5 | 6.1 | 7.9 | 9.2 | 46.0 | 0 |
+| payment callback (payOS) | 153 | 10 | 92.2 | 101.2 | 133.9 | 145.7 | 169.7 | 0 |
+
+Checks: 2,000 distinct claims of 2,000 jobs, none twice; 51 of 51 orders paid with 51 credit grants.
+
 ## Reading the numbers
 
 * **Sign-in and registration** cost what the password hash costs (scrypt, n = 2^14, r = 8): about 100 ms of CPU per

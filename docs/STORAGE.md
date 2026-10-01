@@ -152,6 +152,8 @@ If the process stops between steps 3 and 4, the next run finds the expired row w
 
 ### Schedule it daily at 03:00 (systemd)
 
+The repository ships both units (`deploy/systemd/reelforge-media-maintenance.service` and `.timer`, hardened; [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) step 7 installs them). Their essence:
+
 `/etc/systemd/system/reelforge-media-maintenance.service`:
 
 ```ini
@@ -166,7 +168,7 @@ Group=tai
 WorkingDirectory=/home/tai/apps/reelforge-studio
 ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.media_maintenance --apply --intermediates
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/etc/reelforge/runtime.env
+EnvironmentFile=-/etc/reelforge/runtime.env
 Nice=10
 IOSchedulingClass=idle
 ```
@@ -193,10 +195,10 @@ sudo -u tai /home/tai/apps/reelforge-studio/.venv/bin/python -m app.media_mainte
 journalctl -u reelforge-media-maintenance
 ```
 
-With cron instead (`crontab -e` as `tai`; cron does not read the runtime file, so load it):
+With cron instead (`crontab -e` as `tai`). The media root and retention come from Admin → System settings → Storage; an installation still on the legacy runtime file must load it (`set -a && . /etc/reelforge/runtime.env && set +a &&` before the command):
 
 ```cron
-0 3 * * * cd /home/tai/apps/reelforge-studio && set -a && . /etc/reelforge/runtime.env && set +a && .venv/bin/python -m app.media_maintenance --apply --intermediates >> /home/tai/reelforge-maintenance.log 2>&1
+0 3 * * * cd /home/tai/apps/reelforge-studio && .venv/bin/python -m app.media_maintenance --apply --intermediates >> /home/tai/reelforge-maintenance.log 2>&1
 ```
 
 ## What users can delete themselves
@@ -240,8 +242,9 @@ Media that a publication still needs is skipped with `asset_in_use`: any publica
 ```bash
 sudo mkdir -p /srv/data/videos/reelforge /srv/data/backups/reelforge
 sudo chown -R tai:tai /srv/data/videos/reelforge /srv/data/backups/reelforge
-echo 'REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge' | sudo tee -a /etc/reelforge/runtime.env
 ```
+
+Then set the media root to `/srv/data/videos/reelforge` in Admin → System settings → Storage (the legacy `REELFORGE_STORAGE_ROOT` variable still works on older installations).
 
 `/srv/data/images` and `/srv/data/uploads` stay free for other projects. ReelForge keeps all of its media (uploads, images, voice, videos) under one root, for the reasons above. Mount the HDD itself at `/srv/data`; do not make the root a symbolic link, because cleanup refuses to delete through links.
 
@@ -249,14 +252,14 @@ echo 'REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge' | sudo tee -a /etc/reel
 
 1. Stop the API and every worker.
 2. Run `rsync -a <old root>/ /srv/data/videos/reelforge/`.
-3. Set `REELFORGE_STORAGE_ROOT`.
+3. Set the media root in Admin → System settings → Storage (confirm that files are not moved).
 4. Start the services.
 5. Check that a few media files open, then remove the old copy.
 
 ### Backups
 
-- PostgreSQL metadata is small next to the video files: megabytes against hundreds of gigabytes. Back it up often, for example with a daily `pg_dump -Fc` into `/srv/data/backups/reelforge/`.
-- **A backup on the same HDD does not protect against that disk failing.** Copy the database dumps to another machine or disk as well, and keep `REELFORGE_TOKEN_ENCRYPTION_KEY` with them.
+- PostgreSQL metadata is small next to the video files: megabytes against hundreds of gigabytes. `reelforge-backup.timer` dumps it daily into `/srv/data/backups/reelforge/` ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)).
+- **A backup on the same HDD does not protect against that disk failing.** Copy the database dumps to another machine or disk as well. Keep the master key (`/etc/reelforge/master.key`) off the server too, but **never next to the dumps**: a dump plus its key reveals every stored secret.
 - Do not copy the full video tree onto the same HDD by default: it doubles the space and gives no protection against disk failure. If the videos matter, back them up to a second disk or another host with `rsync`. Restore the database and the media from the same point in time; files without rows can be listed with `--orphans`.
 
 ## Limits

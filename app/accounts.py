@@ -225,6 +225,9 @@ def check_second_factor(db, user: User, code: str) -> str | None:
     if not two_factor_enabled(user):
         return None
     if totp.is_totp_code(code):
+        # The row lock makes "never the same code twice" hold for concurrent sign-ins too: a second request with
+        # the same code waits, then sees the step the first one stored.
+        db.refresh(user, ["totp_ciphertext", "totp_last_step"], with_for_update=True)
         secret = _decrypt_secret(user, user.totp_ciphertext)
         step = totp.verify(secret, code, last_step=user.totp_last_step) if secret else None
         if step is None:

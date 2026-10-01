@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { Clapperboard, Loader2, RefreshCw } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
@@ -12,11 +12,11 @@ import { AppShell } from "@/components/reelforge/app-shell";
 import { AuthScreen } from "@/components/reelforge/auth-screen";
 import { FieldLabel } from "@/components/reelforge/primitives";
 import { FormError, PublicShell } from "@/components/reelforge/public-shell";
-import { api, ApiError, jsonRequest } from "@/lib/api";
+import { api, ApiError, jsonRequest, SESSION_LOST_EVENT } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { I18nProvider, useI18n } from "@/lib/i18n";
 import type { Locale } from "@/lib/i18n/config";
-import { useAuthStatus, useDashboard } from "@/lib/queries";
+import { keys, useAuthStatus, useDashboard } from "@/lib/queries";
 
 // Reachable signed out (Phase 22/26): emailed links, the legal pages. They render without the studio shell.
 const PUBLIC_PATHS = ["/forgot-password", "/reset-password", "/verify-email", "/invite", "/terms", "/privacy"];
@@ -90,7 +90,22 @@ function SessionGate({ children }: { children: ReactNode }) {
 
 function PrivateGate({ children }: { children: ReactNode }) {
   const { t } = useI18n();
+  const client = useQueryClient();
   const dashboard = useDashboard();
+
+  // Any request answered 401 (the session expired, or was signed out from another device): check the session
+  // once; the dashboard then answers 401 too and the sign-in screen replaces the page.
+  useEffect(() => {
+    const lost = () => {
+      const state = client.getQueryState(keys.dashboard);
+      // Not while it is being fetched: that request's own 401 must not start another one.
+      if (state?.status === "success" && state.fetchStatus === "idle") {
+        void client.invalidateQueries({ queryKey: keys.dashboard });
+      }
+    };
+    window.addEventListener(SESSION_LOST_EVENT, lost);
+    return () => window.removeEventListener(SESSION_LOST_EVENT, lost);
+  }, [client]);
 
   if (dashboard.isPending) {
     return (

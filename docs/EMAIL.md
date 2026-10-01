@@ -26,7 +26,7 @@ Gmail or Outlook may land in spam.
 
 While email is off or failing:
 
-* "Forgot password?" is hidden on the sign-in page (an administrator can set a password in Admin → Users);
+* "Forgot password?" is hidden on the sign-in page. A user who forgot their password needs the operator: on the server, `python -m app.account_recovery reset-password --email …` sets a new one ([SECURITY.md](SECURITY.md#break-glass-recovery));
 * invitations show a link to send another way;
 * the "verify your email" banner is not shown, and inviting does not require a verified address.
 

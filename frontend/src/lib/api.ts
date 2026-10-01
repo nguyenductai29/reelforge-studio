@@ -31,10 +31,16 @@ function parseError(status: number, data: { detail?: unknown; code?: unknown; re
   return new ApiError(status, null, null, code, requestId);
 }
 
+/** Dispatched on `window` when the API answers 401: the session expired or was signed out elsewhere. */
+export const SESSION_LOST_EVENT = "reelforge:session-lost";
+
 export async function api<T>(endpoint: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api/${endpoint}`, { credentials: "same-origin", cache: "no-store", ...init });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw parseError(res.status, data);
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_LOST_EVENT));
+    throw parseError(res.status, data);
+  }
   return data as T;
 }
 

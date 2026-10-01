@@ -635,7 +635,7 @@ journalctl -u reelforge-frontend -f
 
 ### Create the first administrator
 
-Do this on a fresh database before adding the public Cloudflare route in section 14. Until an account exists, whoever opens the sign-in page first can create the administrator.
+Do this on a fresh database before adding the public Cloudflare route in section 14. The API accepts first-run setup only from the server itself (loopback or a private address): through Cloudflare the sign-in page shows how to create the administrator instead of a form, and the API answers 403. `deploy.sh` and `/health/ready` remind you while no account exists.
 
 ```bash
 cd ~/apps/reelforge-studio/frontend
@@ -690,8 +690,8 @@ sudo chown -R tai:tai /srv/data/videos/reelforge /srv/data/backups/reelforge
 
 **Backups.**
 
-- Dump PostgreSQL daily to `/srv/data/backups/reelforge`, for example `pg_dump -Fc reelforge_studio_db > /srv/data/backups/reelforge/$(date +%F).dump`.
-- A backup on the same HDD does **not** protect against that disk failing. Copy the dumps, and `REELFORGE_TOKEN_ENCRYPTION_KEY`, to another machine or disk too.
+- PostgreSQL is dumped daily to `/srv/data/backups/reelforge` by `reelforge-backup.timer` (section 22, [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)).
+- A backup on the same HDD does **not** protect against that disk failing. Copy the dumps to another machine or disk too, and keep the master key (`/etc/reelforge/master.key`) off the server **separately** from them.
 - Do not duplicate the full video tree on the same HDD by default. If the videos matter, `rsync` them to a second disk or host.
 
 ### Daily media cleanup (03:00)
@@ -988,9 +988,9 @@ sudo systemctl enable reelforge-youtube-worker
 sudo systemctl start reelforge-youtube-worker
 ```
 
-The API and YouTube worker need the same Google OAuth configuration and persistent `REELFORGE_TOKEN_ENCRYPTION_KEY`.
+The API and the YouTube worker read the Google OAuth app from Admin → Cài đặt hệ thống → OAuth mạng xã hội (or the legacy variables) and decrypt the stored tokens with the same master key (`/etc/reelforge/master.key`).
 
-Back up that encryption key securely. Losing it makes stored encrypted OAuth tokens and resumable upload sessions unreadable.
+Back that key up securely, off the server. Losing it makes stored OAuth tokens and resumable upload sessions unreadable.
 
 ### Social worker (TikTok and Facebook)
 
@@ -998,7 +998,7 @@ The social worker uploads approved videos to TikTok (as inbox drafts) and Facebo
 
 - `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_REDIRECT_URI` (`https://<your frontend>/channels/callback/tiktok`);
 - `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `FACEBOOK_REDIRECT_URI` (`https://<your frontend>/channels/callback/facebook`);
-- the same `REELFORGE_TOKEN_ENCRYPTION_KEY`.
+- the same master key as the API (`/etc/reelforge/master.key`).
 
 Configure only the platforms you use; the Channels page shows the others as needing server configuration. Create `/etc/systemd/system/reelforge-social-worker.service` with the same contents as the YouTube worker, changing only:
 

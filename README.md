@@ -101,7 +101,7 @@ A system admin configures both gateways in **Quản trị → Thanh toán → C�
 - **VietQR / Bank Transfer (payOS):** Client ID, API Key and Checksum Key.
 - **Credit / Debit Card (OnePAY):** Merchant ID, Access Code, Hash Key and QueryDR credentials, in Sandbox or Production mode. Production needs a confirmation.
 
-Secrets are write-only and encrypted at rest with `REELFORGE_TOKEN_ENCRYPTION_KEY`; back that key up with the database. Each gateway can be disabled for new checkouts without affecting existing orders. The configuration methods below still work as a fallback for existing deployments. See [docs/PAYMENTS.md](docs/PAYMENTS.md#configuration-phase-19-admin-managed).
+Secrets are write-only and encrypted at rest with the master key (`/etc/reelforge/master.key`); back that key up off the server, separately from the database dumps. Each gateway can be disabled for new checkouts without affecting existing orders. The configuration methods below still work as a fallback for existing deployments. See [docs/PAYMENTS.md](docs/PAYMENTS.md#configuration-phase-19-admin-managed).
 
 ### VNQR checkout with payOS
 
@@ -193,7 +193,7 @@ Enable YouTube Data API v3 and register a Google OAuth client with the YouTube u
 | `GOOGLE_OAUTH_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client secret |
 | `GOOGLE_OAUTH_REDIRECT_URI` | Frontend callback URL registered with Google |
-| `REELFORGE_TOKEN_ENCRYPTION_KEY` | Persistent Fernet key for OAuth tokens and resumable upload sessions |
+| `REELFORGE_TOKEN_ENCRYPTION_KEY` | Legacy only: the old source of the master key. New installations use `/etc/reelforge/master.key` (`python -m app.master_key init`) |
 
 Generate a Fernet key once with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`; store it as a secret and reuse the same value after restarts. Install dependencies and migrate to `head`, then run the YouTube worker as a separate service:
 
@@ -301,6 +301,7 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 - **Production security and observability:** the real client address behind Cloudflare, durable rate limits, security headers, cross-site request checks, an audit log, request IDs, `/health/live`, `/health/ready`, `/internal/metrics` and alerts.
 - **Backups:** a daily `pg_dump` timer with retention, restore checks and a recovery rehearsal; the master key is backed up separately. See [docs/BACKUP_RECOVERY.md](docs/BACKUP_RECOVERY.md).
 - Migrations `0022_account_security`, `0023_workspace_team`, `0024_operations`. Release: [docs/RELEASE_V1_CHECKLIST.md](docs/RELEASE_V1_CHECKLIST.md).
+- **Phase 27 (release audit):** the first administrator is created on the server only (`npm run create-admin`); a break-glass recovery command (`python -m app.account_recovery`); `deploy.sh` fails when a service did not start; the audit, its findings and the remaining manual checks: [docs/V1_RELEASE_AUDIT.md](docs/V1_RELEASE_AUDIT.md). No new migration: the head stays `0024_operations`.
 
 ### Voice, subtitles and the final render (Phases 6–8)
 

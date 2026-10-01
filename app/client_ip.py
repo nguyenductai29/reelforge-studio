@@ -64,6 +64,18 @@ def is_trusted(peer: str | None) -> bool:
     return any(address in network for network in trusted_networks())
 
 
+def is_public(address: str | None) -> bool:
+    """Whether ``address`` is a public internet address: a visitor through Cloudflare, or a direct connection from
+    outside. Loopback, private, link-local and documentation ranges are not, and neither is a value that is not an
+    address (the test client)."""
+    parsed = _address(address)
+    if parsed is None:
+        return False
+    if parsed.version == 6 and parsed.ipv4_mapped:
+        parsed = parsed.ipv4_mapped
+    return parsed.is_global
+
+
 def resolve_scope(scope) -> str:
     """The client address for an ASGI scope (see the module docstring)."""
     client = scope.get("client")

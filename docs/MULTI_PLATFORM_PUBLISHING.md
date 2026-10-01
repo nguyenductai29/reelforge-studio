@@ -10,7 +10,7 @@ The **Channels** page (`GET /api/channels`) shows each channel with one of four 
 | --- | --- |
 | `connected` | ready to publish |
 | `not_connected` | nobody authorized yet |
-| `configuration_required` | the server lacks the app credentials or `REELFORGE_TOKEN_ENCRYPTION_KEY` |
+| `configuration_required` | the server lacks the app credentials or a usable master key |
 | `authorization_required` | the grant expired (`expired`), lacks the upload scope (`missing_scope`), or, for Facebook, no Page is chosen (`page_required`) |
 
 Only the workspace owner connects or disconnects a channel:
@@ -22,7 +22,7 @@ Only the workspace owner connects or disconnects a channel:
 
 The OAuth state is single-use, lasts ten minutes, is stored hashed, and is bound to the owner and the channel. The state is consumed before the token endpoint is called.
 
-Tokens are encrypted at rest with `REELFORGE_TOKEN_ENCRYPTION_KEY` (Fernet), in `channel_connections` (migration 0014). No token, refresh token or upload URL is ever returned by the API or written to a log.
+Tokens are encrypted at rest with the master key (`/etc/reelforge/master.key`; the legacy `REELFORGE_TOKEN_ENCRYPTION_KEY` only on installations that have not moved it into the file yet) (Fernet), in `channel_connections` (migration 0014). No token, refresh token or upload URL is ever returned by the API or written to a log.
 
 ### TikTok
 
@@ -108,4 +108,4 @@ python -m app.youtube_worker   # YouTube
 python -m app.social_worker    # TikTok and Facebook
 ```
 
-The API and the workers need the same `REELFORGE_TOKEN_ENCRYPTION_KEY`. Back it up: without it, stored tokens and upload sessions cannot be read.
+The API and the workers use the same master key. Back it up off the server: without it, stored tokens and upload sessions cannot be read.

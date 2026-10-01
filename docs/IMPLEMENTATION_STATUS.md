@@ -675,6 +675,27 @@ The workflow engine, jobs, credits ledger, subscriptions and publishing are reus
 - **Fixes found on the way:** the admin's support reply and the OnePAY return page now start email delivery at once; `alembic check` drift in five indexes and constraints that only the migrations declared (the models declare them now); the interface language is saved on the account for emails.
 - **Tests and CI:** `tests/test_phase22.py` … `test_phase26.py`, `tests/test_postgres_integration.py` (row locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims), the PostgreSQL backup rehearsal; `.github/workflows/ci.yml` runs the SQLite and PostgreSQL suites, Alembic upgrade/check/downgrade, the frontend build and the Playwright suite (`e2e/`); `tests/load_check.py` and [LOAD_BASELINE.md](LOAD_BASELINE.md).
 
+### Phase 27 changes (v1.0 release audit)
+
+No new feature and no migration (head `0024_operations`); fixes from the audit in [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md):
+
+- **First-run setup only from the server itself** (`/api/setup` answers 403 from public addresses; `/api/status.setup_here`; the sign-in page shows how to create the administrator; `/health/ready` warns `setup_open`; `deploy.sh` reminds).
+- **Break-glass recovery:** `python -m app.account_recovery reset-password|reset-2fa --email …` on the server, audited and emailed.
+- **Sign-in timing:** unknown and deactivated accounts cost the same scrypt work (`app/passwords.py`).
+- **TOTP:** the user row is locked while a code is checked, so concurrent sign-ins cannot reuse one code.
+- **Readiness:** the master key must also decrypt a sample of the stored secrets.
+- **Metrics:** an unknown HTTP method is labelled `OTHER`.
+- **Audit:** checkouts (declared but never recorded before), terms acceptance, channel connections and disconnections.
+- **Email:** a failure to queue an email never rolls back the change that caused it.
+- **Payments:** the OnePAY checkout sends the buyer's resolved address, not the proxy's.
+- **Backups:** a relative or system backup directory in the settings is refused.
+- **Isolation:** retrying or publishing another studio's publication or run answers 404 like every other ID.
+- **Frontend:** a lost session anywhere returns the browser to sign-in.
+- **Deployment:** `deploy.sh` waits for the frontend, checks every service a few seconds after the restart and fails when one is down.
+- **CI:** Python 3.11 and 3.14 (production), Node 20 and 22, `upload-artifact@v7`, pip caches.
+- **Docs:** every document now agrees with the code (migration head, the master key's place, bootstrap order, email, storage).
+- **Tests:** `tests/test_phase27.py` (isolation across every ID route, the role matrix, setup, spoofed address headers, timing, metrics, audit, email, readiness, backups, recovery, deployment and CI files) and the browser test of the public setup refusal.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional legacy `payos` credentials.
@@ -845,6 +866,9 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 
 ### F5. Authentication and sessions
 
+> **v1.0 status:** password change and reset, email verification, TOTP 2FA, session listing and revocation were added in Phase 22, the first-run setup was restricted to the server itself in Phase 27, and sign-in timing no longer reveals accounts (Phase 27). Purging expired `login_sessions` rows remains open (harmless: expired rows are ignored). See [SECURITY.md](SECURITY.md).
+
+
 - **Files:** `app/main.py` (`setup`, `register`, `login`, `logout`, `authorize`, `hashed_password`), `app/auth_security.py`, `migrations/versions/0008_auth_security.py`, `frontend/src/components/reelforge/auth-screen.tsx`, `frontend/scripts/create-admin.mjs`, `tests/test_auth_security.py`.
 - **Current:**
   - **Accounts:**
@@ -867,6 +891,9 @@ The operator confirmed successful live Gemini text generation, Runway `gen4.5` v
 - **Depends on:** nothing.
 
 ### F6. Subscription billing (payOS)
+
+> **v1.0 status:** card payments (OnePAY) arrived in Phase 14 and manual VietQR in Phase 20; see [PAYMENTS.md](PAYMENTS.md). The other items below are still open.
+
 
 - **Files:**
   - Backend: `app/billing.py`, `app/payments.py`, and in `app/main.py` the `/api/billing*` and `/api/webhooks/payos` routes plus the admin plan and subscription routes.
@@ -1554,12 +1581,18 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 
 ### M7. Account security features
 
+> **Resolved in Phase 22** (password change and reset, email verification, 2FA, session management; see [SECURITY.md](SECURITY.md)). Purging expired sessions remains open.
+
+
 - **Files to change:** `app/main.py`, `app/auth_security.py`, new migrations, `frontend/src/app/settings/page.tsx`.
 - **Current:** login, logout and admin-disable only.
 - **Missing:** password change and reset (needs email delivery), email verification, 2FA, session management, and purging expired sessions.
 - **Depends on:** F5, plus an email provider.
 
 ### M8. Teams
+
+> **Resolved in Phase 23** (owner/admin/editor/viewer, invitations, an explicit active workspace and switching, per-role permissions; see [TEAMS.md](TEAMS.md)).
+
 
 - **Files to change:** `app/main.py` (`workspace_for`, role checks), `app/models.py` (`Membership`), `frontend/src/components/reelforge/app-shell.tsx`, `frontend/src/app/settings/page.tsx`.
 - **Current:** one owner per workspace. The first membership row wins.
@@ -1571,6 +1604,9 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 
 ### M9. Observability and operations
 
+> **Mostly resolved in Phases 24–25:** request IDs, structured logs everywhere, Prometheus metrics, alerts, the admin job views, automated database backups with restore checks and media manifests ([SECURITY.md](SECURITY.md#observability), [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)). Log shipping beyond journald remains open.
+
+
 - **Files to change:** `app/*`, workers, deployment units.
 - **Current:** structured JSON logs for workflow execution in the API and in the text and video workers, with IDs, latencies and error categories, and a `process_started` line per process (Phase 3.6). Beyond that, the only visibility is state in the DB.
 - **Missing:**
@@ -1581,6 +1617,9 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 - **Depends on:** nothing.
 
 ### M10. Frontend tests
+
+> **Resolved in Phase 26:** a committed Playwright suite (`e2e/`) runs ten browser flows in CI on PostgreSQL ([e2e/README.md](../e2e/README.md)). Component tests remain optional.
+
 
 - **Files to change:** `frontend/package.json` and new test files.
 - **Current:** CI runs only typecheck and build. Phase 3.5 was checked with a Playwright script run by hand (P8); it is not in the repository.
@@ -1632,6 +1671,9 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 
 ### R2. Anyone can claim the first admin account
 
+> **Resolved in Phase 27:** first-run setup is accepted only from the server itself (loopback or a private address); a public address, through Cloudflare or directly, gets 403. `/health/ready` and `deploy.sh` warn while no account exists.
+
+
 `/api/setup` stays open until the first user exists, and `/api/status` reports `setup_required`. Whoever reaches a new deployment first becomes the system admin. `frontend/scripts/create-admin.mjs` exists, but a deployment must run it before the Cloudflare Tunnel is exposed.
 
 ### R3. Defaults are unsafe for Internet exposure
@@ -1640,10 +1682,13 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
   - The defaults are now `https://studio.imokome-cloud.com` with the `Secure` flag.
   - Installations still on the old defaults were moved.
   - Development machines override the origin in their own `instance/bootstrap.json` (`docs/SYSTEM_CONFIGURATION.md`, "The public origin").
-- A mutating request without an `Origin` header is accepted.
-- No security headers are set.
+- ~~A mutating request without an `Origin` header is accepted.~~ **Resolved (Phase 24):** a request carrying the session cookie must send a matching `Origin` or `Referer`.
+- ~~No security headers are set.~~ **Resolved (Phase 24):** CSP, HSTS, nosniff, Referrer-Policy, Permissions-Policy, X-Frame-Options and COOP.
 
 ### R4. Login throttling keys on a client IP that may be the proxy
+
+> **Resolved in Phase 24:** the client address is `CF-Connecting-IP` from trusted proxies only (`app/client_ip.py`), and the durable rate limits are per address and per account ([SECURITY.md](SECURITY.md)).
+
 
 - **Where:** `app/main.py` (`login`). The throttle identifier is `email|request.client.host`.
 - **Problem:** requests go through the Next.js rewrite, and in production through Cloudflare Tunnel. Unless forwarded client addresses are trusted and passed along, the API may see the proxy's address for every user.
@@ -1654,9 +1699,15 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 
 ### R5. PostgreSQL-specific code paths are untested
 
+> **Resolved in Phase 26:** CI runs the whole suite on PostgreSQL 16 (row locks, `SKIP LOCKED`, `ON CONFLICT`, settlement, concurrent quotas and checkouts, job claims, every migration both ways, the backup rehearsal) and `alembic check`.
+
+
 Production runs on PostgreSQL, but every test runs on SQLite. The PostgreSQL claim path (`FOR UPDATE SKIP LOCKED`), the row locks and the `ON CONFLICT` upserts are covered by a single test, and it is skipped unless `REELFORGE_TEST_DATABASE_URL` is set.
 
 ### R6. Media sits on one local disk with no backup and no deletion
+
+> **Partly resolved:** deletion and retention in Phase 17; daily database backups, restore checks and media manifests in Phase 25 ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)). Copying the media off the disk remains the operator's job.
+
 
 - The code has no automated backup for the database or media.
 - Nothing can be deleted, so a workspace that reaches its quota (default 1 GiB) can never upload again.
@@ -1674,9 +1725,15 @@ Production runs on PostgreSQL, but every test runs on SQLite. The PostgreSQL cla
 
 ### R9. Little observability
 
+> **Resolved in Phase 24:** metrics, alerts with cooldown, request IDs, the audit log ([SECURITY.md](SECURITY.md#observability)).
+
+
 Since Phase 3.6, workflow execution and the text and video workers write structured logs, but nothing collects them or alerts on them. There are no metrics for queue depth, latency or provider errors. Users will still notice a crashed worker, an expired provider key or a full disk before operators do, unless someone reads the logs.
 
 ### R10. No handling for loss or rotation of the encryption key
+
+> **Partly resolved:** the key lives in `/etc/reelforge/master.key` (Phase 20), its off-server backup is confirmed by fingerprint and readiness fails when stored secrets do not decrypt (Phases 25 and 27). Rotation is still not supported.
+
 
 If `REELFORGE_TOKEN_ENCRYPTION_KEY` is lost or changed, no stored YouTube connection or resumable upload session can be decrypted. In-flight uploads become `needs_attention`. The code does not support key rotation (for example with `MultiFernet`).
 

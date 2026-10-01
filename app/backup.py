@@ -161,6 +161,21 @@ def prune(directory: Path, retention: Retention, *, dry_run: bool = False) -> li
     return removed
 
 
+# Never a backup folder: the run makes its folder chmod 700, which would lock a system or shared directory.
+SYSTEM_DIRECTORIES = frozenset({"/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/media", "/mnt",
+                                "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/srv/data", "/sys", "/tmp", "/usr",
+                                "/var"})
+
+
+def directory_problem(directory: Path) -> str | None:
+    """Why ``directory`` cannot hold the dumps (Admin → System settings → Backups), or None."""
+    if not directory.is_absolute():
+        return "The backup directory must be an absolute path"
+    if os.name == "posix" and os.path.normpath(str(directory)) in SYSTEM_DIRECTORIES:
+        return "Choose a dedicated backup directory, not a system or shared one"
+    return None
+
+
 def settings() -> tuple[Path, Retention, int]:
     from app import system_config
 
@@ -197,7 +212,8 @@ def run(*, directory: Path | None = None, retention: Retention | None = None, ur
     if session_factory is None:
         from app.db import Session as session_factory
     configured_dir, configured_retention, _ = settings()
-    directory = Path(directory or configured_dir)
+    # A folder given on the command line is relative to where it was typed; the admin setting must be absolute.
+    directory = Path(directory).absolute() if directory is not None else Path(configured_dir)
     retention = retention or configured_retention
     moment = now or datetime.now(timezone.utc)
     extension = "sqlite3" if url.drivername.startswith("sqlite") else "dump"
@@ -205,6 +221,10 @@ def run(*, directory: Path | None = None, retention: Retention | None = None, ur
     run_id = _record(session_factory, kind="database", status="running", started_at=moment,
                      host=socket.gethostname()[:120])
     partial = directory / f"{name}.partial"
+    unsafe = directory_problem(directory)
+    if unsafe:
+        _record(session_factory, run_id, status="failed", finished_at=datetime.now(timezone.utc), error=unsafe)
+        return {"ok": False, "file": None, "bytes": 0, "entries": 0, "removed": [], "error": unsafe}
     try:
         directory.mkdir(parents=True, exist_ok=True)
         if os.name == "posix":

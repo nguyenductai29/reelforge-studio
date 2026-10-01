@@ -149,15 +149,15 @@ for method, path, body in (("post", "/api/ai-tools", {"task": "video", "provider
                            ("put", "/api/workspace", {"name": "X"})):
     response = getattr(editor, method)(path, **({"json": body} if body is not None else {}))
     assert response.status_code == 403, (method, path, response.status_code, response.text)
-# Editors publish unless the workspace says otherwise (an unknown publication: 409 once allowed).
-assert editor.post("/api/publications/none/retry").status_code == 409
+# Editors publish unless the workspace says otherwise (an unknown publication: 404 once allowed).
+assert editor.post("/api/publications/none/retry").status_code == 404  # past the permission check (403)
 settings = client.get("/api/settings").json()["workspace"]
 assert settings["editors_can_publish"] is True
 assert client.put("/api/settings/workspace", json={**settings, "editors_can_publish": False}).status_code == 200
 r = editor.post("/api/publications/none/retry")
 assert r.status_code == 403 and r.json()["detail"] == "Your role cannot publish in this workspace", r.text
 assert "publish" not in editor.get("/api/dashboard").json()["permissions"]
-assert client.post("/api/publications/none/retry").status_code == 409
+assert client.post("/api/publications/none/retry").status_code == 404
 assert client.put("/api/settings/workspace", json={**settings, "editors_can_publish": True}).status_code == 200
 assert editor.put("/api/settings/workspace", json=settings).status_code == 403
 

@@ -1,7 +1,6 @@
 """ReelForge Studio: small, self-hosted first slice."""
 from contextlib import asynccontextmanager
 import asyncio
-import hashlib
 import json
 import math
 import os
@@ -33,7 +32,8 @@ from app import (accounts, audit, auth_security, bank_qr, billing, client_ip, co
                  master_key, media_maintenance, notifications, payment_config, payment_providers, payments,
                  permissions, publications, ratelimit, readiness, reconciliation, run_summary, secret_box, sources,
                  storage, support, system_config, team, usage)
-from app import alerts, backup, email_templates, health, http_security, metrics, request_context
+from app import alerts, backup, email_templates, health, http_security, metrics, passwords, request_context
+from app.passwords import check_password, hashed_password
 from app.payment_providers import onepay
 from app.payment_providers import setup as payment_setup
 from app.models import CreditReconciliation
@@ -546,21 +546,6 @@ def provision_workspace(db, user, name, plan_code):
     return ws
 
 
-def hashed_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
-    return salt.hex() + ":" + digest.hex()
-
-
-def check_password(password: str, stored: str) -> bool:
-    try:
-        salt, expected = stored.split(":")
-        actual = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1)
-        return secrets.compare_digest(actual, bytes.fromhex(expected))
-    except (ValueError, TypeError):
-        return False
-
-
 SESSION_COOKIE = "rf_session"
 # The second sign-in step: a 5-minute one-time token, sent only to the 2FA endpoint (app/accounts.py).
 CHALLENGE_COOKIE = "rf_challenge"
@@ -756,10 +741,19 @@ def internal_metrics(request: Request):
     return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
 
 
+def from_this_server(request: Request) -> bool:
+    """First-run setup is for the server itself (``npm run create-admin``, or the site through an SSH tunnel), never
+    for a visitor from the internet: once the tunnel is public, nobody else can claim the first administrator."""
+    return not client_ip.is_public(client_ip.resolve(request))
+
+
 @app.get("/api/status")
-def status():
+def status(request: Request):
     with Session() as db:
-        return {"setup_required": db.scalar(select(func.count()).select_from(User)) == 0,
+        setup_required = db.scalar(select(func.count()).select_from(User)) == 0
+        return {"setup_required": setup_required,
+                # v1.0: whether this visitor may create the first administrator (only from the server itself).
+                "setup_here": setup_required and from_this_server(request),
                 "registration_enabled": setting(db, "registration_enabled"),
                 # Phase 22/26: whether "Forgot password" can work, and the Terms version a new account accepts.
                 "email_delivery": mailer.enabled(), "terms_version": accounts.TERMS_VERSION}
@@ -769,6 +763,13 @@ def status():
 def setup(data: SetupInput, request: Request, response: Response):
     same_origin(request)
     limit_rate("setup_ip", client_ip.resolve(request))
+    if not from_this_server(request):
+        with Session() as db:
+            open_setup = not db.scalar(select(func.count()).select_from(User))
+        if not open_setup:
+            raise HTTPException(409, "Setup already completed")
+        audit.record_now("account.registered", outcome="denied", details={"setup": True, "reason": "public_address"})
+        raise HTTPException(403, "Create the first administrator on the server")
     email = data.email.strip().lower()
     if not re.fullmatch(EMAIL_RE, email) or accounts.password_problem(data.password, email):
         raise HTTPException(400, "Use a valid email and a password of at least 12 characters")
@@ -852,7 +853,9 @@ def login(data: Credentials, request: Request, response: Response):
             audit.record(db, "auth.login", outcome="denied", details={"reason": "throttled"})
         else:
             user = db.scalar(select(User).where(User.email == email))
-            if not user or not user.is_active or not check_password(data.password, user.password_hash):
+            # An unknown or deactivated account costs the same scrypt work as a wrong password (no timing oracle).
+            valid = check_password(data.password, user.password_hash) if user is not None and user.is_active                 else passwords.check_unknown_account(data.password)
+            if not valid:
                 failures = auth_security.record_login_failure(db, identifier)
                 outcome = "invalid"
                 audit.record(db, "auth.login", outcome="failure", actor_id=user.id if user else None,
@@ -1253,6 +1256,7 @@ def accept_terms(request: Request):
     with Session.begin() as db:
         user = authorize(request, db)
         user.terms_version, user.terms_accepted_at = accounts.TERMS_VERSION, datetime.now(timezone.utc)
+        audit.record(db, "account.terms_accepted", actor_id=user.id, details={"version": accounts.TERMS_VERSION})
     return {"version": accounts.TERMS_VERSION}
 
 
@@ -1815,6 +1819,9 @@ def billing_checkout(data: CheckoutInput, request: Request):
                              status="pending", created_at=datetime.now(timezone.utc))
         db.add(order)
         db.flush()
+        audit.record(db, "billing.checkout_created", actor_id=buyer.id, workspace_id=ws.id, target_type="order",
+                     target_id=order.id, details={"plan": plan.code, "provider": provider.name,
+                                                  "amount_vnd": plan.price_vnd})
         order_id, code, amount, plan_code = order.id, order.order_code, order.amount_vnd, plan.code
         content = order.provider_reference
     if manual is not None:
@@ -1822,8 +1829,9 @@ def billing_checkout(data: CheckoutInput, request: Request):
         return {"order_id": order_id, "checkout_url": None,
                 "transfer": bank_qr.details(manual, amount_vnd=amount, content=content)}
     try:
+        # The buyer's address as resolved behind the trusted proxy (CF-Connecting-IP), not Next.js on loopback.
         link = provider.checkout(order_code=code, amount_vnd=amount, plan_code=plan_code, origin=origin.rstrip("/"),
-                                 client_ip=request.client.host if request.client else "")
+                                 client_ip=client_ip.resolve(request))
     except Exception as exc:
         with Session.begin() as db:
             row = db.get(PaymentOrder, order_id)
@@ -3477,6 +3485,8 @@ def youtube_callback(data: YouTubeCallbackInput, request: Request):
             user = authorize(request, db)
             result = google_oauth.complete_authorization(db, config, state=data.state,
                 code=data.code, current_user_id=user.id, client=client)
+        audit.record_now("channel.connected", actor_id=user.id, workspace_id=result.workspace_id,
+                         target_type="channel", target_id="youtube")
         return {"connected": True, "workspace_id": result.workspace_id,
                 "expires_at": result.expires_at.isoformat()}
     except google_oauth.OAuthError as exc:
@@ -3488,7 +3498,10 @@ def youtube_disconnect(request: Request):
     same_origin(request)
     with Session() as db:
         ws = youtube_owner(request, db)
+        user_id = authorize(request, db).id
         google_oauth.disconnect(db, workspace_id=ws.id)
+    audit.record_now("channel.disconnected", actor_id=user_id, workspace_id=ws.id, target_type="channel",
+                     target_id="youtube")
     return Response(status_code=204)
 
 
@@ -3576,6 +3589,7 @@ def retry_youtube_publication(publication_id: str, request: Request, data: YouTu
     with Session.begin() as db:
         ws = youtube_owner(request, db, "publish")
         active_plan(db, ws)
+        owned_publication(db, ws, publication_id)  # 404 for another studio's publication, like every other ID
         changes = data.model_dump(exclude_none=True) if data else {}
         try:
             row = publications.retry_publication(db, workspace_id=ws.id, publication_id=publication_id,
@@ -3705,8 +3719,11 @@ def channel_callback(channel: str, data: ChannelCallbackInput, request: Request)
         config = channel_oauth.ChannelConfig.from_environment(channel)
         with Session() as db, google_http_client() as client:
             user = authorize(request, db)
-            return channel_oauth.complete_authorization(db, config, state=data.state, code=data.code,
-                                                        current_user_id=user.id, client=client)
+            result = channel_oauth.complete_authorization(db, config, state=data.state, code=data.code,
+                                                          current_user_id=user.id, client=client)
+        audit.record_now("channel.connected", actor_id=user.id, workspace_id=result.get("workspace_id"),
+                         target_type="channel", target_id=channel)
+        return result
     except channel_oauth.ChannelOAuthError as exc:
         channel_oauth_error(exc)
 
@@ -3735,7 +3752,10 @@ def disconnect_channel(channel: str, request: Request):
         raise HTTPException(404, "Unknown channel")
     with Session() as db:
         ws = youtube_owner(request, db)
+        user_id = authorize(request, db).id
         channel_oauth.disconnect(db, channel, workspace_id=ws.id)
+    audit.record_now("channel.disconnected", actor_id=user_id, workspace_id=ws.id, target_type="channel",
+                     target_id=channel)
     return Response(status_code=204)
 
 
@@ -3799,6 +3819,8 @@ def create_publications(data: PublicationsInput, request: Request, response: Res
             publications.schedule_time(data.scheduled_for)
         except publications.MetadataError as exc:
             metadata_error(exc)
+        if not db.scalar(select(WorkflowRun.id).where(WorkflowRun.id == data.run_id, WorkflowRun.workspace_id == ws.id)):
+            raise HTTPException(404, "Run not found")
         for target in data.targets:
             try:
                 publications.connection_generation(db, target.channel, ws.id)
@@ -3843,6 +3865,7 @@ def retry_any_publication(publication_id: str, request: Request, data: RetryInpu
     with Session.begin() as db:
         ws = youtube_owner(request, db, "publish")
         active_plan(db, ws)
+        owned_publication(db, ws, publication_id)  # 404 for another studio's publication, like every other ID
         changes = data.model_dump(exclude_none=True) if data else {}
         try:
             row = publications.retry_publication(db, workspace_id=ws.id, publication_id=publication_id,

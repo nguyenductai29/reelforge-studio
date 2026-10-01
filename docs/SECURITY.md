@@ -7,7 +7,8 @@ Teams and roles: [TEAMS.md](TEAMS.md). Email: [EMAIL.md](EMAIL.md). Backups: [BA
 
 | Topic | Behaviour |
 | --- | --- |
-| Passwords | scrypt (n = 2^14, r = 8, p = 1, 16-byte salt). At least 12 characters, different from the email. |
+| Passwords | scrypt (n = 2^14, r = 8, p = 1, 16-byte salt). At least 12 characters, different from the email. A sign-in for an unknown or deactivated account spends the same scrypt work as a wrong password, so response times reveal nothing (`app/passwords.py`). |
+| First administrator | Only while no account exists, and only from the server itself: the API refuses first-run setup (403) from any public internet address, through Cloudflare or directly. Create it with `npm run create-admin` on the server, or through an SSH tunnel to `127.0.0.1:3001`. `/health/ready` reports `setup_open` and `deploy.sh` prints a reminder until it exists. |
 | Registration | Accepting the Terms and the Privacy Policy is required; their version and the time are stored (`users.terms_version`, `terms_accepted_at`). Accounts created before can accept later (a banner asks). |
 | Email verification | A new account can sign in at once; "not verified" is shown until the emailed link is opened. Links are valid 24 h and work once; resending is limited to 3 per hour. Accounts that existed before migration 0022 count as verified. Inviting members needs a verified address while email works. |
 | Forgot password | `/forgot-password` gives the same answer whether or not the account exists. The emailed link is valid 60 minutes and works once. Setting a new password signs out **every** session and sends a "password changed" email. |
@@ -94,7 +95,8 @@ request ID, plus a few details. Details whose key looks like a secret (password,
 authorization, recovery, credential…) are dropped before storing. Recorded: sign-in, sign-out, lockouts, 2FA, every
 password and email change, sessions revoked, invitations, role changes, removals, ownership transfers, studio
 creation, admin changes of users, plans, payments, gateways and system settings, master key backup confirmations,
-rejected payment callbacks. **Admin → Audit log** filters by action, outcome and user email on the server, a page at a
+rejected payment callbacks, refused first-run setups, checkouts created, terms accepted, social channels connected or
+disconnected, and the server-side recovery command. **Admin → Audit log** filters by action, outcome and user email on the server, a page at a
 time (`GET /api/admin/audit` also takes `workspace_id`, `since` and `until`). Each user sees their own recent security
 activity in Settings → Security.
 
@@ -105,15 +107,30 @@ One master key (`/etc/reelforge/master.key`) outside the database; each kind of 
 (erased once sent). OAuth tokens and upload sessions use the master key's Fernet directly. Secret inputs in the admin
 UI are write-only: a saved value is never sent back. See [SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md#the-master-key).
 
+## Break-glass recovery
+
+For what the web interface cannot solve (the only administrator forgot their password while email does not work, or
+lost both their authenticator and their recovery codes), the operator runs, **on the server**, as the service account:
+
+```bash
+.venv/bin/python -m app.account_recovery reset-password --email admin@example.com   # prompts twice, never echoes
+.venv/bin/python -m app.account_recovery reset-2fa --email admin@example.com
+```
+
+Both sign the account out everywhere, are recorded in the audit log (`via: server_command`) and email the account
+owner when email works. They need shell access to the server, the database URL and the master key: nothing reachable
+from the internet. Another system administrator can also reset a user's 2FA in Admin → Users.
+
 ## Observability
 
 | Endpoint | What | Access |
 | --- | --- | --- |
 | `GET /health/live` | The process answers | Loopback (the API listens there only) |
-| `GET /health/ready` | Database reachable, migrations at head, master key usable. No paid provider is called. 200 or 503 with the failing check. `deploy.sh` waits for it. | Loopback |
+| `GET /health/ready` | Database reachable, migrations at head, master key usable (a valid key file, and a sample of the stored secrets decrypts with it). No paid provider is called. 200 or 503 with the failing check; `warnings: ["setup_open"]` while no account exists. `deploy.sh` waits for it. | Loopback |
 | `GET /internal/metrics` | Prometheus text: HTTP requests, errors and durations by method and route template; jobs, runs, publications, payments waiting or failed, email outbox, media disk, backup age, active alerts, sign-in failures, worker heartbeats | A scraper on the server, or a signed-in system administrator |
 
-Metric labels never contain an email, a title, a project text or an ID: routes appear as templates
+Metric labels never contain an email, a title, a project text or an ID, and stay bounded whatever a client sends
+(an unknown HTTP method is counted as `OTHER`, an unknown path as `unmatched`): routes appear as templates
 (`/api/projects/{project_id}`).
 
 **Alerts** (`app/alerts.py`, evaluated by the scheduler worker every 5 minutes): a worker that stopped reporting or
