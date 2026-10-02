@@ -703,11 +703,30 @@ production server ([V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
 
 - **Pre-flight:** `bash deploy/release-preflight.sh` (`python -m app.release_check preflight`): source and working tree, database and migration head, master key (permissions, every stored secret decrypts), services, timers and unit files, ports on 127.0.0.1 only, `/health/*`, media root, backups, FFmpeg, configuration (no development override, no legacy runtime values, the public origin, Secure cookies, trusted proxies) and administrators. PASS, WARN, FAIL or MANUAL; read-only; never prints a secret; exit status 1 only on a FAIL.
 - **Report:** `bash deploy/release-report.sh`: the pre-flight, readiness needing attention, the recorded gates and the CI result GitHub reports for the commit; `READY_FOR_TAG` only when nothing blocks. `--json` for machines.
-- **Release gates in Admin → Verification:** 62 gates covering [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (now an index without status columns), each *Passed*, *Failed*, *Not applicable* (optional providers only) or *Not checked*, with who, when and a note. Migration `0025_verification_status` adds the status; verified rows become passed.
+- **Release gates in Admin → Verification:** 62 gates (68 since the domain change) covering [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (now an index without status columns), each *Passed*, *Failed*, *Not applicable* (optional providers only) or *Not checked*, with who, when and a note. Migration `0025_verification_status` adds the status; verified rows become passed.
 - **Deployment:** `deploy.sh` now runs pull, bootstrap check (database answering), master key, dependencies, migration (and checks the head), build, restart, the check of every restarted service, `/health/ready`, unit files and timers, and exits 1 on any failure.
 - **CI:** failing tests become annotations on the run page (`tests/ci_annotate.py`, Playwright's `github` reporter); the piped test run keeps its exit status. A temp-folder test that failed only on Linux (a fresh symlink's own time) was fixed.
 - **Docs:** [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) has the procedure of every manual gate; [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md) the state, the legal placeholders, the bug-fix rule and the tag procedure.
 - **Tests:** `tests/test_phase28.py`.
+
+### Production domain change
+
+The production domain moved from `https://studio.imokome-cloud.com` to `https://reelforge.mul-service.com`.
+
+- **Migration history kept:** `0021_default_production_origin` is unchanged (localhost defaults → the first production
+  origin). `0026_change_production_origin` moves exactly `https://studio.imokome-cloud.com` to the new origin (Secure
+  cookies turned on, never off) together with the OAuth redirect overrides that were exactly its callbacks, and keeps
+  any other origin; its downgrade returns only the exact new origin. Head: `0026_change_production_origin`.
+- **Default:** `PRODUCTION_ORIGIN` in `app/main.py`; payment callbacks, OAuth callbacks and email links are derived
+  from the origin.
+- **Checks:** readiness flags an OAuth redirect that is not under the public origin (`redirect_mismatch`), and the
+  pre-flight lists it; six gates in Admin → Verification record the outside systems updated by hand (Cloudflare,
+  Google, TikTok, Meta, payOS, OnePAY).
+- **CI:** the backend jobs failed on every commit because `tests/test_youtube_worker_retry.py` imported the app, which
+  needs a configured database at import time; those tests now run in a disposable copy
+  (`tests/test_youtube_worker_isolated.py`).
+- **Tests:** `tests/test_domain_migration.py` (cases A–G, callbacks, redirects, the same-origin check),
+  `tests/test_production_origin.py` (0021 as history).
 
 ### Configuration sources
 
@@ -1692,7 +1711,7 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 ### R3. Defaults are unsafe for Internet exposure
 
 - ~~`secure_cookies` defaults to `false`; `frontend_origin` defaults to `http://localhost:3000`.~~ **Resolved (migration `0021_default_production_origin`):**
-  - The defaults are now `https://reelforge.mul-service.com` with the `Secure` flag.
+  - The defaults became `https://studio.imokome-cloud.com` with the `Secure` flag; since migration `0026_change_production_origin` the production origin is `https://reelforge.mul-service.com`.
   - Installations still on the old defaults were moved.
   - Development machines override the origin in their own `instance/bootstrap.json` (`docs/SYSTEM_CONFIGURATION.md`, "The public origin").
 - ~~A mutating request without an `Origin` header is accepted.~~ **Resolved (Phase 24):** a request carrying the session cookie must send a matching `Origin` or `Referer`.

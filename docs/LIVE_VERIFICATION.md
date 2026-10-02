@@ -39,9 +39,9 @@ The payments section shows each gateway's state (available, disabled, not config
 
 ## Release gates (recorded by hand)
 
-The checklist beside readiness holds the 62 release gates of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) that
-need a person, in eleven groups: release, platform, email, security, AI providers, render, publishing, VietQR payments,
-card payments, operations, legal. For each gate an admin records:
+The checklist beside readiness holds the 68 release gates of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) that
+need a person, in twelve groups: release, domain change, platform, email, security, AI providers, render, publishing,
+VietQR payments, card payments, operations, legal. For each gate an admin records:
 
 - a **status**: *Passed*, *Failed*, *Not applicable* or *Not checked*;
 - who recorded it and when (kept while only the note changes);
@@ -52,7 +52,8 @@ Rules:
 - **Nothing is recorded automatically**: not a passing readiness check, a green pre-flight, a saved gateway, or a
   successful test. A gate is passed only when the person who checked it says so.
 - *Not applicable* is offered, and accepted by the API, only for a provider an installation may leave off: payOS,
-  OnePAY (every card item), Runway image and video, TikTok, Facebook. Every other gate must be *Passed*.
+  OnePAY (every card item), Runway image and video, TikTok, Facebook, with their domain-change gates. Every other gate
+  must be *Passed*.
 - *Failed* keeps the gate open; record what failed in the note, fix it, check again.
 - *Not checked* clears who and when; the note stays.
 - The header counts each status and says how many gates are still open. The release stays a release candidate until
@@ -75,11 +76,32 @@ test accounts) for anything that creates data. Record each gate right after chec
 | `release_deploy` | `./deploy.sh` on the release commit ends with "ReelForge deployment completed OK" and lists every service as active. Note the commit |
 | `release_preflight` | `bash deploy/release-preflight.sh --expect-commit <commit> --expect-origin https://reelforge.mul-service.com`: no FAIL. Note the WARN lines you accept |
 
+### Domain change
+
+The production domain moved from `https://studio.imokome-cloud.com` to `https://reelforge.mul-service.com`. Migration
+`0026_change_production_origin` moves the stored origin (and OAuth redirect overrides that were exactly its old
+callbacks); nothing outside the database changes by itself. Each address below is also shown in the admin UI, derived
+from the public origin. Update each system, then record its gate; an earlier live check made on the old domain (an
+upload, a webhook) must be repeated on the new one.
+
+| Gate | Steps |
+| --- | --- |
+| `domain_cloudflare_route` | Cloudflare Zero Trust → Networks → Tunnels → the server's tunnel → Published application routes: `reelforge.mul-service.com` → `http://127.0.0.1:3001` (the `mul-service.com` zone must be on the same Cloudflare account). Remove the `studio.imokome-cloud.com` route, or replace it with a redirect rule (301) to `https://reelforge.mul-service.com`: the API refuses requests whose `Origin` is the old domain |
+| `domain_google_redirect` | Google Cloud Console → APIs & Services → Credentials → the OAuth client → Authorized redirect URIs: add `https://reelforge.mul-service.com/youtube/callback` (remove the old one once the new one works); OAuth consent screen → Authorized domains: `mul-service.com`. Then connect YouTube again from a studio |
+| `domain_tiktok_redirect` | TikTok for Developers → the app → Login Kit → Redirect URI: `https://reelforge.mul-service.com/channels/callback/tiktok` (if TikTok is used; else *Not applicable*) |
+| `domain_facebook_redirect` | Meta for Developers → the app → Facebook Login → Settings → Valid OAuth Redirect URIs: `https://reelforge.mul-service.com/channels/callback/facebook`; App settings → App domains: `reelforge.mul-service.com` (if Facebook is used) |
+| `domain_payos_webhook` | payOS → the payment channel → Webhook URL: `https://reelforge.mul-service.com/api/webhooks/payos`, saved and confirmed (if payOS is used) |
+| `domain_onepay_urls` | Ask OnePAY to register the IPN URL `https://reelforge.mul-service.com/api/webhooks/onepay` for the merchant (sandbox and production); the return URL `https://reelforge.mul-service.com/api/billing/onepay/return` is sent with each payment, register it too if OnePAY asked for it (if cards are offered) |
+
+Also: Admin → System settings → Social OAuth must hold no redirect override on another origin (readiness shows
+*redirect differs from the public origin*; the pre-flight lists it), and neither may `/etc/reelforge/runtime.env`
+(`GOOGLE_OAUTH_REDIRECT_URI`, `TIKTOK_REDIRECT_URI`, `FACEBOOK_REDIRECT_URI`): clear them to use the derived address.
+
 ### Platform
 
 | Gate | Steps |
 | --- | --- |
-| `migration_upgraded` | `python -m alembic current` shows `0025_verification_status (head)`; readiness shows Migration ok; an account created before the upgrade still signs in |
+| `migration_upgraded` | `python -m alembic current` shows `0026_change_production_origin (head)`; readiness shows Migration ok; an account created before the upgrade still signs in |
 | `storage_on_hdd` | Admin → Cài đặt hệ thống → Lưu trữ: `/srv/data/videos/reelforge`; readiness shows the root and writable; Admin → Vận hành shows its disk ([STORAGE.md](STORAGE.md)) |
 | `ffmpeg_verified` | `python -m app.render_worker --check` |
 | `master_key_file` | `python -m app.master_key status`: a file, `ls -l /etc/reelforge/master.key` shows `-rw-------`; a copy is stored off the server, apart from the dumps ([SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md)) |

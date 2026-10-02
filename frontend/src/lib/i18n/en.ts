@@ -1914,6 +1914,7 @@ export const en: Dictionary = {
       },
       statuses: { ok: "OK", warning: "Attention", error: "Error", missing: "Missing", off: "Off" },
       details: {
+        redirect_mismatch: "redirect differs from the public origin",
         disabled: "disabled", cannot_decrypt: "cannot decrypt", from_environment: "still from env", loaded: "loaded", not_available: "not available", legacy_env: "legacy variable", permissions: "file permissions too open", legacy_differs: "legacy variable differs", invalid: "invalid", unreadable: "unreadable", not_postgresql: "not PostgreSQL", behind: "not upgraded", unreachable: "unreachable", default_or_setting: "REELFORGE_STORAGE_ROOT not set",
         not_created: "not created yet", not_writable: "not writable", unavailable: "unreadable", low_space: "under 10% free", never_run: "never run",
         stale: "not run for over 36 hours", ffmpeg_missing: "not installed", font_unavailable: "font missing", missing: "never started", error: "error", key_missing: "key missing",
@@ -1930,6 +1931,7 @@ export const en: Dictionary = {
       optional: "Optional",
       items: {
         release_ci_green: "CI green on the deployed commit", release_deploy: "deploy.sh completed OK on the release commit", release_preflight: "Release preflight on the server: no FAIL", migration_upgraded: "Migration at head; existing accounts sign in",
+        domain_cloudflare_route: "Cloudflare: the new hostname routes to the app", domain_google_redirect: "Google OAuth: the new redirect URI registered", domain_tiktok_redirect: "TikTok: the new redirect URI registered", domain_facebook_redirect: "Meta: the new OAuth redirect URI registered", domain_payos_webhook: "payOS: the new webhook URL registered", domain_onepay_urls: "OnePAY: the new IPN and return URLs registered",
         storage_on_hdd: "Storage root moved to the HDD", ffmpeg_verified: "FFmpeg verified", master_key_file: "Master key in its own file, backed up", email_test_sent: "Test email received",
         email_dns: "SPF, DKIM and DMARC pass", email_verification: "Verification email arrives and verifies", email_password_reset: "Forgot password → email → reset", email_password_changed: "\"Password changed\" email arrives",
         email_invitation: "Invitation email arrives and joins the studio", email_support_reply: "Support reply email reaches the user", security_two_factor: "2FA: sign in with a code and a recovery code", security_sessions: "Sign out another session",
@@ -1947,7 +1949,7 @@ export const en: Dictionary = {
         legal_terms_reviewed: "Terms of Service completed and reviewed", legal_privacy_reviewed: "Privacy Policy completed and reviewed",
       },
       paid: "Paid",
-      groups: { release: "Release", platform: "Platform", email: "Email", security: "Security", ai: "AI providers", render: "Render", publishing: "Publishing", vietqr: "VietQR payments", card: "Card payments", operations: "Operations", legal: "Legal" },
+      groups: { release: "Release", domain: "Domain change", platform: "Platform", email: "Email", security: "Security", ai: "AI providers", render: "Render", publishing: "Publishing", vietqr: "VietQR payments", card: "Card payments", operations: "Operations", legal: "Legal" },
       recordedBy: (who: string, when: string) => `Recorded by ${who} · ${when}`,
       notePlaceholder: "Note: IDs, URLs, what failed (never a secret)",
       saveNote: "Save note",

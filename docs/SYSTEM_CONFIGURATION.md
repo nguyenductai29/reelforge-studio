@@ -47,16 +47,21 @@ Both stay editable. Secure cookies need an `https://` origin.
   - the OAuth redirect URLs, unless overridden;
   - the payment callback and return URLs shown to the admin.
 
-**Upgrading.** Migration `0021_default_production_origin` replaces the **exact** old defaults only.
+**Upgrading.** Two data migrations replace **exact** old defaults only.
 
-- If `frontend_origin` is exactly `"http://localhost:3000"`:
-  - it becomes `https://reelforge.mul-service.com`;
-  - `secure_cookies` becomes `true` if it was `false`.
-- Any other origin keeps both values, including:
-  - another domain or port;
-  - `http://localhost:3000/`;
-  - the production origin with cookies deliberately off.
-- Downgrading changes nothing.
+- `0021_default_production_origin` (history): if `frontend_origin` was exactly `"http://localhost:3000"`, it became
+  the first production origin, `https://studio.imokome-cloud.com`, and `secure_cookies` became `true` if it was
+  `false`. Downgrading it changes nothing.
+- `0026_change_production_origin`: if `frontend_origin` is exactly `"https://studio.imokome-cloud.com"`, it becomes
+  `https://reelforge.mul-service.com`, and `secure_cookies` becomes `true` if it was `false` (never the reverse).
+  OAuth redirect overrides that are exactly that old origin's callbacks follow it. Downgrading returns only the exact
+  new origin (and those callbacks) to the old one.
+- Any other origin keeps every value, including:
+  - another domain or port, a development origin such as `http://localhost:3000`;
+  - an origin with a trailing slash or another scheme;
+  - the new origin with cookies deliberately off.
+- An OAuth redirect override that is not under the public origin (left on an old domain, for example) shows as a
+  warning in Admin → Verification and in `deploy/release-preflight.sh`: update or clear it.
 
 **Local development.** `next dev` runs on `http://localhost:3000`, where neither default works, so the development machine says so in its own `instance/bootstrap.json`:
 
@@ -285,7 +290,7 @@ A fresh installation shows none of the first two.
 
 ## Upgrading an existing installation
 
-Since `0021_default_production_origin`, an installation still on the old localhost defaults moves to the public origin ([above](#the-public-origin)). A development machine adds its override to `instance/bootstrap.json` first.
+Since `0021_default_production_origin` and `0026_change_production_origin`, an installation still on the old localhost defaults, or on the first production origin, moves to the public origin ([above](#the-public-origin)). A development machine adds its override to `instance/bootstrap.json` first.
 
 1. Apply the migration: `python -m alembic upgrade head` (`0019_system_configuration`). It only adds tables and one nullable column.
 2. Move the key into a file, as the service account:

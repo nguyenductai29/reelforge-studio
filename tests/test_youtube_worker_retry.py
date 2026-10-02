@@ -13,13 +13,21 @@ import httpx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import youtube_worker
-from app.models import Asset, Base, Project, User, Workflow, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
-from app.publications import Publication
-from app.publishers.google_oauth import YouTubeConnection
-from app.publishers.youtube import UPLOAD_SCOPE
+# app.youtube_worker imports app.db and app.main, which open the configured database while they are imported: on CI
+# there is none (no instance/bootstrap.json), and on a developer's machine it is a real one that app.main writes its
+# default settings into. These tests therefore run only inside the disposable copy that
+# tests/test_youtube_worker_isolated.py prepares, with its own migrated SQLite database; elsewhere they are skipped
+# and the app is never imported.
+ISOLATED = os.environ.get("REELFORGE_ISOLATED_COPY") == "1"
+if ISOLATED:
+    from app import youtube_worker
+    from app.models import Asset, Base, Project, User, Workflow, WorkflowJob, WorkflowRun, WorkflowRunStep, Workspace
+    from app.publications import Publication
+    from app.publishers.google_oauth import YouTubeConnection
+    from app.publishers.youtube import UPLOAD_SCOPE
 
 
+@unittest.skipUnless(ISOLATED, "runs inside a disposable copy of the app: tests/test_youtube_worker_isolated.py")
 class YouTubeWorkerRetryTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

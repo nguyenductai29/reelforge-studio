@@ -137,8 +137,8 @@ The database URL and Next.js-to-API address are deployment bootstrap details and
 - Only the public origin is HTTPS: `https://reelforge.mul-service.com`, through the Cloudflare Tunnel.
 - The frontend service stays private at `http://127.0.0.1:3001`, and the API at `http://127.0.0.1:8000`. Keep PostgreSQL private too.
 - A new installation stores `frontend_origin = https://reelforge.mul-service.com` and `secure_cookies = true` (Quản trị → Cài đặt hệ thống → Chung; both stay editable).
-  - Migration `0021_default_production_origin` moves an installation still on the exact old defaults (`http://localhost:3000`, cookies not Secure).
-  - It keeps any other value an admin saved.
+  - Migration `0021_default_production_origin` moved an installation still on the exact old defaults (`http://localhost:3000`, cookies not Secure) to the first production origin, `https://studio.imokome-cloud.com`; `0026_change_production_origin` moves exactly that origin to `https://reelforge.mul-service.com`.
+  - Both keep any other value an admin saved. Outside systems (Cloudflare, Google, TikTok, Meta, payOS, OnePAY) are updated by hand: [docs/V1_RELEASE_STATUS.md](docs/V1_RELEASE_STATUS.md#domain-change).
 - Apply matching request-body and rate limits at the reverse proxy.
 - Changing the frontend origin may require signing in again on the new address.
 
@@ -303,6 +303,7 @@ A Video step with Scenes connected and no prompt override makes **one clip per s
 - Migrations `0022_account_security`, `0023_workspace_team`, `0024_operations`. Release: [docs/RELEASE_V1_CHECKLIST.md](docs/RELEASE_V1_CHECKLIST.md).
 - **Phase 27 (release audit):** the first administrator is created on the server only (`npm run create-admin`); a break-glass recovery command (`python -m app.account_recovery`); `deploy.sh` fails when a service did not start; the audit, its findings and the remaining manual checks: [docs/V1_RELEASE_AUDIT.md](docs/V1_RELEASE_AUDIT.md). No new migration in that phase.
 - **Release closure (v1.0 production verification):** `bash deploy/release-preflight.sh` checks the server (read-only, PASS/WARN/FAIL/MANUAL, exit status 1 on a FAIL) and `bash deploy/release-report.sh` gives the verdict from it, CI and the gates recorded in Admin → Verification (passed, failed, not applicable, not checked; never automatic). Migration `0025_verification_status`. Status and tag procedure: [docs/V1_RELEASE_STATUS.md](docs/V1_RELEASE_STATUS.md); still a release candidate.
+- **Production domain:** `https://reelforge.mul-service.com` (migration `0026_change_production_origin`, the current head, moves an installation on `https://studio.imokome-cloud.com`). Outside systems are updated by hand: [docs/V1_RELEASE_STATUS.md](docs/V1_RELEASE_STATUS.md#domain-change).
 
 ### Voice, subtitles and the final render (Phases 6–8)
 

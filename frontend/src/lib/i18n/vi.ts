@@ -1820,6 +1820,7 @@ export const vi = {
       },
       statuses: { ok: "Đạt", warning: "Cần lưu ý", error: "Lỗi", missing: "Thiếu", off: "Chưa bật" },
       details: {
+        redirect_mismatch: "redirect khác origin công khai",
         disabled: "đang tắt", cannot_decrypt: "không giải mã được", from_environment: "còn lấy từ env", loaded: "đã nạp", not_available: "chưa dùng được", legacy_env: "đang dùng biến cũ", permissions: "quyền file quá rộng", legacy_differs: "biến cũ khác file", invalid: "không hợp lệ", unreadable: "không đọc được", not_postgresql: "không phải PostgreSQL", behind: "chưa nâng cấp", unreachable: "không kết nối được", default_or_setting: "chưa đặt REELFORGE_STORAGE_ROOT",
         not_created: "chưa tạo", not_writable: "không ghi được", unavailable: "không đọc được", low_space: "còn dưới 10% trống", never_run: "chưa chạy lần nào",
         stale: "quá 36 giờ chưa chạy", ffmpeg_missing: "chưa cài", font_unavailable: "chưa có font", missing: "chưa chạy", error: "lỗi", key_missing: "thiếu khoá",
@@ -1836,6 +1837,7 @@ export const vi = {
       optional: "Tùy chọn",
       items: {
         release_ci_green: "CI xanh trên đúng commit đã triển khai", release_deploy: "deploy.sh hoàn tất OK trên commit phát hành", release_preflight: "Preflight phát hành trên máy chủ: không có FAIL", migration_upgraded: "Migration ở head; tài khoản cũ đăng nhập được",
+        domain_cloudflare_route: "Cloudflare: hostname mới trỏ về ứng dụng", domain_google_redirect: "Google OAuth: đã đăng ký redirect URI mới", domain_tiktok_redirect: "TikTok: đã đăng ký redirect URI mới", domain_facebook_redirect: "Meta: đã đăng ký OAuth redirect URI mới", domain_payos_webhook: "payOS: đã đăng ký webhook URL mới", domain_onepay_urls: "OnePAY: đã đăng ký URL IPN và return mới",
         storage_on_hdd: "Thư mục lưu trữ đã chuyển sang HDD", ffmpeg_verified: "Đã kiểm tra FFmpeg", master_key_file: "Master key ở file riêng, đã sao lưu", email_test_sent: "Đã nhận email thử",
         email_dns: "SPF, DKIM và DMARC đạt", email_verification: "Email xác minh đến và xác minh được", email_password_reset: "Quên mật khẩu → email → đặt lại", email_password_changed: "Email \"đã đổi mật khẩu\" đến",
         email_invitation: "Email mời đến và tham gia được studio", email_support_reply: "Email phản hồi hỗ trợ đến người dùng", security_two_factor: "2FA: đăng nhập bằng mã và mã khôi phục", security_sessions: "Đăng xuất phiên khác",
@@ -1853,7 +1855,7 @@ export const vi = {
         legal_terms_reviewed: "Điều khoản dịch vụ đã điền đủ và được rà soát", legal_privacy_reviewed: "Chính sách quyền riêng tư đã điền đủ và được rà soát",
       },
       paid: "Tốn phí",
-      groups: { release: "Phát hành", platform: "Nền tảng", email: "Email", security: "Bảo mật", ai: "Nhà cung cấp AI", render: "Render video", publishing: "Đăng tải", vietqr: "Thanh toán VietQR", card: "Thanh toán thẻ", operations: "Vận hành", legal: "Pháp lý" },
+      groups: { release: "Phát hành", domain: "Đổi domain", platform: "Nền tảng", email: "Email", security: "Bảo mật", ai: "Nhà cung cấp AI", render: "Render video", publishing: "Đăng tải", vietqr: "Thanh toán VietQR", card: "Thanh toán thẻ", operations: "Vận hành", legal: "Pháp lý" },
       recordedBy: (who: string, when: string) => `Ghi nhận bởi ${who} · ${when}`,
       notePlaceholder: "Ghi chú: ID, URL, lỗi gì (không bao giờ ghi bí mật)",
       saveNote: "Lưu ghi chú",

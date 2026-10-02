@@ -688,8 +688,8 @@ export type VerificationStatus = "passed" | "failed" | "not_applicable" | "not_c
 export type VerificationItem = {
   key: string;
   /** Absent from older APIs. */
-  group?: "release" | "platform" | "email" | "security" | "ai" | "render" | "publishing" | "vietqr" | "card"
-    | "operations" | "legal";
+  group?: "release" | "domain" | "platform" | "email" | "security" | "ai" | "render" | "publishing" | "vietqr"
+    | "card" | "operations" | "legal";
   paid: boolean;
   /** Only an optional provider or platform may be "not_applicable". */
   optional: boolean;

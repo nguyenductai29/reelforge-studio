@@ -1045,8 +1045,8 @@ Networks
 Use:
 
 ```text
-Subdomain: studio
-Domain:    imokome-cloud.com
+Subdomain: reelforge
+Domain:    mul-service.com
 Service:   http://127.0.0.1:3001
 ```
 
@@ -1066,7 +1066,7 @@ workers
 
 Cloudflare terminates public HTTPS. Next.js communicates privately with FastAPI on localhost.
 
-ReelForge System Settings already hold these values. They are the defaults of a new installation, and migration `0021_default_production_origin` sets them on an installation still on the old localhost defaults:
+ReelForge System Settings already hold these values. They are the defaults of a new installation; migration `0021_default_production_origin` moved the old localhost defaults to the first production origin (`https://studio.imokome-cloud.com`), and `0026_change_production_origin` moves exactly that origin to the current one:
 
 ```text
 frontend_origin = https://reelforge.mul-service.com
@@ -1327,7 +1327,7 @@ cd ~/apps/reelforge-studio
      - **Then:** verify with `python -m app.master_key status`, remind you to back the key up, and continue.
 
      `/etc/reelforge` belongs to root, so a new key is created as the service account in a private staging directory and installed with `sudo install` (owner `tai`, 600). Run `deploy.sh` as the account the services run as.
-4. `alembic upgrade head`. On the first deploy after this change, `0021_default_production_origin` moves the old localhost defaults to `https://reelforge.mul-service.com` with Secure cookies. It keeps any other value.
+4. `alembic upgrade head`. `0021_default_production_origin` moves the old localhost defaults to the first production origin, then `0026_change_production_origin` moves exactly that origin to `https://reelforge.mul-service.com`, with Secure cookies. Any other value stays.
 5. `npm ci && npm run build`.
 6. Restarts the API, the frontend and every enabled worker, in both forms (`reelforge-<name>-worker` and `reelforge-worker@<name>`).
 7. Health checks on `http://127.0.0.1:8000` and `http://127.0.0.1:3001`.
@@ -1511,7 +1511,7 @@ For external developer database access, use the separately configured PostgreSQL
 ## 22. Accounts, email, backups and hardening (v1.0)
 
 Version 1.0 adds account security, teams, observability and automated backups. On an existing installation, after
-`./deploy.sh` (it applies migrations 0022–0025):
+`./deploy.sh` (it applies migrations 0022–0026):
 
 1. **Units.** Copy the changed and new units, then check that every service still starts with the hardening options:
 

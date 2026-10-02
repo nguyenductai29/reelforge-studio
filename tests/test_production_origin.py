@@ -1,9 +1,12 @@
 """The production origin is the default: https://reelforge.mul-service.com with Secure cookies.
 
 * a new installation stores the HTTPS origin and ``secure_cookies = true``;
-* migration 0021 moves an installation still on the exact old localhost defaults, and keeps
-  every value an admin chose (another domain, another port, a cookie choice);
-* login from the production origin passes the same-origin check; foreign origins are refused;
+* migration 0021 (historical) moved an installation still on the exact old localhost defaults to the first
+  production origin, https://studio.imokome-cloud.com, and kept every value an admin chose (another domain,
+  another port, a cookie choice); migration 0026 then moves that origin to the current one
+  (tests/test_domain_migration.py);
+* login from the production origin passes the same-origin check; foreign origins, the old production origin
+  included, are refused;
 * the session cookie is Secure, HttpOnly and SameSite=Strict with the production default;
 * a development machine overrides the origin in its own instance/bootstrap.json, never in the database;
 * deployment: the frontend and the API listen on 127.0.0.1 only, and deploy.sh refuses a development override.
@@ -63,9 +66,10 @@ config = Config("alembic.ini")
 engine = create_engine(json.load(open("instance/bootstrap.json"))["database_url"])
 if engine.dialect.name != "sqlite":
     command.downgrade(config, "base")
-BEFORE = "0020_manual_payment_statuses"
+BEFORE, MIGRATION = "0020_manual_payment_statuses", "0021_default_production_origin"
 command.upgrade(config, BEFORE)
-OLD, NEW = "http://localhost:3000", "https://reelforge.mul-service.com"
+# 0021 is history: its target is the first production origin (0026 moves it to the current one).
+OLD, NEW = "http://localhost:3000", "https://studio.imokome-cloud.com"
 OTHERS = {"storage_dir": "instance/media", "trial_project_limit": 2, "registration_enabled": True}
 
 def store(values):
@@ -99,10 +103,10 @@ CASES = [
 ]
 for before, after in CASES:
     store(before)
-    command.upgrade(config, "head")
+    command.upgrade(config, MIGRATION)
     expected = {**OTHERS, **(before if after is KEPT else after)}
     assert stored() == expected, (before, stored())
-    # Downgrading changes nothing: the old code reads these values as they are.
+    # Downgrading 0021 changes nothing: the old code reads these values as they are.
     command.downgrade(config, BEFORE)
     assert stored() == expected, ("downgrade", before, stored())
 command.upgrade(config, "head")
@@ -111,11 +115,11 @@ print("ok")
 
 
 class MigrationTest(unittest.TestCase):
-    def test_sqlite_0021_replaces_only_the_exact_old_defaults(self):
+    def test_sqlite_0021_replaced_only_the_exact_old_defaults(self):
         result = run(MIGRATION)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr[-4000:])
 
-    def test_postgresql_0021_replaces_only_the_exact_old_defaults(self):
+    def test_postgresql_0021_replaced_only_the_exact_old_defaults(self):
         url = postgresql_url()
         if not url:
             self.skipTest("set REELFORGE_TEST_DATABASE_URL to an isolated PostgreSQL test database")
@@ -193,8 +197,10 @@ assert client.get("/api/dashboard").status_code == 200
 
 # Foreign origins are refused before the credentials are looked at, and get no cookie.
 stranger = TestClient(main.app, base_url="https://testserver")
-for origin in ("https://evil.example.com", "http://studio.imokome-cloud.com", "https://reelforge.mul-service.com.evil.example.com",
-               "https://evil.studio.imokome-cloud.com", "http://localhost:3000", "null"):
+# The first production origin (before migration 0026) is refused like any other.
+for origin in ("https://evil.example.com", "https://studio.imokome-cloud.com", "http://reelforge.mul-service.com",
+               "https://reelforge.mul-service.com.evil.example.com", "https://evil.reelforge.mul-service.com",
+               "http://localhost:3000", "null"):
     response = stranger.post("/api/login", json=OWNER, headers={"Origin": origin})
     assert response.status_code == 403 and response.json()["detail"] == "Invalid origin", (origin, response.text)
     assert response.json()["code"] == "invalid_origin" and response.json()["request_id"], response.text

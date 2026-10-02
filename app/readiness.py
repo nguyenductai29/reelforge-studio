@@ -30,6 +30,19 @@ CHECKLIST = (
                                            "(SQLite, PostgreSQL, migrations, Node 20/22, Python 3.11/3.14, Playwright)"),
     ("release_deploy", "release", False, "./deploy.sh on the release commit ends with \"ReelForge deployment completed OK\""),
     ("release_preflight", "release", False, "deploy/release-preflight.sh on the server: no FAIL"),
+    # The production domain change (migration 0026): every outside system that holds the public address.
+    ("domain_cloudflare_route", "domain", False, "Cloudflare Tunnel: the public hostname → http://127.0.0.1:3001; "
+                                                 "the old hostname removed or redirected"),
+    ("domain_google_redirect", "domain", False, "Google Cloud → OAuth client: the YouTube redirect URI shown in "
+                                                "Admin → System settings → Social OAuth"),
+    ("domain_tiktok_redirect", "domain", False, "TikTok for Developers: the redirect URI shown in Admin → System "
+                                                "settings → Social OAuth"),
+    ("domain_facebook_redirect", "domain", False, "Meta for Developers → Facebook Login: the redirect URI shown in "
+                                                  "Admin → System settings → Social OAuth"),
+    ("domain_payos_webhook", "domain", False, "payOS: the webhook URL shown in Admin → Payments → Payment gateways "
+                                              "→ VietQR"),
+    ("domain_onepay_urls", "domain", False, "OnePAY: the IPN and return URLs shown in Admin → Payments → Payment "
+                                            "gateways → Card"),
     ("migration_upgraded", "platform", False, "python -m alembic current shows the head; existing accounts still sign in"),
     ("storage_on_hdd", "platform", False, "Media root /srv/data/videos/reelforge; Admin → Operations shows its disk"),
     ("ffmpeg_verified", "platform", False, "python -m app.render_worker --check"),
@@ -107,6 +120,7 @@ OPTIONAL = frozenset({
     "runway_image_live", "runway_video_live", "tiktok_upload", "facebook_reel",
     "payos_config_saved", "payos_payment", "payos_webhook_received", "payos_credits_once",
     *(key for key in CHECKLIST_KEYS if key.startswith("onepay_")),
+    "domain_tiktok_redirect", "domain_facebook_redirect", "domain_payos_webhook", "domain_onepay_urls",
 })
 STATUSES = ("passed", "failed", "not_applicable", "not_checked")
 
@@ -235,6 +249,7 @@ def publishing_checks() -> list[dict]:
 
     secrets = {"youtube": "social.youtube.client_secret", "tiktok": "social.tiktok.client_secret",
                "facebook": "social.facebook.app_secret"}
+    origin = system_config.frontend_origin().rstrip("/")
     checks = []
     for channel in ("youtube", "tiktok", "facebook"):
         if channel == "youtube":
@@ -245,9 +260,13 @@ def publishing_checks() -> list[dict]:
                 configured = False
         else:
             configured = channel_oauth.configured(channel)
-        checks.append(_check(channel, "ok" if configured else "missing", None if configured else "not_configured",
-                             source=system_config.source(secrets[channel]),
-                             redirect=system_config.redirect_uri(channel) or None))
+        redirect = system_config.redirect_uri(channel)
+        status, detail = ("ok", None) if configured else ("missing", "not_configured")
+        # An override left on another origin (an old domain, say) sends sign-ins where the API refuses them.
+        if configured and origin and redirect and not redirect.startswith(origin + "/"):
+            status, detail = "warning", "redirect_mismatch"
+        checks.append(_check(channel, status, detail, source=system_config.source(secrets[channel]),
+                             redirect=redirect or None))
     return checks
 
 

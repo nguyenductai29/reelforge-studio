@@ -262,14 +262,18 @@ class ReleaseDocsTest(unittest.TestCase):
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
-        head = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini"))).get_current_head()
-        self.assertEqual(head, "0025_verification_status")
-        for name in ("RELEASE_V1_CHECKLIST.md", "LIVE_VERIFICATION.md", "V1_RELEASE_STATUS.md", "FINAL_PRODUCT_AUDIT.md"):
+        script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+        head = script.get_current_head()  # raises if two migrations ever share a parent (two heads)
+        self.assertEqual(head, "0026_change_production_origin")
+        for name in ("RELEASE_V1_CHECKLIST.md", "LIVE_VERIFICATION.md", "V1_RELEASE_STATUS.md", "FINAL_PRODUCT_AUDIT.md",
+                     "PRODUCTION_BOOTSTRAP.md"):
             with self.subTest(doc=name):
                 self.assertIn(head, (ROOT / "docs" / name).read_text(encoding="utf-8"))
         for path in [ROOT / "README.md", *(ROOT / "docs").glob("*.md")]:
             with self.subTest(doc=path.name):
-                self.assertNotIn("0024_operations (head)", path.read_text(encoding="utf-8"))
+                text = path.read_text(encoding="utf-8")
+                for old in ("0024_operations (head)", "0025_verification_status (head)", "head `0025_verification_status`"):
+                    self.assertNotIn(old, text)
 
     def test_the_release_stays_a_candidate_until_recorded_otherwise(self):
         status = (ROOT / "docs" / "V1_RELEASE_STATUS.md").read_text(encoding="utf-8")
@@ -594,6 +598,9 @@ assert "EMPTY" not in runtime_file.detail and "REELFORGE_LOG_LEVEL" not in runti
 assert "REPLICATE_API_TOKEN" in first[("SYSTEM CONFIG", "legacy values: system-runtime.env")].detail
 assert first[("SYSTEM CONFIG", "public origin")].status == PASS
 assert first[("SYSTEM CONFIG", "public origin")].detail == "https://reelforge.mul-service.com"
+# The PRELUDE's redirect variables name http://localhost:3000, not the public origin: listed, never fixed silently.
+redirects = first[("SYSTEM CONFIG", "OAuth redirects")]
+assert redirects.status == WARN and "youtube http://localhost:3000/youtube/callback" in redirects.detail, redirects
 assert first[("SYSTEM CONFIG", "secure cookies")].status == PASS
 assert first[("SYSTEM CONFIG", "trusted proxies")].status == PASS
 assert first[("SECURITY", "first-run setup")].status == PASS and first[("SECURITY", "active administrator")].status == PASS

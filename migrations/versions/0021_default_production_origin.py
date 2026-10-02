@@ -2,12 +2,12 @@
 
 Until now a new installation stored ``frontend_origin = "http://localhost:3000"`` and
 ``secure_cookies = false`` (System Settings, seeded when the API first starts). The
-defaults are now ``https://reelforge.mul-service.com`` with Secure cookies.
+defaults are now ``https://studio.imokome-cloud.com`` with Secure cookies.
 
 An installation still on the **exact** old defaults moves to the new ones:
 
 * ``frontend_origin`` exactly ``"http://localhost:3000"`` becomes
-  ``"https://reelforge.mul-service.com"``;
+  ``"https://studio.imokome-cloud.com"``;
 * ``secure_cookies`` becomes ``true`` only when it is ``false`` **and** the origin was
   that old default. With any other origin it is the admin's choice and stays.
 
@@ -34,7 +34,7 @@ branch_labels = None
 depends_on = None
 
 OLD_ORIGIN = "http://localhost:3000"
-NEW_ORIGIN = "https://reelforge.mul-service.com"
+NEW_ORIGIN = "https://studio.imokome-cloud.com"
 settings = sa.table("system_settings", sa.column("key", sa.String), sa.column("value", sa.Text))
 
 

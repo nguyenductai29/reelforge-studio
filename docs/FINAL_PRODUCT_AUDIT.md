@@ -1,6 +1,6 @@
 # Final product audit (v1.0: Phases 14–27)
 
-> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-02. Database head: `0025_verification_status`.
+> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-02. Database head: `0026_change_production_origin`.
 > Release state and the remaining production gates: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).
 > The release audit itself (findings, fixes, test results, what remains manual) is [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md);
 > the operator's gate is [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md).
@@ -71,7 +71,7 @@ release gate.
 | Support | Filters; reply, change status or priority, resolve, close |
 | Credit reconciliation | The review of held credits |
 | Operations | Worker heartbeats, jobs, stuck-work audit, media disk and studios per storage level |
-| Verification | Readiness (database, migrations, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security, configuration, backups, email, accounts, alerts), a stream check, and the 62 release gates, each passed, failed, not applicable or not checked, recorded by an admin with the date and a note |
+| Verification | Readiness (database, migrations, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security, configuration, backups, email, accounts, alerts), a stream check, and the 68 release gates, each passed, failed, not applicable or not checked, recorded by an admin with the date and a note |
 | System settings | Security (master key, trusted proxies), General, Email, AI providers, Social OAuth, Storage, Backups, Runtime, Credit pricing, Notifications; each value's source |
 | Audit log | Security and administration events, filtered and paginated on the server |
 
@@ -197,8 +197,9 @@ wins. `REELFORGE_TOKEN_ENCRYPTION_KEY` is only the legacy source of the master k
 
 ## 12. Database migration head
 
-`0025_verification_status`. Migrations 0001–0021 are unchanged; 0022–0025 only add nullable columns to existing tables
-and new tables, so code that predates them keeps working on the new schema.
+`0026_change_production_origin`. Migrations 0001–0025 are unchanged; 0022–0025 only add nullable columns to existing
+tables and new tables, so code that predates them keeps working on the new schema, and 0026 changes data only (the
+production domain).
 
 | Migration | Adds | Test |
 | --- | --- | --- |
@@ -213,6 +214,7 @@ and new tables, so code that predates them keeps working on the new schema.
 | `0023_workspace_team` | `workspace_invites`; the active studio per session and per user; membership dates | `test_phase23.py` |
 | `0024_operations` | `backup_runs`, `system_alerts` | `test_phase25.py` |
 | `0025_verification_status` | `verification_checks.status` (passed, failed, not applicable; NULL is not checked); verified rows become passed | `test_phase28.py` |
+| `0026_change_production_origin` | Data only: exactly `https://studio.imokome-cloud.com` becomes `https://reelforge.mul-service.com` (Secure cookies on), with OAuth redirect overrides that were exactly its callbacks; any other origin stays | `test_domain_migration.py` |
 
 Every migration test runs on SQLite and, with `REELFORGE_TEST_DATABASE_URL`, on PostgreSQL 16, in both directions,
 keeping every row. CI also runs `alembic check` after upgrading and after a full downgrade and upgrade.

@@ -6,10 +6,11 @@
 
 | | |
 | --- | --- |
-| Release candidate | The commit that contains the release-closure changes on `feat/studio-foundation` (it follows `08f1eef9` "ADD phase 27"). Write its hash here once it is committed: `________` |
-| Database head | `0025_verification_status` (the release closure added it: a status on each verification gate; nullable column, reversible) |
+| Release candidate | The commit that contains the domain-change fix on `feat/studio-foundation` (it follows `27521c23` "change origin https" and `931c397b` "Release closure"). Write its hash here once it is committed: `________` |
+| Database head | `0026_change_production_origin` (the production domain; data only, reversible), after `0025_verification_status` (a status on each verification gate) |
+| Production origin | `https://reelforge.mul-service.com` (until migration 0026: `https://studio.imokome-cloud.com`) |
 | Deployed on the server | Not yet. Fill in: date, commit, by whom (`./deploy.sh` output). The first deploy of this release still runs the previous `deploy.sh` (bash keeps the file it started); run `./deploy.sh` once more so the new steps run, then the pre-flight |
-| CI on the release candidate | **FAIL** on `08f1eef9`: GitHub Actions has not been green on this branch. A Linux-only test failure was fixed and failing tests now appear as annotations on the run page; CI must run again on the new commit |
+| CI on the release candidate | **FAIL** on `931c397b` and `27521c23` (backend jobs; migrations and frontend green, browser tests skipped after them). The run-page annotations named the cause: `tests/test_youtube_worker_retry.py` imported the app, which needs a configured database while it is imported, and CI has none. Fixed: those tests now run in a disposable copy (`tests/test_youtube_worker_isolated.py`). CI must run again on the new commit |
 | Report | `bash deploy/release-report.sh` on the server. Keep its `--json` output with the release notes |
 
 ## How the release is decided
@@ -23,7 +24,7 @@ deployed commit:
    frontend on Node 20 and 22, Playwright). A local run never replaces it.
 2. The pre-flight has no FAIL (`--expect-commit <commit>`).
 3. Every gate in Admin → Verification is *Passed*, or *Not applicable* where that is allowed (payOS, OnePAY, Runway,
-   TikTok, Facebook, when the installation does not use them).
+   TikTok, Facebook, and their domain-change gates, when the installation does not use them).
 4. `bash deploy/release-report.sh` says `READY_FOR_TAG`.
 
 Nothing passes by itself: no tool records a gate, and a gate nobody recorded counts as not passed.
@@ -35,8 +36,9 @@ a real check, with the date and who.
 
 | Area | Status | Evidence / what remains | Date / by |
 | --- | --- | --- | --- |
-| CI on the release candidate | FAIL | `08f1eef9` failed on GitHub Actions; re-run on the new commit (`release_ci_green`) | 2026-10-02 |
-| Automated suites, development machine | PASS | See [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-02-release-closure). Evidence only: not a gate | 2026-10-02 |
+| CI on the release candidate | FAIL | `931c397b` and `27521c23` failed on GitHub Actions (cause found and fixed, see above); re-run on the new commit (`release_ci_green`) | 2026-10-02 |
+| Domain change | MANUAL | The stored origin moves with migration 0026; Cloudflare, Google, TikTok, Meta, payOS and OnePAY are updated by hand ([below](#domain-change)) | |
+| Automated suites, development machine | PASS | See [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-02-after-the-domain-change). Evidence only: not a gate | 2026-10-02 |
 | Deployment (`./deploy.sh`) | MANUAL | `release_deploy` | |
 | Pre-flight on the server | MANUAL | `release_preflight`: source, database and head, master key, services and timers, ports, health, storage, backups, FFmpeg, configuration, administrators | |
 | Platform | MANUAL | `migration_upgraded`, `storage_on_hdd`, `ffmpeg_verified`, `master_key_file` | |
@@ -55,6 +57,42 @@ a real check, with the date and who.
 | Legal | MANUAL | Placeholders below still in the templates; lawyer review pending | |
 
 Accepted pre-flight warnings (write each one and why): none yet.
+
+## Domain change
+
+`https://studio.imokome-cloud.com` → `https://reelforge.mul-service.com`. After `./deploy.sh` (migration
+`0026_change_production_origin`), System Settings hold the new origin with Secure cookies; an installation whose
+origin is anything else keeps it. From then on the API refuses requests whose `Origin` is the old domain, unless an
+administrator stores it again.
+
+Every address below is derived from the public origin and shown in the admin UI; nothing outside the repository
+changes by itself, and no gate is recorded automatically. Update each system, check it, then record the gate:
+
+| System | Setting | New value | Gate |
+| --- | --- | --- | --- |
+| Cloudflare Zero Trust | Tunnel → published application route | `reelforge.mul-service.com` → `http://127.0.0.1:3001`; the old hostname removed or redirected (301) to the new origin | `domain_cloudflare_route` |
+| Google Cloud (YouTube) | OAuth client → Authorized redirect URIs; consent screen → Authorized domains | `https://reelforge.mul-service.com/youtube/callback`; `mul-service.com` | `domain_google_redirect` |
+| TikTok for Developers | Login Kit → Redirect URI | `https://reelforge.mul-service.com/channels/callback/tiktok` | `domain_tiktok_redirect` |
+| Meta for Developers | Facebook Login → Valid OAuth Redirect URIs; App domains | `https://reelforge.mul-service.com/channels/callback/facebook`; `reelforge.mul-service.com` | `domain_facebook_redirect` |
+| payOS | Payment channel → Webhook URL | `https://reelforge.mul-service.com/api/webhooks/payos` | `domain_payos_webhook` |
+| OnePAY | IPN URL (registered by OnePAY); return URL if they registered it | `https://reelforge.mul-service.com/api/webhooks/onepay`; `https://reelforge.mul-service.com/api/billing/onepay/return` | `domain_onepay_urls` |
+
+Also in the repository's scope, checked by the pre-flight and readiness: no OAuth redirect override left on another
+origin (Admin → System settings → Social OAuth, `/etc/reelforge/runtime.env`). Email links and the payOS / OnePAY
+return pages follow the origin by themselves. Live gates already checked on the old domain (a YouTube upload, a payOS
+webhook, an OnePAY IPN…) are repeated on the new one.
+
+**Order of the switch** (the migration switches the stored origin the moment it runs; it runs on every database
+`alembic upgrade head` is pointed at, so only on the server, as part of the switch):
+
+1. Before deploying: add the Cloudflare route for `reelforge.mul-service.com` beside the old one, and **add** the new
+   redirect URIs at Google, TikTok and Meta next to the old ones. Nothing changes for users yet.
+2. Deploy (`./deploy.sh`): migration 0026 moves the origin. From now on sign-in works on the new domain only.
+3. Point payOS and OnePAY at the new URLs. Until then their callbacks still reach the server through the old route:
+   webhooks and IPNs carry no `Origin`, so the same-origin check does not refuse them.
+4. Then turn the old hostname into a redirect (301) to `https://reelforge.mul-service.com` (or remove its route), and
+   remove the old redirect URIs at Google, TikTok and Meta.
+5. Record each `domain_*` gate, and repeat the live gates that use an outside callback.
 
 ## Legal
 

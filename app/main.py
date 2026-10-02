@@ -55,8 +55,9 @@ from app.workflow.ports import DATA_TYPES, describe_node_types, edge_problems, n
 
 
 # A new installation serves its public origin over HTTPS with Secure cookies. A development machine
-# overrides both in its own instance/bootstrap.json (app/db.py, local_settings); migration 0021 moved
-# installations still on the old localhost defaults to these.
+# overrides both in its own instance/bootstrap.json (app/db.py, local_settings). Migration 0021 moved
+# installations on the old localhost defaults to the first production origin, https://studio.imokome-cloud.com;
+# migration 0026 moves an installation still exactly on that origin to this one.
 PRODUCTION_ORIGIN = "https://reelforge.mul-service.com"
 SYSTEM_DEFAULTS = {
     "frontend_origin": PRODUCTION_ORIGIN,

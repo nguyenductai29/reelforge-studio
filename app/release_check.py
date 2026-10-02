@@ -754,7 +754,29 @@ def _origin_checks(db, expect_origin: str | None) -> list[Check]:
     secure = stored("secure_cookies")
     checks.append(Check(area, "secure cookies", PASS if secure is True else FAIL, "on" if secure is True
                         else "off: turn Secure cookies on (Admin → System settings → General)"))
+    if origin is not None:
+        checks.append(_redirect_check(origin))
     return checks
+
+
+# The OAuth redirect overrides (Admin → System settings → Social OAuth, else a legacy environment variable).
+REDIRECT_OVERRIDES = (("youtube", "GOOGLE_OAUTH_REDIRECT_URI"), ("tiktok", "TIKTOK_REDIRECT_URI"),
+                      ("facebook", "FACEBOOK_REDIRECT_URI"))
+
+
+def _redirect_check(origin: str) -> Check:
+    """An override on another origin (the old domain, say) sends OAuth sign-ins where the API refuses them."""
+    from app import system_config
+
+    elsewhere = []
+    for channel, name in REDIRECT_OVERRIDES:
+        override = system_config.env(name).strip()
+        if override and not override.startswith(origin + "/"):
+            elsewhere.append(f"{channel} {override}")
+    if elsewhere:
+        return Check("SYSTEM CONFIG", "OAuth redirects", WARN, f"{'; '.join(elsewhere)}: not under {origin}; update "
+                     "or clear the override (Admin → System settings → Social OAuth, or the legacy runtime file)")
+    return Check("SYSTEM CONFIG", "OAuth redirects", PASS, f"under {origin} (derived, or overrides that match)")
 
 
 def account_checks(db, probe: Probe) -> list[Check]:

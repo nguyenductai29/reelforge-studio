@@ -16,7 +16,7 @@ Nothing marked MANUAL was verified here, and nothing in [RELEASE_V1_CHECKLIST.md
 
 | Check | Status |
 | --- | --- |
-| Head is `0024_operations`; no migration added in Phase 27; 0001–0024 unchanged (the release closure later added `0025_verification_status`: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)) | PASS |
+| Head is `0024_operations`; no migration added in Phase 27; 0001–0024 unchanged (the release closure later added `0025_verification_status`, and the domain change `0026_change_production_origin`: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)) | PASS |
 | PostgreSQL 16: `upgrade head` → `alembic check` → `downgrade base` → `upgrade head` → `alembic check`, no drift | PASS |
 | Every migration test both ways on SQLite and PostgreSQL 16, rows kept | PASS |
 | 0022–0024 only add nullable columns and new tables: code that predates them keeps running on the new schema | PASS (read) |
@@ -128,7 +128,8 @@ the server; master key wording), `SECURITY.md` (first administrator, timing, bre
 next to the dumps; units; runtime file optional), `MULTI_PLATFORM_PUBLISHING.md` and `SOCIAL_VIDEO_WORKFLOW.md` (master
 key; channels added since Phase 9), `OPERATIONS.md` (the manual payment path), `RELEASE_V1_CHECKLIST.md` (B6, SE11,
 SE12 added; evidence updated). Migration heads, ports (127.0.0.1:8000, 127.0.0.1:3001), the domain
-(`studio.imokome-cloud.com`) and unit names agree across them.
+(`studio.imokome-cloud.com` at the time; `reelforge.mul-service.com` since migration 0026) and unit names agree across
+them.
 
 ## J. Remaining manual checks
 

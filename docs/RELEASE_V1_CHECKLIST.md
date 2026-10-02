@@ -11,7 +11,7 @@ file is the index of the gates. **It holds no status:** each gate is recorded in
 | a key such as `email_dns` | **Admin → Verification**, recorded by the person who checked it: *Passed*, *Failed*, *Not applicable* or *Not checked*, who, when and a note (an order code, a video ID, a file name; never a secret). Nothing is recorded automatically |
 
 * *Not applicable* is allowed only for a provider the installation does not use: payOS, OnePAY, Runway, TikTok,
-  Facebook. Every other gate must pass.
+  Facebook (their domain-change gates included). Every other gate must pass.
 * `bash deploy/release-report.sh` combines the pre-flight, the recorded gates and the CI result GitHub reports for the
   commit, and gives the verdict. The release stays a **release candidate** until it says `READY_FOR_TAG`.
 * How to perform each manual gate: [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md). The state at release time and the tag
@@ -21,16 +21,16 @@ Related: [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) · [BACKUP_RECOVERY.
 [SECURITY.md](SECURITY.md) · [EMAIL.md](EMAIL.md) · [TEAMS.md](TEAMS.md) · [LOAD_BASELINE.md](LOAD_BASELINE.md) ·
 the release audit: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md)
 
-## Automated evidence (development machine, 2026-10-02, release closure)
+## Automated evidence (development machine, 2026-10-02, after the domain change)
 
 Results of the automated suites on the release candidate, on a development machine. **They do not replace CI**: only
 a green CI run on the deployed commit passes `release_ci_green`.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Backend tests, SQLite | `python -m unittest discover -s tests` | Passed: 600 tests, 20 skipped (13 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks) |
-| Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 600 tests, 7 skipped (live providers, FFmpeg, symlinks) |
-| Alembic: upgrade head, `alembic check`, downgrade base, upgrade head, `alembic check` (PostgreSQL 16) | CI job *migrations* | Passed on PostgreSQL 16.2: no drift, head `0025_verification_status` |
+| Backend tests, SQLite | `python -m unittest discover -s tests` | Passed: 610 tests, 28 skipped (15 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks; the 6 YouTube retry tests run inside a disposable copy instead) |
+| Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 610 tests, 13 skipped (live providers, FFmpeg, symlinks; the YouTube retry tests run in their copy) |
+| Alembic: upgrade head, `alembic check`, downgrade base, upgrade head, `alembic check` (PostgreSQL 16) | CI job *migrations* | Passed on PostgreSQL 16.2: no drift, head `0026_change_production_origin` |
 | Frontend typecheck and production build | `npm run typecheck`, `npm run build` | Passed |
 | Browser tests (11 tests: first-run setup refused from a public address then done locally, sign-in, forgot/reset, sessions and a session lost in an open tab, 2FA, invitations and switching, project and workflow, manual VietQR confirmed by an admin, support and notifications, admin pages, release gates recorded in Admin → Verification, non-admin refusal) | `e2e/` on PostgreSQL 16.2 | Passed: 11 / 11 |
 | Load baseline | `tests/load_check.py` | Recorded in LOAD_BASELINE.md and re-run after Phase 27; no errors, no double claim, no double credit |
@@ -45,6 +45,21 @@ a green CI run on the deployed commit passes `release_ci_green`.
 | R3 | The pre-flight has no FAIL on the release commit | `bash deploy/release-preflight.sh --expect-commit <commit>` | `release_preflight` |
 | R4 | The report says `READY_FOR_TAG` | `bash deploy/release-report.sh` | `preflight` |
 
+## Domain change (`https://studio.imokome-cloud.com` → `https://reelforge.mul-service.com`)
+
+Migration `0026_change_production_origin` moves the stored origin; every outside system that holds the public address
+is changed by hand, then recorded. The exact URLs: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md#domain-change).
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| DC1 | System settings → General shows `https://reelforge.mul-service.com` with Secure cookies; no OAuth redirect override is left on another origin | Pre-flight, SYSTEM CONFIG (public origin, OAuth redirects) | `preflight` |
+| DC2 | Cloudflare Tunnel: `reelforge.mul-service.com` → `http://127.0.0.1:3001`; the old hostname removed or redirected to the new one | Cloudflare Zero Trust | `domain_cloudflare_route` |
+| DC3 | Google Cloud OAuth client: the new YouTube redirect URI | Google Cloud Console | `domain_google_redirect` |
+| DC4 | TikTok for Developers: the new redirect URI (if TikTok is used) | TikTok developer portal | `domain_tiktok_redirect` |
+| DC5 | Meta for Developers, Facebook Login: the new valid OAuth redirect URI (if Facebook is used) | Meta developer dashboard | `domain_facebook_redirect` |
+| DC6 | payOS: the new webhook URL (if payOS is used) | payOS dashboard | `domain_payos_webhook` |
+| DC7 | OnePAY: the new IPN URL, and the return URL if OnePAY registered it (if cards are offered) | OnePAY merchant support | `domain_onepay_urls` |
+
 ## Bootstrap
 
 | # | Gate | How | Recorded as |
@@ -52,14 +67,14 @@ a green CI run on the deployed commit passes `release_ci_green`.
 | B1 | `instance/bootstrap.json` holds only `database_url`, chmod 600; no `frontend_origin` / `secure_cookies` | Pre-flight, SYSTEM CONFIG | `preflight` |
 | B2 | Public origin `https://reelforge.mul-service.com`, Secure cookies on (Admin → System settings → General) | Pre-flight, SYSTEM CONFIG (`--expect-origin`) | `preflight` |
 | B3 | The API listens on `127.0.0.1:8000` and Next.js on `127.0.0.1:3001` only | Pre-flight, PORTS (`ss -ltn`) | `preflight` |
-| B4 | Cloudflare Tunnel `studio.imokome-cloud.com` → `http://127.0.0.1:3001`; the site opens over HTTPS | A browser, then `curl -sI` | `security_headers` |
+| B4 | Cloudflare Tunnel `reelforge.mul-service.com` → `http://127.0.0.1:3001`; the site opens over HTTPS | A browser, then `curl -sI` | `security_headers` |
 | B5 | The first administrator was created on the server (`npm run create-admin`); setup is closed; an active system administrator exists | Pre-flight, SECURITY | `preflight` |
 
 ## Database
 
 | # | Gate | How | Recorded as |
 | --- | --- | --- | --- |
-| D1 | `alembic current` is the head, `0025_verification_status` | Pre-flight, DATABASE | `preflight`, `migration_upgraded` |
+| D1 | `alembic current` is the head, `0026_change_production_origin` | Pre-flight, DATABASE | `preflight`, `migration_upgraded` |
 | D2 | `/health/ready` answers `"status": "ok"` | Pre-flight, HEALTH | `preflight` |
 | D3 | The application's database role is not a superuser | Pre-flight, DATABASE | `preflight` |
 | D4 | Existing accounts still sign in after the upgrade | Sign in with an account from before the release | `migration_upgraded` |

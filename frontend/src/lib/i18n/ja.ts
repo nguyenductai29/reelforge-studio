@@ -1914,6 +1914,7 @@ export const ja: Dictionary = {
       },
       statuses: { ok: "OK", warning: "要確認", error: "エラー", missing: "未設定", off: "無効" },
       details: {
+        redirect_mismatch: "リダイレクトが公開オリジンと異なる",
         disabled: "無効", cannot_decrypt: "復号できません", from_environment: "まだ環境変数", loaded: "読み込み済み", not_available: "利用不可", legacy_env: "旧変数を使用", permissions: "ファイル権限が広すぎる", legacy_differs: "旧変数がファイルと異なる", invalid: "不正", unreadable: "読み取り不可", not_postgresql: "PostgreSQL ではありません", behind: "未アップグレード", unreachable: "接続できません", default_or_setting: "REELFORGE_STORAGE_ROOT 未設定",
         not_created: "未作成", not_writable: "書き込み不可", unavailable: "読み取れません", low_space: "空き 10% 未満", never_run: "未実行",
         stale: "36 時間以上未実行", ffmpeg_missing: "未インストール", font_unavailable: "フォントなし", missing: "未起動", error: "エラー", key_missing: "キーなし",
@@ -1930,6 +1931,7 @@ export const ja: Dictionary = {
       optional: "任意",
       items: {
         release_ci_green: "デプロイしたコミットで CI がすべて成功", release_deploy: "リリースコミットで deploy.sh が正常終了", release_preflight: "サーバーでのリリース事前チェック: FAIL なし", migration_upgraded: "マイグレーションが最新、既存アカウントでサインイン可",
+        domain_cloudflare_route: "Cloudflare: 新しいホスト名をアプリへ", domain_google_redirect: "Google OAuth: 新しいリダイレクト URI を登録", domain_tiktok_redirect: "TikTok: 新しいリダイレクト URI を登録", domain_facebook_redirect: "Meta: 新しい OAuth リダイレクト URI を登録", domain_payos_webhook: "payOS: 新しい Webhook URL を登録", domain_onepay_urls: "OnePAY: 新しい IPN / リターン URL を登録",
         storage_on_hdd: "保存先を HDD に移動", ffmpeg_verified: "FFmpeg 確認済み", master_key_file: "マスターキーを専用ファイルに保存しバックアップ", email_test_sent: "テストメールを受信",
         email_dns: "SPF・DKIM・DMARC が合格", email_verification: "確認メールが届き、確認できる", email_password_reset: "パスワード再設定 → メール → 再設定", email_password_changed: "「パスワード変更」メールが届く",
         email_invitation: "招待メールが届き、スタジオに参加できる", email_support_reply: "サポートの返信メールが届く", security_two_factor: "2FA: コードとリカバリーコードでサインイン", security_sessions: "他のセッションをサインアウト",
@@ -1947,7 +1949,7 @@ export const ja: Dictionary = {
         legal_terms_reviewed: "利用規約を記入しレビュー済み", legal_privacy_reviewed: "プライバシーポリシーを記入しレビュー済み",
       },
       paid: "有料",
-      groups: { release: "リリース", platform: "基盤", email: "メール", security: "セキュリティ", ai: "AI プロバイダー", render: "レンダリング", publishing: "投稿", vietqr: "VietQR 決済", card: "カード決済", operations: "運用", legal: "法務" },
+      groups: { release: "リリース", domain: "ドメイン変更", platform: "基盤", email: "メール", security: "セキュリティ", ai: "AI プロバイダー", render: "レンダリング", publishing: "投稿", vietqr: "VietQR 決済", card: "カード決済", operations: "運用", legal: "法務" },
       recordedBy: (who: string, when: string) => `${who} が記録 · ${when}`,
       notePlaceholder: "メモ: ID・URL・失敗内容 (秘密情報は書かない)",
       saveNote: "メモを保存",

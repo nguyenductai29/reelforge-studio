@@ -126,7 +126,7 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    The API accepts first-run setup only from the server itself; through Cloudflare it answers 403, so nobody else can
    claim the administrator even if the tunnel is already open. `deploy.sh` and `/health/ready` remind you while no
    account exists.
-9. **Public access:** a Cloudflare Tunnel route `studio.imokome-cloud.com` → `http://127.0.0.1:3001` (home-server-deployment.md § 14). Cloudflare terminates HTTPS.
+9. **Public access:** a Cloudflare Tunnel route `reelforge.mul-service.com` → `http://127.0.0.1:3001` (home-server-deployment.md § 14). Cloudflare terminates HTTPS.
 10. **In the browser:**
    1. Sign in as the administrator and accept the Terms and Privacy Policy (the banner). Then turn on two-factor
       authentication (**Cài đặt → Bảo mật**) and store its recovery codes off the server.
@@ -188,7 +188,17 @@ success. After a successful deploy, `bash deploy/release-preflight.sh` checks th
 
 Configuration changes never need a deploy: save them in the admin UI.
 
-Migration `0021_default_production_origin` moves an installation still on the old defaults (`http://localhost:3000`, cookies not Secure) to `https://reelforge.mul-service.com` with Secure cookies. It keeps any other value an admin saved.
+The migration head is `0026_change_production_origin`. Two data migrations move an installation still on an old
+default origin, and keep any other value an admin saved:
+
+- `0021_default_production_origin` moved the old localhost defaults (`http://localhost:3000`, cookies not Secure) to the
+  first production origin, `https://studio.imokome-cloud.com`, with Secure cookies;
+- `0026_change_production_origin` moves exactly `https://studio.imokome-cloud.com` to `https://reelforge.mul-service.com`
+  (Secure cookies on), with the OAuth redirect overrides that were exactly its callbacks.
+
+After the domain change, every outside system that holds the public address must be updated by hand (Cloudflare,
+Google, TikTok, Meta, payOS, OnePAY): [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md#domain-change). The old origin is
+refused by the same-origin check from then on.
 
 ## Backups
 
