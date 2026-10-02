@@ -208,7 +208,8 @@ export function AdminPayments({ providers, initialStatus = "", awaitingCount = 0
                 {p.awaitingFilter(awaitingCount)}
               </Button>
             )}
-            <div className="flex flex-wrap gap-1.5 text-[11px]">
+            {/* The gateways dialog shows the same states; a phone keeps the room for the orders. */}
+            <div className="hidden flex-wrap gap-1.5 text-[11px] md:flex">
               {providers.map((item) => {
                 // Older APIs report only "configured".
                 const state = (item.available ?? item.configured) ? "available"

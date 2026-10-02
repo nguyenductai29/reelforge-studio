@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -36,7 +36,15 @@ const TONES: ContentTone[] = [
   "dramatic",
   "funny",
 ];
+// A tab of panels: it sizes to its content, and only a window too short for it scrolls (inside, never the page).
+const PANEL_TAB = "scrollbar-thin mt-3 min-h-0 flex-1 overflow-y-auto";
+// A tab that lays out its own scrolling region (the members table): it only gives it the height.
+const FILL_TAB = "mt-3 flex min-h-0 flex-1 flex-col";
 
+/**
+ * Settings fits the window like the admin console: the header (with the tab's save action) and the tabs stay put,
+ * and only a tab's content scrolls when it is longer than the space left.
+ */
 export default function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
   useDocumentTitle(t.settings.title);
@@ -49,7 +57,7 @@ export default function SettingsPage() {
   const [system, setSystem] = useState<SystemSettings | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [tab, setTab] = useState("defaults");
-  const [saving, setSaving] = useState<"workspace" | "system" | "profile" | null>(null);
+  const [saving, setSaving] = useState<"workspace" | "system" | "profile" | "name" | null>(null);
   // ?tab=storage opens a tab directly (the storage warning links here).
   const requestedTab = useSearchParam("tab");
   useEffect(() => {
@@ -65,6 +73,9 @@ export default function SettingsPage() {
   }, [settings.data]);
 
   const s = t.settings;
+  const m = t.team;
+  const manage = can(dashboard, "settings.manage");
+  const role = dashboard?.workspace.role;
   const dirty = Boolean(workspace && settings.data && JSON.stringify(workspace) !== JSON.stringify(settings.data.workspace));
   const storedBytes = (dashboard?.assets ?? []).reduce((sum, a) => sum + a.bytes, 0);
   const tabs = [
@@ -115,6 +126,34 @@ export default function SettingsPage() {
     }
   }
 
+  async function rename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving("name");
+    try {
+      await api("workspace", jsonRequest("PUT", { name: new FormData(event.currentTarget).get("name") }));
+      toast.success(m.renamed);
+      await Promise.all([client.invalidateQueries({ queryKey: keys.dashboard }),
+                         client.invalidateQueries({ queryKey: keys.members })]);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  // Saved at once, on top of the saved settings: an unsaved draft of another tab is never sent with it.
+  async function setEditorsPublish(value: boolean) {
+    if (!settings.data) return;
+    try {
+      await api("settings/workspace", jsonRequest("PUT", { ...settings.data.workspace, editors_can_publish: value }));
+      setWorkspace((current) => (current ? { ...current, editors_can_publish: value } : current));
+      await Promise.all([client.invalidateQueries({ queryKey: keys.settings }),
+                         client.invalidateQueries({ queryKey: keys.dashboard })]);
+    } catch (error) {
+      showError(error);
+    }
+  }
+
   async function signOut() {
     try {
       await api("logout", { method: "POST" });
@@ -128,27 +167,27 @@ export default function SettingsPage() {
   if (!workspace && settings.isError) return <QueryError error={settings.error} onRetry={() => void settings.refetch()} />;
   if (!workspace) return <Loader2 className="mx-auto mt-10 size-5 animate-spin text-muted-foreground" />;
 
+  // The tab's main save action lives in the header, outside any scrolling region; tabs whose actions apply at once
+  // (members, security, the studio name, AI defaults with their own button) have none.
+  const headerAction = tab === "system" ? (
+    <Button onClick={() => void saveSystem()} disabled={saving !== null}>
+      {saving === "system" && <Loader2 className="size-4 animate-spin" />}
+      {s.system.save}
+    </Button>
+  ) : tab === "defaults" || tab === "publishing" ? (
+    <Button onClick={() => void saveWorkspace()} disabled={!dirty || saving !== null || !manage}>
+      {saving === "workspace" && <Loader2 className="size-4 animate-spin" />}
+      {t.common.saveChanges}
+    </Button>
+  ) : null;
+
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title={s.title}
-        subtitle={s.subtitle}
-        actions={
-          tab === "general" ? null : tab === "system" ? (
-            <Button onClick={() => void saveSystem()} disabled={saving !== null}>
-              {saving === "system" && <Loader2 className="size-4 animate-spin" />}
-              {s.system.save}
-            </Button>
-          ) : (
-            <Button onClick={() => void saveWorkspace()} disabled={!dirty || saving !== null || !can(dashboard, "settings.manage")}>
-              {saving === "workspace" && <Loader2 className="size-4 animate-spin" />}
-              {t.common.saveChanges}
-            </Button>
-          )
-        }
-      />
-      <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="h-auto flex-wrap">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="shrink-0">
+        <PageHeader compact title={s.title} subtitle={s.subtitle} actions={headerAction} />
+      </div>
+      <Tabs value={tab} onValueChange={setTab} className="mt-4 flex min-h-0 flex-1 flex-col">
+        <TabsList className="scrollbar-thin h-auto w-full shrink-0 justify-start overflow-x-auto sm:w-fit">
           {tabs.map((key) => (
             <TabsTrigger key={key} value={key}>
               {s.tabs[key]}
@@ -156,7 +195,7 @@ export default function SettingsPage() {
           ))}
         </TabsList>
 
-        <TabsContent value="general" className="mt-5">
+        <TabsContent value="general" className={PANEL_TAB}>
           <div className="panel max-w-xl space-y-4 p-5">
             <div>
               <FieldLabel htmlFor="settings-name">{s.general.displayName}</FieldLabel>
@@ -201,11 +240,22 @@ export default function SettingsPage() {
           </div>
         </TabsContent>
 
-        <TabsContent value="workspace" className="mt-5">
+        <TabsContent value="workspace" className={PANEL_TAB}>
           <div className="panel max-w-xl space-y-4 p-5">
             <div>
-              <FieldLabel htmlFor="ws-name">{s.workspace.name}</FieldLabel>
-              <Input id="ws-name" readOnly value={dashboard?.workspace.name ?? ""} className="bg-surface-2" />
+              <FieldLabel htmlFor="workspace-name">{s.workspace.name}</FieldLabel>
+              {manage ? (
+                <form className="flex items-center gap-2" onSubmit={rename}>
+                  <Input id="workspace-name" name="name" key={dashboard?.workspace.name} defaultValue={dashboard?.workspace.name ?? ""}
+                         required maxLength={100} className="bg-surface" />
+                  <Button type="submit" variant="outline" disabled={saving !== null}>
+                    {saving === "name" && <Loader2 className="size-4 animate-spin" />}
+                    {m.rename}
+                  </Button>
+                </form>
+              ) : (
+                <Input id="workspace-name" readOnly value={dashboard?.workspace.name ?? ""} className="bg-surface-2" />
+              )}
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
@@ -217,84 +267,102 @@ export default function SettingsPage() {
                 <p className="break-all font-mono text-xs text-muted-foreground">{dashboard?.workspace.id}</p>
               </div>
             </div>
+            {role && (
+              <div>
+                <FieldLabel>{m.yourRole}</FieldLabel>
+                <p className="text-sm">{m.roles[role]} <span className="text-xs text-muted-foreground">· {m.roleHints[role]}</span></p>
+              </div>
+            )}
+            {manage && (
+              <SettingRow label={m.editorsPublish} hint={m.editorsPublishHint}>
+                <Switch checked={workspace.editors_can_publish ?? true} onCheckedChange={(value) => void setEditorsPublish(value)}
+                        aria-label={m.editorsPublish} />
+              </SettingRow>
+            )}
           </div>
         </TabsContent>
 
-        <TabsContent value="defaults" className="mt-5">
-          <div className="panel max-w-2xl space-y-5 p-5">
-            <div>
-              <FieldLabel>{s.defaults.language}</FieldLabel>
-              <OptionChips
-                options={LOCALES.map((code) => ({ value: code, label: LOCALE_NAMES[code] }))}
-                value={[workspace.default_language]}
-                onChange={([next]) => isLocale(next) && setWorkspace({ ...workspace, default_language: next })}
-              />
-            </div>
-            <div>
-              <FieldLabel>{s.defaults.orientation}</FieldLabel>
-              <OptionChips
-                options={(["vertical", "horizontal", "square"] as const).map((o) => ({
-                  value: o,
-                  label: s.defaults.orientations[o],
-                }))}
-                value={[workspace.video_orientation]}
-                onChange={([next]) =>
-                  setWorkspace({ ...workspace, video_orientation: next as WorkspaceSettings["video_orientation"] })
-                }
-              />
-              {workspace.video_orientation === "square" && (
-                <p className="mt-2 text-xs text-warning">{s.defaults.squareNote}</p>
-              )}
-            </div>
-            <div>
-              <FieldLabel>{s.defaults.platform}</FieldLabel>
-              <OptionChips
-                options={PLATFORMS.map((value) => ({ value, label: t.config.options.platform?.[value] ?? value }))}
-                value={[workspace.default_platform]}
-                onChange={([next]) => next && setWorkspace({ ...workspace, default_platform: next as ContentPlatform })}
-              />
-            </div>
-            <div>
-              <FieldLabel>{s.defaults.tone}</FieldLabel>
-              <OptionChips
-                options={TONES.map((value) => ({ value, label: t.config.options.tone?.[value] ?? value }))}
-                value={[workspace.default_tone]}
-                onChange={([next]) => next && setWorkspace({ ...workspace, default_tone: next as ContentTone })}
-              />
-            </div>
-            <div>
-              <FieldLabel htmlFor="ws-duration">{s.defaults.length}</FieldLabel>
-              <Input
-                id="ws-duration"
-                type="number"
-                min={5}
-                max={3600}
-                value={workspace.default_duration ?? ""}
-                placeholder={s.defaults.lengthAuto}
-                onChange={(e) =>
-                  setWorkspace({ ...workspace, default_duration: e.target.value ? Number(e.target.value) : null })
-                }
-                className="max-w-[12rem] bg-surface"
-              />
-              <p className="mt-1 text-xs text-muted-foreground">{s.defaults.lengthHint}</p>
+        <TabsContent value="defaults" className={PANEL_TAB}>
+          <div className="panel max-w-4xl space-y-5 p-5">
+            {/* Two balanced columns from medium screens; one below. */}
+            <div className="grid gap-x-8 gap-y-5 md:grid-cols-2">
+              <div>
+                <FieldLabel>{s.defaults.language}</FieldLabel>
+                <OptionChips
+                  options={LOCALES.map((code) => ({ value: code, label: LOCALE_NAMES[code] }))}
+                  value={[workspace.default_language]}
+                  onChange={([next]) => isLocale(next) && setWorkspace({ ...workspace, default_language: next })}
+                />
+              </div>
+              <div>
+                <FieldLabel>{s.defaults.orientation}</FieldLabel>
+                <OptionChips
+                  options={(["vertical", "horizontal", "square"] as const).map((o) => ({
+                    value: o,
+                    label: s.defaults.orientations[o],
+                  }))}
+                  value={[workspace.video_orientation]}
+                  onChange={([next]) =>
+                    setWorkspace({ ...workspace, video_orientation: next as WorkspaceSettings["video_orientation"] })
+                  }
+                />
+                {workspace.video_orientation === "square" && (
+                  <p className="mt-2 text-xs text-warning">{s.defaults.squareNote}</p>
+                )}
+              </div>
+              <div>
+                <FieldLabel>{s.defaults.platform}</FieldLabel>
+                <OptionChips
+                  options={PLATFORMS.map((value) => ({ value, label: t.config.options.platform?.[value] ?? value }))}
+                  value={[workspace.default_platform]}
+                  onChange={([next]) => next && setWorkspace({ ...workspace, default_platform: next as ContentPlatform })}
+                />
+              </div>
+              <div>
+                <FieldLabel>{s.defaults.tone}</FieldLabel>
+                <OptionChips
+                  options={TONES.map((value) => ({ value, label: t.config.options.tone?.[value] ?? value }))}
+                  value={[workspace.default_tone]}
+                  onChange={([next]) => next && setWorkspace({ ...workspace, default_tone: next as ContentTone })}
+                />
+              </div>
+              <div>
+                <FieldLabel htmlFor="ws-duration">{s.defaults.length}</FieldLabel>
+                <Input
+                  id="ws-duration"
+                  type="number"
+                  min={5}
+                  max={3600}
+                  value={workspace.default_duration ?? ""}
+                  placeholder={s.defaults.lengthAuto}
+                  onChange={(e) =>
+                    setWorkspace({ ...workspace, default_duration: e.target.value ? Number(e.target.value) : null })
+                  }
+                  className="max-w-[12rem] bg-surface"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">{s.defaults.lengthHint}</p>
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">{s.defaults.appliesHint}</p>
           </div>
         </TabsContent>
 
-        <TabsContent value="ai" className="mt-5">
-          <div className="panel max-w-xl space-y-4 p-5 text-sm">
-            <DefaultModelsForm />
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-              <p className="text-xs text-muted-foreground">{s.ai.modelsHint}</p>
-              <Button asChild variant="outline" size="sm">
-                <Link href="/models">{s.ai.manageModels}</Link>
-              </Button>
-            </div>
+        <TabsContent value="ai" className={PANEL_TAB}>
+          <div className="panel max-w-xl p-5 text-sm">
+            <DefaultModelsForm
+              footer={
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground">{s.ai.modelsHint}</span>
+                  <Button asChild variant="outline" size="sm">
+                    <Link href="/models">{s.ai.manageModels}</Link>
+                  </Button>
+                </span>
+              }
+            />
           </div>
         </TabsContent>
 
-        <TabsContent value="publishing" className="mt-5">
+        <TabsContent value="publishing" className={PANEL_TAB}>
           <div className="panel max-w-xl space-y-4 p-5 text-sm">
             <SettingRow label={s.publishing.review} hint={s.publishing.reviewHint}>
               <Switch
@@ -316,40 +384,43 @@ export default function SettingsPage() {
           </div>
         </TabsContent>
 
-        <TabsContent value="storage" className="mt-5">
-          <div className="panel max-w-xl space-y-4 p-5 text-sm">
-            <p>{s.storage.used(formatBytes(storedBytes), dashboard?.assets.length ?? 0)}</p>
-            <StorageUsagePanel />
-            {system && (
-              <div>
-                <FieldLabel>{s.storage.path}</FieldLabel>
-                <p className="break-all font-mono text-xs">{system.storage_dir}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {system.storage_dir_source === "admin" ? s.storage.pathFromAdmin
-                    : system.storage_dir_source === "environment" ? s.storage.pathFromEnv : s.storage.pathHint}
-                </p>
-              </div>
-            )}
+        <TabsContent value="storage" className={PANEL_TAB}>
+          <div className="panel max-w-4xl p-4 text-sm">
+            <StorageUsagePanel
+              lead={<p>{s.storage.used(formatBytes(storedBytes), dashboard?.assets.length ?? 0)}</p>}
+              aside={system && (
+                <div>
+                  <FieldLabel>{s.storage.path}</FieldLabel>
+                  <p className="break-all font-mono text-xs">{system.storage_dir}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {system.storage_dir_source === "admin" ? s.storage.pathFromAdmin
+                      : system.storage_dir_source === "environment" ? s.storage.pathFromEnv : s.storage.pathHint}
+                  </p>
+                </div>
+              )}
+            />
           </div>
         </TabsContent>
 
-        <TabsContent value="members" className="mt-5">
+        <TabsContent value="members" className={FILL_TAB}>
           <WorkspaceMembersPanel />
         </TabsContent>
 
-        <TabsContent value="security" className="mt-5 space-y-4">
-          <AccountSecurityPanel />
-          <div className="panel max-w-xl space-y-4 p-5 text-sm">
-            <SettingRow label={s.security.signOut}>
-              <Button variant="outline" size="sm" onClick={() => void signOut()}>
-                {t.shell.signOut}
-              </Button>
-            </SettingRow>
+        <TabsContent value="security" className={PANEL_TAB}>
+          <div className="space-y-4">
+            <AccountSecurityPanel />
+            <div className="panel max-w-xl space-y-4 p-5 text-sm">
+              <SettingRow label={s.security.signOut}>
+                <Button variant="outline" size="sm" onClick={() => void signOut()}>
+                  {t.shell.signOut}
+                </Button>
+              </SettingRow>
+            </div>
           </div>
         </TabsContent>
 
         {system && (
-          <TabsContent value="system" className="mt-5">
+          <TabsContent value="system" className={PANEL_TAB}>
             <div className="panel max-w-xl space-y-4 p-5 text-sm">
               <div>
                 <FieldLabel htmlFor="sys-origin">{s.system.origin}</FieldLabel>

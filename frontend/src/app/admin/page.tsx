@@ -168,8 +168,8 @@ export default function AdminPage() {
   ];
 
   return (
-    // 100dvh minus the 3.5rem top bar and the 3rem of page padding: the page itself never scrolls.
-    <div className="flex h-[calc(100dvh-6.5rem)] min-h-0 flex-col gap-3 overflow-hidden">
+    // The app shell gives this page the height the top bar and any banner leave: the page itself never scrolls.
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
       <header className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold">{a.title}</h1>
@@ -177,9 +177,10 @@ export default function AdminPage() {
           {overview.api_outdated && <p className="text-xs text-warning">{a.apiOutdated}</p>}
           {!paymentReady && <p className="text-xs text-warning">{a.noGateway}</p>}
         </div>
-        <dl className="flex flex-wrap gap-2">
+        {/* One scrolling row on a phone, so the counts never push the tab's content out of the window. */}
+        <dl className="scrollbar-thin flex min-w-0 max-w-full gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
           {stats.map(([label, value, warn]) => (
-            <div key={label} className="rounded-lg border border-border bg-surface px-2.5 py-1">
+            <div key={label} className="shrink-0 rounded-lg border border-border bg-surface px-2.5 py-1">
               <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</dt>
               <dd className={cn("text-sm font-semibold tabular-nums", warn && "text-warning")}>{formatNumber(value)}</dd>
             </div>

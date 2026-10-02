@@ -1346,6 +1346,21 @@ def workspace_members(request: Request):
                 "email_delivery": mailer.enabled(), "email_verified": user.email_verified_at is not None}
 
 
+@app.get("/api/workspace/members/page")
+def workspace_member_page(request: Request, q: str | None = Query(default=None, max_length=255),
+                          role: Literal["owner", "admin", "editor", "viewer"] | None = None,
+                          status: Literal["active", "pending"] | None = None,
+                          limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
+    """The active studio's members and, for those who manage members, its pending invitations: one page at a time,
+    searched (email or display name) and filtered by role and status on the server."""
+    with Session() as db:
+        user, membership, ws = member_context(request, db)
+        manage = permissions.allowed(membership.role, "members.manage")
+        items, total = team.member_page(db, ws.id, user.id, q=q, role=role, status=status, include_invites=manage,
+                                        limit=limit, offset=offset)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
 @app.put("/api/workspace")
 def rename_workspace(data: WorkspaceNameInput, request: Request):
     same_origin(request)

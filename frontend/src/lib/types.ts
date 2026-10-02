@@ -810,38 +810,37 @@ export type AuthStatus = {
   terms_version?: string;
 };
 
-/** Phase 23: workspace members and invitations. */
-export type Member = {
-  user_id: string;
-  email: string;
-  display_name: string | null;
-  role: Role;
-  joined_at: string | null;
-  active: boolean;
-  you: boolean;
-  two_factor: boolean;
-  email_verified: boolean;
-};
-export type PendingInvite = {
-  id: string;
-  email: string;
-  role: Exclude<Role, "owner">;
-  invited_by: string | null;
-  created_at: string;
-  expires_at: string;
-  expired: boolean;
-};
-export type MembersView = {
-  workspace: { id: string; name: string; owner_id: string };
-  role: Role;
-  members: Member[];
-  invites: PendingInvite[];
-  can_manage: boolean;
-  can_transfer: boolean;
-  editors_can_publish: boolean;
-  email_delivery: boolean;
-  email_verified: boolean;
-};
+// Phase 23: workspace members and invitations.
+
+/** One row of Settings → Members (GET /api/workspace/members/page): a member, or a pending invitation (only for
+ *  those who manage members). */
+export type MemberRow =
+  | {
+      kind: "member";
+      id: string;
+      user_id: string;
+      email: string;
+      display_name: string | null;
+      role: Role;
+      status: "active";
+      joined_at: string | null;
+      you: boolean;
+      two_factor: boolean;
+      email_verified: boolean;
+      account_active: boolean;
+    }
+  | {
+      kind: "invite";
+      id: string;
+      email: string;
+      display_name: null;
+      role: Exclude<Role, "owner">;
+      status: "pending";
+      invited_at: string;
+      invited_by: string | null;
+      expires_at: string;
+      expired: boolean;
+    };
 export type InviteResult = { id: string; email: string; role: Role; emailed: boolean; expires_at: string; link: string | null };
 export type InviteLookup = {
   status: "pending" | "accepted" | "expired" | "revoked" | "invalid";

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -29,7 +29,7 @@ const NONE = "__none__";
  * The workspace's default model per task: steps that choose no model use it; a model chosen on a step
  * always wins, and a disabled default falls back to the first compatible model (backend ``find_tool``).
  */
-export function DefaultModelsForm() {
+export function DefaultModelsForm({ footer }: { footer?: ReactNode }) {
   const { t } = useI18n();
   const s = t.settings.ai;
   const client = useQueryClient();
@@ -89,38 +89,48 @@ export function DefaultModelsForm() {
           );
         })}
       </div>
-      <Button size="sm" disabled={busy} onClick={() => void save()}>
-        {busy && <Loader2 className="size-3.5 animate-spin" />}
-        {s.saveDefaults}
-      </Button>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Button size="sm" disabled={busy} onClick={() => void save()}>
+          {busy && <Loader2 className="size-3.5 animate-spin" />}
+          {s.saveDefaults}
+        </Button>
+        {footer}
+      </div>
     </div>
   );
 }
 
-/** Stored media against the workspace quota, by kind. */
-export function StorageUsagePanel() {
+/** Stored media against the workspace quota, by kind; ``lead`` opens the usage column, ``aside`` ends the other. */
+export function StorageUsagePanel({ lead, aside }: { lead?: ReactNode; aside?: ReactNode }) {
   const { t } = useI18n();
   const s = t.settings.storage;
   const usage = useStorage().data;
   if (!usage) return <Loader2 className="size-4 animate-spin text-muted-foreground" />;
   return (
-    <div className="space-y-4">
-      <StorageMeter info={usage} />
-      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-        {(["video", "audio", "image", "document"] as const).map((kind) => (
-          <div key={kind} className="rounded-lg bg-surface-2 p-2">
-            <p className="text-muted-foreground">{s.byType[kind]}</p>
-            <p className="font-medium">{formatBytes(usage.by_type[kind])}</p>
-          </div>
-        ))}
+    // Usage beside the cleanup on wide screens, so the Storage tab fits a laptop window without scrolling.
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="space-y-3">
+        {lead}
+        <StorageMeter info={usage} />
+        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+          {(["video", "audio", "image", "document"] as const).map((kind) => (
+            <div key={kind} className="rounded-lg bg-surface-2 p-2">
+              <p className="text-muted-foreground">{s.byType[kind]}</p>
+              <p className="font-medium">{formatBytes(usage.by_type[kind])}</p>
+            </div>
+          ))}
+        </div>
       </div>
-      {usage.retention && (
-        <p className="text-xs text-muted-foreground">
-          {t.storage.retention(usage.retention.intermediate_days, usage.retention.temp_days)}
-        </p>
-      )}
-      {usage.intermediate && <IntermediateCleanup />}
-      <p className="text-xs text-muted-foreground">{s.cleanupHint}</p>
+      <div className="space-y-3">
+        {usage.retention && (
+          <p className="text-xs text-muted-foreground">
+            {t.storage.retention(usage.retention.intermediate_days, usage.retention.temp_days)}
+          </p>
+        )}
+        {usage.intermediate && <IntermediateCleanup />}
+        <p className="text-xs text-muted-foreground">{s.cleanupHint}</p>
+        {aside}
+      </div>
     </div>
   );
 }

@@ -23,7 +23,7 @@ import re
 import secrets
 import uuid
 
-from sqlalchemy import func, inspect, select, update
+from sqlalchemy import case, func, inspect, literal_column, or_, select, union_all, update
 
 from app import permissions
 from app.models import (LoginSession, Membership, User, UserProfile, Workspace, WorkspaceInvite, WorkspaceSetting)
@@ -141,6 +141,83 @@ def pending_invites(db, workspace_id: str) -> list[dict]:
     return [{"id": invite.id, "email": invite.email, "role": invite.role, "invited_by": inviter,
              "created_at": _iso(invite.created_at), "expires_at": _iso(invite.expires_at),
              "expired": _aware(invite.expires_at) <= _now()} for invite, inviter in rows]
+
+
+def _like(text: str) -> str:
+    """A case-insensitive ``LIKE`` pattern for ``text`` with its wildcards escaped (used with ``escape='\\'``)."""
+    escaped = text.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def member_page(db, workspace_id: str, me: str, *, q: str | None = None, role: str | None = None,
+                status: str | None = None, include_invites: bool = False, limit: int = 20,
+                offset: int = 0) -> tuple[list[dict], int]:
+    """The members of a workspace and, when ``include_invites``, its pending invitations, as one list searched,
+    filtered and paged in SQL: members first (owner, admins, editors, viewers), then invitations, each by email.
+
+    ``status`` is ``active`` (members) or ``pending`` (invitations neither accepted nor revoked, expired ones
+    included and flagged). Returns the page and the total count."""
+    pattern = _like(q) if q and q.strip() else None
+    rank = {name: index for index, name in enumerate(permissions.ROLES)}
+    parts = []
+    if status in (None, "active"):
+        members = (select(literal_column("'member'").label("kind"), Membership.user_id.label("id"),
+                          User.email.label("email"), Membership.role.label("role"),
+                          literal_column("0").label("kind_rank"),
+                          case(rank, value=Membership.role, else_=len(rank)).label("role_rank"))
+                   .join(User, User.id == Membership.user_id)
+                   .outerjoin(UserProfile, UserProfile.user_id == User.id)
+                   .where(Membership.workspace_id == workspace_id))
+        if pattern:
+            members = members.where(or_(func.lower(User.email).like(pattern, escape="\\"),
+                                        func.lower(UserProfile.display_name).like(pattern, escape="\\")))
+        if role:
+            members = members.where(Membership.role == role)
+        parts.append(members)
+    if include_invites and status in (None, "pending"):
+        invites = (select(literal_column("'invite'").label("kind"), WorkspaceInvite.id.label("id"),
+                          WorkspaceInvite.email.label("email"), WorkspaceInvite.role.label("role"),
+                          literal_column("1").label("kind_rank"),
+                          case(rank, value=WorkspaceInvite.role, else_=len(rank)).label("role_rank"))
+                   .where(WorkspaceInvite.workspace_id == workspace_id, WorkspaceInvite.accepted_at.is_(None),
+                          WorkspaceInvite.revoked_at.is_(None)))
+        if pattern:
+            invites = invites.where(func.lower(WorkspaceInvite.email).like(pattern, escape="\\"))
+        if role:
+            invites = invites.where(WorkspaceInvite.role == role)
+        parts.append(invites)
+    if not parts:
+        return [], 0
+    listed = (parts[0] if len(parts) == 1 else union_all(*parts)).subquery()
+    total = db.scalar(select(func.count()).select_from(listed)) or 0
+    page = db.execute(select(listed.c.kind, listed.c.id)
+                      .order_by(listed.c.kind_rank, listed.c.role_rank, func.lower(listed.c.email), listed.c.id)
+                      .limit(limit).offset(offset)).all()
+
+    member_ids = [row_id for kind, row_id in page if kind == "member"]
+    invite_ids = [row_id for kind, row_id in page if kind == "invite"]
+    members_by_id = {user.id: {"kind": "member", "id": user.id, "user_id": user.id, "email": user.email,
+                               "display_name": name, "role": membership.role, "status": "active",
+                               "joined_at": _iso(membership.created_at), "you": user.id == me,
+                               "two_factor": bool(user.totp_enabled_at),
+                               "email_verified": user.email_verified_at is not None, "account_active": user.is_active}
+                     for membership, user, name in db.execute(
+                         select(Membership, User, UserProfile.display_name).join(User, User.id == Membership.user_id)
+                         .outerjoin(UserProfile, UserProfile.user_id == User.id)
+                         .where(Membership.workspace_id == workspace_id, Membership.user_id.in_(member_ids))).all()
+                     } if member_ids else {}
+    now = _now()
+    invites_by_id = {invite.id: {"kind": "invite", "id": invite.id, "email": invite.email, "display_name": None,
+                                 "role": invite.role, "status": "pending", "invited_at": _iso(invite.created_at),
+                                 "invited_by": inviter, "expires_at": _iso(invite.expires_at),
+                                 "expired": _aware(invite.expires_at) <= now}
+                     for invite, inviter in db.execute(
+                         select(WorkspaceInvite, User.email)
+                         .outerjoin(User, User.id == WorkspaceInvite.invited_by_user_id)
+                         .where(WorkspaceInvite.workspace_id == workspace_id, WorkspaceInvite.id.in_(invite_ids))).all()
+                     } if invite_ids else {}
+    found = {"member": members_by_id, "invite": invites_by_id}
+    return [found[kind][row_id] for kind, row_id in page if row_id in found[kind]], int(total)
 
 
 def _member(db, workspace_id: str, user_id: str) -> Membership:

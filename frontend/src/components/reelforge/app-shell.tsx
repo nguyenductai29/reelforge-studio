@@ -444,10 +444,17 @@ function AccountMenu() {
   );
 }
 
+// Pages that behave like a desktop app: the window never scrolls. <main> is exactly the height the top bar leaves,
+// the banners above the page take what they need, and the page fills the rest (flex-1, min-h-0) and scrolls only
+// its own long regions. This is the one height rule for them: no page computes its own. The page never gets less
+// than 24rem: in a window too short for that (a phone held sideways), <main> scrolls, never the document.
+const FIT_TO_VIEWPORT = ["/admin", "/settings"];
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
   const fullBleed = pathname.startsWith("/workflows/");
+  const fitted = FIT_TO_VIEWPORT.some((route) => pathname === route || pathname.startsWith(`${route}/`));
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
 
@@ -535,12 +542,20 @@ export function AppShell({ children }: { children: ReactNode }) {
               {children}
             </main>
           ) : (
-            <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1400px] px-4 py-6 focus:outline-none sm:px-6 lg:px-8">
+            <main
+              id="main"
+              tabIndex={-1}
+              className={cn(
+                "mx-auto w-full max-w-[1400px] px-4 py-6 focus:outline-none sm:px-6 lg:px-8",
+                // 3.5rem: the top bar. The padding is inside this height (border-box).
+                fitted && "scrollbar-thin flex h-[calc(100dvh-3.5rem)] min-h-0 flex-col overflow-y-auto overflow-x-hidden",
+              )}
+            >
               <OfflineBanner />
               <AccountBanners />
-              {/* Admin fits the viewport exactly and shows storage in its own tables. */}
+              {/* Admin shows storage in its own tables. */}
               {!pathname.startsWith("/admin") && <StorageAlert />}
-              {children}
+              {fitted ? <div className="flex min-h-[24rem] flex-1 flex-col">{children}</div> : children}
             </main>
           )}
         </div>

@@ -130,7 +130,7 @@ export function AccountBanners() {
       <div key="verify" className="flex flex-wrap items-center justify-between gap-2">
         <span>{sent ? t.account.email.resent : b.verifyEmail}</span>
         {!sent && (
-          <Button size="sm" variant="outline" onClick={() => void api("account/verify-email/resend", { method: "POST" })
+          <Button size="sm" variant="outline" className="h-7" onClick={() => void api("account/verify-email/resend", { method: "POST" })
             .then(() => setSent(true)).catch(showError)}>{b.verifyAction}</Button>
         )}
       </div>,
@@ -141,7 +141,7 @@ export function AccountBanners() {
       <div key="terms" className="flex flex-wrap items-center justify-between gap-2">
         <span>{b.terms} <Link href="/terms" target="_blank" className="underline underline-offset-2">{t.legal.links.terms}</Link>
           {" · "}<Link href="/privacy" target="_blank" className="underline underline-offset-2">{t.legal.links.privacy}</Link></span>
-        <Button size="sm" variant="outline" onClick={() => void api("account/terms", { method: "POST" })
+        <Button size="sm" variant="outline" className="h-7" onClick={() => void api("account/terms", { method: "POST" })
           .then(() => client.invalidateQueries({ queryKey: keys.dashboard })).catch(showError)}>{t.account.terms.accept}</Button>
       </div>,
     );
@@ -153,13 +153,13 @@ export function AccountBanners() {
     notices.push(
       <div key="2fa" className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-2"><ShieldAlert className="size-4" aria-hidden />{b.admin2fa}</span>
-        <Button size="sm" variant="outline" asChild><Link href="/settings?tab=security">{b.admin2faAction}</Link></Button>
+        <Button size="sm" variant="outline" className="h-7" asChild><Link href="/settings?tab=security">{b.admin2faAction}</Link></Button>
       </div>,
     );
   }
   if (!notices.length) return null;
   return (
-    <div role="status" className="mb-4 space-y-2 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+    <div role="status" className="mb-3 space-y-1.5 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2 text-sm">
       {notices}
     </div>
   );

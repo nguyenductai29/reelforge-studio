@@ -21,9 +21,12 @@ test("invitations: a new person creates an account and joins; an existing accoun
   await signIn(page, OWNER.email, OWNER.password);
   // Inviting needs a verified address (when the server sends email): the link from the welcome email.
   await page.goto("/settings?tab=members");
-  await expect(page.getByText("Verify your email address before inviting members.")).toBeVisible();
+  await page.getByRole("button", { name: "Invite member" }).click();
+  await expect(page.getByRole("dialog").getByText("Verify your email address before inviting members.")).toBeVisible();
+  await page.keyboard.press("Escape");
   await verifyEmail(page, OWNER.email);
   await page.goto("/settings?tab=members");
+  await page.getByRole("button", { name: "Invite member" }).click();
   await page.getByLabel("Email of the person to invite").fill("editor@example.com");
   await page.getByRole("button", { name: "Send invitation" }).click();
   await expect(page.getByText("Invitation sent to editor@example.com.")).toBeVisible();
@@ -61,6 +64,7 @@ test("invitations: a new person creates an account and joins; an existing accoun
 
   // An existing account, invited as a viewer: signs in on the invitation page and joins.
   await page.goto("/settings?tab=members");
+  await page.getByRole("button", { name: "Invite member" }).click();
   await page.getByLabel("Email of the person to invite").fill("viewer@example.com");
   await page.locator("#invite-role").click();
   await page.getByRole("option", { name: "Viewer" }).click();
@@ -88,7 +92,8 @@ test("invitations: a new person creates an account and joins; an existing accoun
 
   // Removed from the studio: refused at once; their own studio stays theirs.
   await page.goto("/settings?tab=members");
-  await page.getByRole("button", { name: "Remove from studio: viewer@example.com" }).click();
+  await page.getByRole("button", { name: "Actions · viewer@example.com" }).click();
+  await page.getByRole("menuitem", { name: "Remove member" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Confirm" }).click();
   await expect(page.getByText("viewer@example.com")).toHaveCount(0);
   const dashboard = await (await viewerApi.get("/api/dashboard")).json();

@@ -9,7 +9,7 @@ import type {
   AuditPage,
   AuthStatus,
   BackupStatus,
-  MembersView,
+  MemberRow,
   Onboarding,
   AdminJobs,
   AdminOverview,
@@ -490,8 +490,13 @@ export function useAccountActivity() {
   });
 }
 
-export function useMembers() {
-  return useQuery({ queryKey: keys.members, queryFn: () => api<MembersView>("workspace/members") });
+/** Settings → Members: one page of members and pending invitations, searched and filtered on the server. */
+export function useMemberPage(filters: AdminFilters) {
+  return useQuery({
+    queryKey: [...keys.members, "page", filters],
+    queryFn: () => adminPage<Page<MemberRow>>("workspace/members/page", filters),
+    placeholderData: (previous) => previous,
+  });
 }
 
 export function useOnboarding(enabled: boolean) {

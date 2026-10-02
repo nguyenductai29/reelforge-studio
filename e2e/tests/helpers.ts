@@ -75,6 +75,12 @@ export async function adminApi(): Promise<APIRequestContext> {
   return admin;
 }
 
+/** The browser joins that one administrator session instead of signing in again. */
+export async function asAdmin(page: Page) {
+  const { cookies } = await (await adminApi()).storageState();
+  await page.context().addCookies(cookies);
+}
+
 /** Point transactional email at the local SMTP sink (tests/smtp_sink.py on port 2526). */
 export async function enableEmail(admin: APIRequestContext) {
   const response = await admin.put("/api/admin/system-config/email", {

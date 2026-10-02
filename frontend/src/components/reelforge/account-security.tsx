@@ -359,8 +359,8 @@ export function AccountSecurityPanel() {
         {activity.isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> :
           activity.isError ? <p className="text-sm text-destructive">{errorText(activity.error, t)}</p> :
           activity.data.length === 0 ? <p className="text-sm text-muted-foreground">{a.activity.empty}</p> : (
-            <ul className="max-h-72 space-y-2 overflow-y-auto pr-1 text-sm scrollbar-thin focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" tabIndex={0}
-                aria-label={a.activity.title}>
+            // No scrolling box of its own: the Security tab already scrolls, and one scrollbar is enough.
+            <ul className="space-y-2 text-sm" aria-label={a.activity.title}>
               {activity.data.map((item, index) => (
                 <li key={`${item.at}-${index}`} className="flex items-start justify-between gap-3">
                   <span className="min-w-0">

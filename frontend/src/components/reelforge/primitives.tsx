@@ -90,12 +90,18 @@ export function StatusBadge({ status, label, className }: { status: string; labe
   );
 }
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
+/** ``compact``: the size of the admin console's header, for pages that fit the window (Settings). */
+export function PageHeader({ title, subtitle, actions, compact = false }: {
+  title: string;
+  subtitle?: string;
+  actions?: ReactNode;
+  compact?: boolean;
+}) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div className="max-w-2xl">
-        <h1 className="text-2xl font-semibold sm:text-3xl">{title}</h1>
-        {subtitle && <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p>}
+        <h1 className={compact ? "text-xl font-semibold" : "text-2xl font-semibold sm:text-3xl"}>{title}</h1>
+        {subtitle && <p className={compact ? "mt-0.5 text-xs text-muted-foreground" : "mt-2 text-sm text-muted-foreground"}>{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
     </div>

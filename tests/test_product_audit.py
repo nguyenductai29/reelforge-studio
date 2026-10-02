@@ -197,7 +197,15 @@ class Phase18FrontendTest(unittest.TestCase):
 
     def test_admin_keeps_its_fixed_height_with_support_and_verification_tabs(self):
         admin = source("app/admin/page.tsx")
-        self.assertIn("h-[calc(100dvh-6.5rem)] min-h-0 flex-col gap-3 overflow-hidden", admin)
+        # One height rule, in the shell, for Admin and Settings: the page fills it and computes none of its own.
+        shell = source("components/reelforge/app-shell.tsx")
+        self.assertIn('const FIT_TO_VIEWPORT = ["/admin", "/settings"];', shell)
+        self.assertIn('fitted && "scrollbar-thin flex h-[calc(100dvh-3.5rem)] min-h-0 flex-col overflow-y-auto '
+                      'overflow-x-hidden"', shell)
+        self.assertIn('{fitted ? <div className="flex min-h-[24rem] flex-1 flex-col">{children}</div> : children}', shell)
+        self.assertIn('<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">', admin)
+        for page in (admin, source("app/settings/page.tsx")):
+            self.assertNotIn("100dvh", page)
         self.assertIn('"support", "reconciliation", "operations", "verification"', admin)
         for tab in ("support", "verification"):
             with self.subTest(tab=tab):
