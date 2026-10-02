@@ -30,6 +30,7 @@ import type {
   ChannelStatus,
   Dashboard,
   DefaultModels,
+  HomeSummary,
   Order,
   Page,
   NodeCatalog,
@@ -60,6 +61,7 @@ const POLL_MS = 5000;
 
 export const keys = {
   dashboard: ["dashboard"] as const,
+  home: ["home"] as const,
   notifications: ["notifications"] as const,
   unread: ["notifications", "unread"] as const,
   support: ["support"] as const,
@@ -119,6 +121,15 @@ export function useDashboard() {
         ...data,
         storage: data.storage ? withStorageLevel(data.storage) : undefined,
       })),
+  });
+}
+
+/** Home (the user dashboard) in one request; refreshed every few seconds while a run is generating. */
+export function useHome() {
+  return useQuery({
+    queryKey: keys.home,
+    queryFn: () => api<HomeSummary>("home"),
+    refetchInterval: (query) => ((query.state.data?.overview.runs_active ?? 0) > 0 ? 2 * POLL_MS : false),
   });
 }
 
@@ -393,6 +404,7 @@ export function useRefreshStudio() {
       client.invalidateQueries({ queryKey: ["run"] }),
       client.invalidateQueries({ queryKey: ["readiness"] }),
       client.invalidateQueries({ queryKey: keys.usage }),
+      client.invalidateQueries({ queryKey: keys.home }),
     ]);
 }
 

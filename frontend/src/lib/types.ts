@@ -899,3 +899,70 @@ export type BackupStatus = {
 /** Phase 26: the first-steps checklist. */
 export type OnboardingStep = { key: "project" | "channel" | "template" | "generate" | "review" | "publish"; done: boolean };
 export type Onboarding = { steps: OnboardingStep[]; complete: boolean; role: Role };
+
+/** Home, the user dashboard (GET /api/home): the active studio's overview, what waits for the member, recent work,
+ *  AI usage and publishing, over the last ``period_days`` days. */
+export type HomeRunItem = { count: number; run_id: string; workflow_id: string };
+export type HomeAttention =
+  | { kind: "plan_inactive"; severity: "warning"; status: string }
+  | ({ kind: "review" | "failed_runs" | "blocked_runs"; severity: "warning" } & HomeRunItem)
+  | ({ kind: "reconciliation" | "generating"; severity: "info" } & HomeRunItem)
+  | { kind: "publish_failed"; severity: "warning"; count: number }
+  | { kind: "channel_reconnect"; severity: "warning"; channel: ChannelId; scheduled: number }
+  | { kind: "credits_low"; severity: "warning"; balance: number; threshold: number }
+  | { kind: "storage"; severity: "warning"; level: StorageLevel; percent: number }
+  | { kind: "support_reply"; severity: "warning"; count: number; ticket_id: string };
+export type HomeRun = {
+  id: string;
+  workflow_id: string;
+  workflow_name: string | null;
+  project_id: string;
+  project_title: string | null;
+  status: RunStatus;
+  created_at: string;
+  finished_at: string | null;
+};
+export type HomeProject = {
+  id: string;
+  title: string;
+  topic: string;
+  created_at: string | null;
+  last_activity_at: string | null;
+  status: "draft" | "generating" | "review" | "ready" | "published";
+  videos: number;
+  channels: ChannelId[];
+  cover_asset_id: string | null;
+};
+export type UsageTask = "text" | "image" | "video" | "voice" | "transcription" | "render" | "other";
+export type HomeSummary = {
+  period_days: number;
+  overview: {
+    credits: number;
+    credits_monthly: number | null;
+    credits_low_threshold: number;
+    projects: number;
+    projects_limit: number | null;
+    runs_30d: number;
+    runs_active: number;
+    published_30d: number;
+    storage_used_bytes: number;
+    storage_quota_bytes: number;
+    storage_percent: number;
+    storage_level: StorageLevel;
+  };
+  attention: HomeAttention[];
+  recent_workflows: {
+    id: string;
+    name: string;
+    last_run: Pick<HomeRun, "id" | "status" | "project_id" | "project_title" | "created_at" | "finished_at"> | null;
+  }[];
+  recent_projects: HomeProject[];
+  recent_runs: HomeRun[];
+  usage: { credits_used: number; by_task: { task: UsageTask; credits: number; events: number }[] };
+  publishing: {
+    channels: { channel: ChannelId; status: ChannelStatus["status"]; published: number; scheduled: number; failed: number }[];
+    published: number;
+    scheduled: number;
+    failed: number;
+  };
+};

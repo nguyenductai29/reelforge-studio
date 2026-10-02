@@ -28,8 +28,8 @@ from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import Notification, PaymentOrderEvent, SupportMessage, SupportTicket, UserProfile, VerificationCheck
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
 from app.models import AccountToken, WorkspaceInvite
-from app import (accounts, audit, auth_security, bank_qr, billing, client_ip, config_checks, heartbeat, jobs, mailer,
-                 master_key, media_maintenance, notifications, payment_config, payment_providers, payments,
+from app import (accounts, audit, auth_security, bank_qr, billing, client_ip, config_checks, heartbeat, home, jobs,
+                 mailer, master_key, media_maintenance, notifications, payment_config, payment_providers, payments,
                  permissions, publications, ratelimit, readiness, reconciliation, run_summary, secret_box, sources,
                  storage, support, system_config, team, usage)
 from app import alerts, backup, email_templates, health, http_security, metrics, passwords, request_context
@@ -1592,6 +1592,18 @@ def dashboard(request: Request):
                             "email_delivery": mailer.enabled()},
                 "user": {"email": user.email}, "is_admin": user.is_admin, "projects": [public_project(p) for p in projects], "assets": [{"id": a.id, "filename": a.filename, "bytes": a.bytes, "content_type": a.content_type, "project_id": a.project_id, "run_id": a.run_id, "created_at": a.created_at.isoformat() if a.created_at else None} for a in assets], "workflows": [{"id": w.id, "name": w.name, "graph": workflow_graph(w.definition)} for w in workflows], "limits": {"projects": plan.project_limit if plan else None, "workflows": plan.workflow_limit if plan else None},
                 "storage": storage.usage(db, ws.id)}
+
+
+@app.get("/api/home")
+def home_summary(request: Request):
+    """Home, the user dashboard, in one request: the active studio's overview, what waits for the member, recent
+    workflows, projects and runs, AI usage and publishing; all as the member's role allows (app/home.py)."""
+    with Session() as db:
+        user, membership, ws = member_context(request, db)
+        subscription = db.get(Subscription, ws.id)
+        return home.summary(db, workspace_id=ws.id, user_id=user.id, role=membership.role,
+                            subscription_status=effective_status(subscription) if subscription else "unavailable",
+                            channels=channel_statuses(db, ws.id))
 
 
 @app.get("/api/settings")
