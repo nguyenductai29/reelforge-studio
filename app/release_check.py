@@ -739,7 +739,7 @@ def _origin_checks(db, expect_origin: str | None) -> list[Check]:
     origin = stored("frontend_origin")
     if origin is None:
         checks.append(Check(area, "public origin", WARN, "not stored yet: the API stores "
-                            "https://studio.imokome-cloud.com when it starts"))
+                            "https://reelforge.mul-service.com when it starts"))
     else:
         origin = str(origin).rstrip("/")
         host = (urlsplit(origin).hostname or "").lower()

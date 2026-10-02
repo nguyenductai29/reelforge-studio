@@ -3,7 +3,7 @@
 #
 #   bash deploy/release-preflight.sh                        # human-readable
 #   bash deploy/release-preflight.sh --json                 # machine-readable
-#   bash deploy/release-preflight.sh --expect-commit 08f1eef9 --expect-origin https://studio.imokome-cloud.com
+#   bash deploy/release-preflight.sh --expect-commit 08f1eef9 --expect-origin https://reelforge.mul-service.com
 #
 # Source, database and migration head, master key, services and timers, ports (127.0.0.1 only), /health,
 # media root, backups, FFmpeg, system configuration and administrators: each PASS, WARN, FAIL or MANUAL.

@@ -73,7 +73,7 @@ test accounts) for anything that creates data. Record each gate right after chec
 | --- | --- |
 | `release_ci_green` | On the server: `git rev-parse HEAD`. On GitHub → Actions, the run **for that exact commit**: every job green (backend on Python 3.11 and 3.14 with SQLite, backend on PostgreSQL, migrations up/down/up with `alembic check`, frontend on Node 20 and 22, Playwright). `bash deploy/release-report.sh` reads the same result from GitHub. Note the run URL. A green run on a development machine, or on another commit, does not count |
 | `release_deploy` | `./deploy.sh` on the release commit ends with "ReelForge deployment completed OK" and lists every service as active. Note the commit |
-| `release_preflight` | `bash deploy/release-preflight.sh --expect-commit <commit> --expect-origin https://studio.imokome-cloud.com`: no FAIL. Note the WARN lines you accept |
+| `release_preflight` | `bash deploy/release-preflight.sh --expect-commit <commit> --expect-origin https://reelforge.mul-service.com`: no FAIL. Note the WARN lines you accept |
 
 ### Platform
 
@@ -166,14 +166,14 @@ note).
 ### Cloudflare and security
 
 From a machine outside the home network (for example a phone on mobile data), through
-`https://studio.imokome-cloud.com`.
+`https://reelforge.mul-service.com`.
 
 | Gate | Steps |
 | --- | --- |
-| `security_headers` | The site opens over HTTPS. `curl -sI https://studio.imokome-cloud.com/ \| grep -iE 'strict-transport-security\|content-security-policy\|x-content-type-options\|referrer-policy'`: HSTS, a CSP with `frame-ancestors 'none'`, `nosniff`, a Referrer-Policy. After signing in, the browser's devtools → Cookies: `rf_session` is `HttpOnly`, `Secure`, `SameSite=Strict` |
-| `security_foreign_origin` | `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://studio.imokome-cloud.com/api/login -H 'Origin: https://attacker.example' -H 'Content-Type: application/json' -d '{"email":"nobody@example.com","password":"x"}'` prints `403` |
+| `security_headers` | The site opens over HTTPS. `curl -sI https://reelforge.mul-service.com/ \| grep -iE 'strict-transport-security\|content-security-policy\|x-content-type-options\|referrer-policy'`: HSTS, a CSP with `frame-ancestors 'none'`, `nosniff`, a Referrer-Policy. After signing in, the browser's devtools → Cookies: `rf_session` is `HttpOnly`, `Secure`, `SameSite=Strict` |
+| `security_foreign_origin` | `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://reelforge.mul-service.com/api/login -H 'Origin: https://attacker.example' -H 'Content-Type: application/json' -d '{"email":"nobody@example.com","password":"x"}'` prints `403` |
 | `security_client_ip` | Sign in through the tunnel; Admin → Audit log shows that sign-in with your real public address (compare with an "what is my IP" page), not `127.0.0.1`. The log shows no password, token or key |
-| `security_spoofed_headers` | `curl -s -X POST https://studio.imokome-cloud.com/api/login -H 'Origin: https://studio.imokome-cloud.com' -H 'CF-Connecting-IP: 203.0.113.9' -H 'X-Forwarded-For: 203.0.113.9' -H 'Content-Type: application/json' -d '{"email":"<test account>","password":"wrong-password-1"}'`: the audit log's failed sign-in shows your real address, never `203.0.113.9` |
+| `security_spoofed_headers` | `curl -s -X POST https://reelforge.mul-service.com/api/login -H 'Origin: https://reelforge.mul-service.com' -H 'CF-Connecting-IP: 203.0.113.9' -H 'X-Forwarded-For: 203.0.113.9' -H 'Content-Type: application/json' -d '{"email":"<test account>","password":"wrong-password-1"}'`: the audit log's failed sign-in shows your real address, never `203.0.113.9` |
 | `security_two_factor` | Every system administrator has 2FA on, with the recovery codes stored off the server (the pre-flight warns otherwise). Sign in with a code, then once with a recovery code: it works once ([SECURITY.md](SECURITY.md)) |
 | `security_sessions` | Sign a second browser out from Cài đặt → Bảo mật: its next request is refused |
 | `security_rate_limit` | Repeated wrong passwords on a test account end in "too many attempts" (429) and the lockout email arrives. An address with no account gets the same answer as a wrong password |

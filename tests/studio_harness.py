@@ -16,7 +16,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 # TestClient talks plain HTTP to http://testserver, where a Secure session cookie is never sent back. The
 # disposable app therefore runs as a development machine does: its instance/bootstrap.json overrides the
-# production origin (https://studio.imokome-cloud.com, Secure cookies) with http://localhost:3000.
+# production origin (https://reelforge.mul-service.com, Secure cookies) with http://localhost:3000.
 LOCAL_DEVELOPMENT = {"frontend_origin": "http://localhost:3000", "secure_cookies": False}
 
 PRELUDE = r'''

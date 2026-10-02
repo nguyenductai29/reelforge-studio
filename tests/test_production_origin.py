@@ -1,4 +1,4 @@
-"""The production origin is the default: https://studio.imokome-cloud.com with Secure cookies.
+"""The production origin is the default: https://reelforge.mul-service.com with Secure cookies.
 
 * a new installation stores the HTTPS origin and ``secure_cookies = true``;
 * migration 0021 moves an installation still on the exact old localhost defaults, and keeps
@@ -22,7 +22,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PRODUCTION = "https://studio.imokome-cloud.com"
+PRODUCTION = "https://reelforge.mul-service.com"
 DEVELOPMENT = {"frontend_origin": "http://localhost:3000", "secure_cookies": False}
 
 
@@ -65,7 +65,7 @@ if engine.dialect.name != "sqlite":
     command.downgrade(config, "base")
 BEFORE = "0020_manual_payment_statuses"
 command.upgrade(config, BEFORE)
-OLD, NEW = "http://localhost:3000", "https://studio.imokome-cloud.com"
+OLD, NEW = "http://localhost:3000", "https://reelforge.mul-service.com"
 OTHERS = {"storage_dir": "instance/media", "trial_project_limit": 2, "registration_enabled": True}
 
 def store(values):
@@ -151,7 +151,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 config = Config("alembic.ini")
-PROD = "https://studio.imokome-cloud.com"
+PROD = "https://reelforge.mul-service.com"
 if UPGRADE:
     # An installation from before 0021, still on the old defaults the API stored when it first started.
     command.upgrade(config, "0020_manual_payment_statuses")
@@ -193,7 +193,7 @@ assert client.get("/api/dashboard").status_code == 200
 
 # Foreign origins are refused before the credentials are looked at, and get no cookie.
 stranger = TestClient(main.app, base_url="https://testserver")
-for origin in ("https://evil.example.com", "http://studio.imokome-cloud.com", "https://studio.imokome-cloud.com.evil.example.com",
+for origin in ("https://evil.example.com", "http://studio.imokome-cloud.com", "https://reelforge.mul-service.com.evil.example.com",
                "https://evil.studio.imokome-cloud.com", "http://localhost:3000", "null"):
     response = stranger.post("/api/login", json=OWNER, headers={"Origin": origin})
     assert response.status_code == 403 and response.json()["detail"] == "Invalid origin", (origin, response.text)
@@ -239,7 +239,7 @@ import app.main as main
 from app import system_config
 from app.db import Session
 system_config.activate()
-PROD, DEV = "https://studio.imokome-cloud.com", "http://localhost:3000"
+PROD, DEV = "https://reelforge.mul-service.com", "http://localhost:3000"
 
 # The override applies to this machine; the database keeps the public defaults for the others.
 assert main.LOCAL == {"frontend_origin": DEV, "secure_cookies": False}, main.LOCAL

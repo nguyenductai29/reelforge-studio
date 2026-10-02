@@ -1692,7 +1692,7 @@ Phase 16 resolved U1–U5: each control was implemented or removed, and no "Sắ
 ### R3. Defaults are unsafe for Internet exposure
 
 - ~~`secure_cookies` defaults to `false`; `frontend_origin` defaults to `http://localhost:3000`.~~ **Resolved (migration `0021_default_production_origin`):**
-  - The defaults are now `https://studio.imokome-cloud.com` with the `Secure` flag.
+  - The defaults are now `https://reelforge.mul-service.com` with the `Secure` flag.
   - Installations still on the old defaults were moved.
   - Development machines override the origin in their own `instance/bootstrap.json` (`docs/SYSTEM_CONFIGURATION.md`, "The public origin").
 - ~~A mutating request without an `Origin` header is accepted.~~ **Resolved (Phase 24):** a request carrying the session cookie must send a matching `Origin` or `Referer`.

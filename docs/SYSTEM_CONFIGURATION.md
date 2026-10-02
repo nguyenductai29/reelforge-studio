@@ -25,7 +25,7 @@ Everything else is configured by a system admin in the web UI and stored in Post
 **Topology.** Only the public origin is HTTPS:
 
 ```text
-browser ── https://studio.imokome-cloud.com ── Cloudflare Tunnel
+browser ── https://reelforge.mul-service.com ── Cloudflare Tunnel
         ── http://127.0.0.1:3001  Next.js (private; proxies /api/*)
         ── http://127.0.0.1:8000  FastAPI (private)
 ```
@@ -34,7 +34,7 @@ browser ── https://studio.imokome-cloud.com ── Cloudflare Tunnel
 
 | Setting | Default |
 | --- | --- |
-| `frontend_origin` | `https://studio.imokome-cloud.com` |
+| `frontend_origin` | `https://reelforge.mul-service.com` |
 | `secure_cookies` | `true` |
 
 Both stay editable. Secure cookies need an `https://` origin.
@@ -50,7 +50,7 @@ Both stay editable. Secure cookies need an `https://` origin.
 **Upgrading.** Migration `0021_default_production_origin` replaces the **exact** old defaults only.
 
 - If `frontend_origin` is exactly `"http://localhost:3000"`:
-  - it becomes `https://studio.imokome-cloud.com`;
+  - it becomes `https://reelforge.mul-service.com`;
   - `secure_cookies` becomes `true` if it was `false`.
 - Any other origin keeps both values, including:
   - another domain or port;

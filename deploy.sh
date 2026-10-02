@@ -2,7 +2,7 @@
 # Deploy the current branch on the home server.
 #
 # Production needs only instance/bootstrap.json (database URL) and /etc/reelforge/master.key.
-# The public origin is https://studio.imokome-cloud.com (System Settings; Cloudflare Tunnel -> 127.0.0.1:3001);
+# The public origin is https://reelforge.mul-service.com (System Settings; Cloudflare Tunnel -> 127.0.0.1:3001);
 # the frontend (127.0.0.1:3001) and the API (127.0.0.1:8000) stay private.
 # Everything else is configured in Admin -> System settings / Payments and read from PostgreSQL;
 # /etc/reelforge/runtime.env is an optional legacy fallback. See docs/PRODUCTION_BOOTSTRAP.md.
@@ -35,7 +35,7 @@ fi
 if [ -f instance/bootstrap.json ] && python -c 'import json, sys
 sys.exit(0 if {"frontend_origin", "secure_cookies"} & set(json.load(open("instance/bootstrap.json"))) else 1)'; then
   echo "STOP: instance/bootstrap.json sets frontend_origin or secure_cookies (a development override)." >&2
-  echo "Production takes them from Admin -> System Settings -> General (https://studio.imokome-cloud.com," >&2
+  echo "Production takes them from Admin -> System Settings -> General (https://reelforge.mul-service.com," >&2
   echo "secure cookies on). Remove those keys from instance/bootstrap.json, then run ./deploy.sh again." >&2
   exit 1
 fi

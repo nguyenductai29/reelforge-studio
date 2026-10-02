@@ -12,11 +12,11 @@ Everything else is configured in the web UI and stored in PostgreSQL, with secre
 - **Quản trị → Cài đặt hệ thống:** AI keys, OAuth apps, storage, email, security (trusted proxy), backups, runtime, credits, notifications.
 - **Quản trị → Thanh toán → Cổng thanh toán:** VietQR, cards.
 
-**The public origin is `https://studio.imokome-cloud.com`, and only it is HTTPS.**
+**The public origin is `https://reelforge.mul-service.com`, and only it is HTTPS.**
 
 | Service | Address | Reachable from |
 | --- | --- | --- |
-| Public origin | `https://studio.imokome-cloud.com` | The internet, through the Cloudflare Tunnel |
+| Public origin | `https://reelforge.mul-service.com` | The internet, through the Cloudflare Tunnel |
 | Frontend service (Next.js) | `http://127.0.0.1:3001` | This server only |
 | API (FastAPI) | `http://127.0.0.1:8000` | This server only; Next.js proxies `/api/*` |
 
@@ -131,7 +131,7 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    1. Sign in as the administrator and accept the Terms and Privacy Policy (the banner). Then turn on two-factor
       authentication (**Cài đặt → Bảo mật**) and store its recovery codes off the server.
    2. In **Cài đặt hệ thống**:
-      - **Chung:** check the public frontend origin, `https://studio.imokome-cloud.com`, with secure cookies on (the defaults). Change it only for another hostname.
+      - **Chung:** check the public frontend origin, `https://reelforge.mul-service.com`, with secure cookies on (the defaults). Change it only for another hostname.
       - **Email:** SMTP or Resend, the sender address; press **Gửi email thử** ([EMAIL.md](EMAIL.md)). Until email works,
         "Forgot password" is hidden and invitations show a link to copy instead.
       - **Bảo mật:** the trusted proxies (`127.0.0.1`/`::1`, the default) and the client address header
@@ -188,7 +188,7 @@ success. After a successful deploy, `bash deploy/release-preflight.sh` checks th
 
 Configuration changes never need a deploy: save them in the admin UI.
 
-Migration `0021_default_production_origin` moves an installation still on the old defaults (`http://localhost:3000`, cookies not Secure) to `https://studio.imokome-cloud.com` with Secure cookies. It keeps any other value an admin saved.
+Migration `0021_default_production_origin` moves an installation still on the old defaults (`http://localhost:3000`, cookies not Secure) to `https://reelforge.mul-service.com` with Secure cookies. It keeps any other value an admin saved.
 
 ## Backups
 

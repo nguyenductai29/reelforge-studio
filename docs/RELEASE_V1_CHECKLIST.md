@@ -50,7 +50,7 @@ a green CI run on the deployed commit passes `release_ci_green`.
 | # | Gate | How | Recorded as |
 | --- | --- | --- | --- |
 | B1 | `instance/bootstrap.json` holds only `database_url`, chmod 600; no `frontend_origin` / `secure_cookies` | Pre-flight, SYSTEM CONFIG | `preflight` |
-| B2 | Public origin `https://studio.imokome-cloud.com`, Secure cookies on (Admin → System settings → General) | Pre-flight, SYSTEM CONFIG (`--expect-origin`) | `preflight` |
+| B2 | Public origin `https://reelforge.mul-service.com`, Secure cookies on (Admin → System settings → General) | Pre-flight, SYSTEM CONFIG (`--expect-origin`) | `preflight` |
 | B3 | The API listens on `127.0.0.1:8000` and Next.js on `127.0.0.1:3001` only | Pre-flight, PORTS (`ss -ltn`) | `preflight` |
 | B4 | Cloudflare Tunnel `studio.imokome-cloud.com` → `http://127.0.0.1:3001`; the site opens over HTTPS | A browser, then `curl -sI` | `security_headers` |
 | B5 | The first administrator was created on the server (`npm run create-admin`); setup is closed; an active system administrator exists | Pre-flight, SECURITY | `preflight` |

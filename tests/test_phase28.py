@@ -593,7 +593,7 @@ assert runtime_file.status == WARN and "RUNWARE_API_KEY" in runtime_file.detail,
 assert "EMPTY" not in runtime_file.detail and "REELFORGE_LOG_LEVEL" not in runtime_file.detail
 assert "REPLICATE_API_TOKEN" in first[("SYSTEM CONFIG", "legacy values: system-runtime.env")].detail
 assert first[("SYSTEM CONFIG", "public origin")].status == PASS
-assert first[("SYSTEM CONFIG", "public origin")].detail == "https://studio.imokome-cloud.com"
+assert first[("SYSTEM CONFIG", "public origin")].detail == "https://reelforge.mul-service.com"
 assert first[("SYSTEM CONFIG", "secure cookies")].status == PASS
 assert first[("SYSTEM CONFIG", "trusted proxies")].status == PASS
 assert first[("SECURITY", "first-run setup")].status == PASS and first[("SECURITY", "active administrator")].status == PASS

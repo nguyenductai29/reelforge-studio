@@ -49,7 +49,7 @@ def database_url() -> URL:
 # origin, e.g. http://localhost:3000, possibly against a shared database. instance/bootstrap.json may then say so:
 #   {"database_url": "…", "frontend_origin": "http://localhost:3000", "secure_cookies": false}
 # These keys apply to the processes on this machine only. They never reach the database, where System
-# Settings keep the public origin (https://studio.imokome-cloud.com by default) for every other machine.
+# Settings keep the public origin (https://reelforge.mul-service.com by default) for every other machine.
 LOCAL_SETTINGS = ("frontend_origin", "secure_cookies")
 
 

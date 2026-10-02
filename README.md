@@ -14,7 +14,7 @@ Requires Python 3.11+, Node.js 20.9+ and an existing PostgreSQL database. Create
    {"database_url": "…", "frontend_origin": "http://localhost:3000", "secure_cookies": false}
    ```
 
-   The default frontend origin is the production one, `https://studio.imokome-cloud.com`, with Secure cookies.
+   The default frontend origin is the production one, `https://reelforge.mul-service.com`, with Secure cookies.
    - Without these two keys, sign-in from `http://localhost:3000` is refused (the origin does not match), and a Secure cookie is not kept over plain HTTP.
    - They apply to this machine only and are never written to the database. A development machine that shares the production database therefore leaves the public settings alone.
    - Never put them on the production server: `deploy.sh` stops if it finds them.
@@ -112,7 +112,7 @@ Secrets are write-only and encrypted at rest with the master key (`/etc/reelforg
 "payos": {"client_id": "YOUR_CLIENT_ID", "api_key": "YOUR_API_KEY", "checksum_key": "YOUR_CHECKSUM_KEY"}
 ```
 
-Put that `payos` property alongside `database_url` inside the same JSON object. Keep the real keys only on the backend server. Never commit `instance/bootstrap.json`. Configure a public HTTPS endpoint for the backend at `/api/webhooks/payos` in your payOS channel; localhost cannot receive live webhooks. `frontend_origin` (System Settings) is `https://studio.imokome-cloud.com` with secure cookies by default; change it there if your public URL differs. Verify the callback configuration with payOS before accepting customers.
+Put that `payos` property alongside `database_url` inside the same JSON object. Keep the real keys only on the backend server. Never commit `instance/bootstrap.json`. Configure a public HTTPS endpoint for the backend at `/api/webhooks/payos` in your payOS channel; localhost cannot receive live webhooks. `frontend_origin` (System Settings) is `https://reelforge.mul-service.com` with secure cookies by default; change it there if your public URL differs. Verify the callback configuration with payOS before accepting customers.
 
 The workspace owner can select a higher priced plan under **Gói & credits**. The server freezes the VND price in a payment order, requests a payOS hosted link, and updates the subscription for 30 days only after validating the signed webhook and matching its amount. Repeated callbacks do not extend the subscription again. A return to the website is informational, not proof of payment. Admin changes to a subscription remain manual and bypass checkout; account for them separately. Crypto payments are not enabled.
 
@@ -134,9 +134,9 @@ The database URL and Next.js-to-API address are deployment bootstrap details and
 
 **Production origin.**
 
-- Only the public origin is HTTPS: `https://studio.imokome-cloud.com`, through the Cloudflare Tunnel.
+- Only the public origin is HTTPS: `https://reelforge.mul-service.com`, through the Cloudflare Tunnel.
 - The frontend service stays private at `http://127.0.0.1:3001`, and the API at `http://127.0.0.1:8000`. Keep PostgreSQL private too.
-- A new installation stores `frontend_origin = https://studio.imokome-cloud.com` and `secure_cookies = true` (Quản trị → Cài đặt hệ thống → Chung; both stay editable).
+- A new installation stores `frontend_origin = https://reelforge.mul-service.com` and `secure_cookies = true` (Quản trị → Cài đặt hệ thống → Chung; both stay editable).
   - Migration `0021_default_production_origin` moves an installation still on the exact old defaults (`http://localhost:3000`, cookies not Secure).
   - It keeps any other value an admin saved.
 - Apply matching request-body and rate limits at the reverse proxy.
