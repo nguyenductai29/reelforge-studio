@@ -101,7 +101,7 @@ Phase 18 adds two tabs. All eight tabs (Người dùng, Studio & credits, Cấu 
 | `GET /api/admin/support`, `/support/{id}` | `q` (ticket ID prefix, subject, email, studio), `status`, `category`, `priority` | **Hỗ trợ** tab. `POST …/{id}/messages` replies; `PATCH …/{id}` sets status or priority. See [SUPPORT.md](SUPPORT.md) |
 | `GET /api/admin/payment-config`, `PUT …/{provider}`, `POST …/{provider}/check\|enable\|disable` | — | Thanh toán → **Cổng thanh toán** (Phase 19). Configure VietQR and cards without SSH or restarts. Secrets are write-only and encrypted at rest; every change is audited. See [PAYMENTS.md](PAYMENTS.md#configuration-phase-19-admin-managed) |
 | `GET /api/admin/readiness` | — | **Kiểm định** tab: safe local checks of the database, storage, FFmpeg, workers, AI keys, publishing, payments, realtime and support |
-| `GET /api/admin/verification`, `PUT …/{key}` | — | The manual live-verification checklist, ticked only by an admin. See [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) |
+| `GET /api/admin/verification`, `PUT …/{key}` | — | The release gates: a status (passed, failed, not applicable, not checked) recorded only by an admin. See [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) |
 
 `GET /api/admin` adds `counts.support_open`: tickets waiting for support, shown in the summary row.
 

@@ -28,6 +28,33 @@ test("every administration tab opens without an error", async ({ page }) => {
   await expect(page.getByRole("tabpanel").getByText("admin@example.com")).toHaveCount(0);
 });
 
+test("release gates: an administrator records each status, with who and when; nothing is set by itself", async ({ page }) => {
+  await adminApi();
+  await signIn(page, ADMIN.email, ADMIN.password);
+  await page.goto("/admin");
+  await page.getByRole("tab", { name: "Verification" }).click();
+  const panel = page.getByRole("tabpanel");
+  await expect(panel.getByText(/^0 passed · 0 failed · 0 not applicable · \d+ not checked/)).toBeVisible();
+
+  // A required gate offers no "Not applicable".
+  await panel.getByRole("combobox", { name: "Status: Test email received" }).click();
+  await expect(page.getByRole("option", { name: "Not applicable" })).toHaveCount(0);
+  await page.getByRole("option", { name: "Failed" }).click();
+  await expect(panel.getByText(`Failed · Recorded by ${ADMIN.email}`)).toBeVisible();
+  await expect(panel.getByText(/^0 passed · 1 failed/)).toBeVisible();
+
+  // An optional provider may be not applicable.
+  await panel.getByRole("combobox", { name: "Status: TikTok upload (inbox)" }).click();
+  await page.getByRole("option", { name: "Not applicable" }).click();
+  await expect(panel.getByText(/^0 passed · 1 failed · 1 not applicable/)).toBeVisible();
+
+  // Back to "Not checked": who and when are cleared, and the gate is open again.
+  await panel.getByRole("combobox", { name: "Status: Test email received" }).click();
+  await page.getByRole("option", { name: "Not checked" }).click();
+  await expect(panel.getByText(/^0 passed · 0 failed · 1 not applicable/)).toBeVisible();
+  await expect(panel.getByText(`Failed · Recorded by ${ADMIN.email}`)).toHaveCount(0);
+});
+
 test("a member who is not a system administrator gets no admin data", async ({ page }) => {
   const member = await registerApi("not-admin@example.com", "not-admin-password", "Member Studio");
   expect((await member.get("/api/admin/users")).status()).toBe(403);

@@ -2953,8 +2953,22 @@ def check_storage_root(data: StorageCheckInput, request: Request):
 # --- Phase 18D: readiness and the manual live-verification checklist (system admins only) ----------------
 
 class VerificationInput(BaseModel):
-    verified: bool
+    # Migration 0025: one of four statuses. ``verified`` is the older form (true: passed, false: not checked).
+    status: Literal["passed", "failed", "not_applicable", "not_checked"] | None = None
+    verified: bool | None = None
     note: str | None = Field(default=None, max_length=1000)
+
+
+def _verification_item(key, group, paid, how, row, emails):
+    """One checklist item as an admin recorded it; ``verified*`` repeat the passed state for older clients."""
+    status = (row.status if row else None) or "not_checked"
+    recorded_at = _iso_or_none(row.verified_at) if row and row.status else None
+    recorded_by = emails.get(row.verified_by_user_id) if row and row.status else None
+    return {"key": key, "group": group, "paid": paid, "optional": key in readiness.OPTIONAL, "how": how,
+            "status": status, "recorded_at": recorded_at, "recorded_by": recorded_by,
+            "note": row.note if row else None, "verified": status == "passed",
+            "verified_at": recorded_at if status == "passed" else None,
+            "verified_by": recorded_by if status == "passed" else None}
 
 
 @app.get("/api/admin/readiness")
@@ -2972,32 +2986,43 @@ def admin_verification(request: Request):
         rows = {row.key: row for row in db.scalars(select(VerificationCheck))}
         emails = dict(db.execute(select(User.id, User.email).where(
             User.id.in_([row.verified_by_user_id for row in rows.values() if row.verified_by_user_id]))).all())
-        return {"items": [{"key": key, "group": group, "paid": paid, "how": how,
-                           "verified": bool(rows.get(key) and rows[key].verified_at),
-                           "verified_at": _iso_or_none(rows[key].verified_at) if key in rows else None,
-                           "verified_by": emails.get(rows[key].verified_by_user_id) if key in rows else None,
-                           "note": rows[key].note if key in rows else None}
-                          for key, group, paid, how in readiness.CHECKLIST]}
+        items = [_verification_item(key, group, paid, how, rows.get(key), emails)
+                 for key, group, paid, how in readiness.CHECKLIST]
+        summary = readiness.checklist_summary({item["key"]: item["status"] for item in items})
+        return {"items": items, "summary": summary}
 
 
 @app.put("/api/admin/verification/{key}")
 def update_verification(key: str, data: VerificationInput, request: Request):
-    """Record (or clear) a manual check; it is never marked verified by the server itself."""
+    """Record a manual check's status (or clear it); the server never sets one by itself."""
     same_origin(request)
     if key not in readiness.CHECKLIST_KEYS:
         raise HTTPException(404, "Unknown check")
+    status = data.status or ({True: "passed", False: "not_checked"}[data.verified] if data.verified is not None else None)
+    if status is None:
+        raise HTTPException(422, "Choose a status")
+    if status == "not_applicable" and key not in readiness.OPTIONAL:
+        raise HTTPException(422, "This check is required for the release; it cannot be not applicable")
+    stored = None if status == "not_checked" else status
     with Session.begin() as db:
         admin = admin_for(request, db)
         now = datetime.now(timezone.utc)
         row = db.get(VerificationCheck, key) or VerificationCheck(key=key, updated_at=now)
-        row.verified_at, row.verified_by_user_id = (now, admin.id) if data.verified else (None, None)
+        previous = row.status
+        # Who recorded the current status, and when: kept while only the note changes.
+        if stored != previous or (stored and not row.verified_at):
+            row.status = stored
+            row.verified_at, row.verified_by_user_id = (now, admin.id) if stored else (None, None)
         row.note = (data.note or "").strip() or None
         row.updated_at = now
         db.add(row)
         audit.record(db, "admin.verification_updated", actor_id=admin.id, target_type="check", target_id=key,
-                     details={"verified": data.verified})
-        return {"key": key, "verified": data.verified, "verified_at": _iso_or_none(row.verified_at),
-                "verified_by": admin.email if data.verified else None, "note": row.note}
+                     details={"status": status, "previous": previous or "not_checked"})
+        db.flush()
+        emails = dict(db.execute(select(User.id, User.email).where(User.id == row.verified_by_user_id)).all()) \
+            if row.verified_by_user_id else {}
+        group, paid, how = next(item[1:] for item in readiness.CHECKLIST if item[0] == key)
+        return _verification_item(key, group, paid, how, row, emails)
 
 
 # --- Phase 18C: support, admin side ------------------------------------------------------------------------

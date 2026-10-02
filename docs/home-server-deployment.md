@@ -1159,7 +1159,7 @@ They pass through Cloudflare Tunnel and Next.js like every other `/api/*` reques
 2. **VietQR.** Open **Cổng thanh toán → VietQR**. Enter the Client ID, API Key and Checksum Key, then press **Lưu** and **Kiểm tra cấu hình**.
 3. **Card, sandbox first.** Open **Cổng thanh toán → Thẻ**, choose **Sandbox** and enter OnePAY's test merchant values. Press **Lưu**, **Kiểm tra cấu hình** and **Kiểm tra với OnePAY (QueryDR)**. Pay with the test card. Follow [Sandbox → production](PAYMENTS.md#sandbox--production-onepay).
 4. **Card, production.** Enter the production values, choose **Production** and confirm.
-5. **Record it.** Tick each step in **Kiểm định** ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+5. **Record it.** Set each step's status in **Kiểm định** ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
 
 **Disabling.** **Tắt** stops new checkouts for a gateway immediately. Pending orders still settle by webhook, IPN or **Check**.
 
@@ -1511,7 +1511,7 @@ For external developer database access, use the separately configured PostgreSQL
 ## 22. Accounts, email, backups and hardening (v1.0)
 
 Version 1.0 adds account security, teams, observability and automated backups. On an existing installation, after
-`./deploy.sh` (it applies migrations 0022–0024):
+`./deploy.sh` (it applies migrations 0022–0025):
 
 1. **Units.** Copy the changed and new units, then check that every service still starts with the hardening options:
 

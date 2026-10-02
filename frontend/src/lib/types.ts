@@ -682,16 +682,32 @@ export type PaymentCheck = {
 export type SystemCheckStatus = "ok" | "warning" | "error" | "missing" | "off";
 export type SystemCheck = { key: string; status: SystemCheckStatus; detail?: string } & Record<string, unknown>;
 export type SystemReadiness = { checked_at: string; sections: { key: string; checks: SystemCheck[] }[] };
+/** What an administrator recorded for a release gate (migration 0025); nothing is ever set by the server. */
+export type VerificationStatus = "passed" | "failed" | "not_applicable" | "not_checked";
+
 export type VerificationItem = {
   key: string;
   /** Absent from older APIs. */
-  group?: "platform" | "ai" | "publishing" | "vietqr" | "card" | "operations" | "email" | "security";
+  group?: "release" | "platform" | "email" | "security" | "ai" | "render" | "publishing" | "vietqr" | "card"
+    | "operations" | "legal";
   paid: boolean;
+  /** Only an optional provider or platform may be "not_applicable". */
+  optional: boolean;
   how: string;
+  status: VerificationStatus;
+  recorded_at: string | null;
+  recorded_by: string | null;
   verified: boolean;
   verified_at: string | null;
   verified_by: string | null;
   note: string | null;
+};
+
+export type VerificationSummary = Record<VerificationStatus, number> & {
+  total: number;
+  /** The gates neither passed nor (where allowed) not applicable. */
+  open: string[];
+  complete: boolean;
 };
 
 /** Phase 20: one admin-managed setting; secrets only say whether they are configured. */

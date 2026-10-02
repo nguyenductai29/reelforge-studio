@@ -158,6 +158,9 @@ class CleanupTest(unittest.TestCase):
             (folder / "link").symlink_to(outside)
         except OSError as exc:
             self.skipTest(f"symlinks unavailable on this host: {exc}")
+        # Age the link itself too: the cleanup reads the newest lstat() time inside the folder, and a fresh link
+        # would make the folder too recent to be a candidate at all (what Linux CI showed).
+        os.utime(folder / "link", (self.old, self.old), follow_symlinks=False)
         self.age(folder)
         report = cleanup_temp_folders(self.root, apply=True)
         self.assertEqual((report.deleted, len(report.skipped)), ((), 1))

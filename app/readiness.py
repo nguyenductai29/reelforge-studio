@@ -22,26 +22,58 @@ from app.models import AITool, SupportTicket, SystemSetting
 from app.runtime_env import ROOT
 
 MAINTENANCE_KEY = "storage_maintenance"
-# key, group, paid or not, and the command or place that performs it (shown beside the checklist item).
+# The release gates an administrator records by hand in Admin → Verification (docs/RELEASE_V1_CHECKLIST.md maps
+# every gate of the release checklist to one of these, or to deploy/release-preflight.sh). Each is key, group, paid
+# or not, and the command or place that performs it (shown beside the item). Groups are listed in display order.
 CHECKLIST = (
-    ("migration_upgraded", "platform", False, "python -m alembic upgrade head"),
-    ("storage_on_hdd", "platform", False, "REELFORGE_STORAGE_ROOT=/srv/data/videos/reelforge"),
+    ("release_ci_green", "release", False, "GitHub Actions on the deployed commit: every job green "
+                                           "(SQLite, PostgreSQL, migrations, Node 20/22, Python 3.11/3.14, Playwright)"),
+    ("release_deploy", "release", False, "./deploy.sh on the release commit ends with \"ReelForge deployment completed OK\""),
+    ("release_preflight", "release", False, "deploy/release-preflight.sh on the server: no FAIL"),
+    ("migration_upgraded", "platform", False, "python -m alembic current shows the head; existing accounts still sign in"),
+    ("storage_on_hdd", "platform", False, "Media root /srv/data/videos/reelforge; Admin → Operations shows its disk"),
     ("ffmpeg_verified", "platform", False, "python -m app.render_worker --check"),
-    ("master_key_file", "platform", False, "python -m app.master_key init; chmod 600; backed up off the server"),
+    ("master_key_file", "platform", False, "python -m app.master_key status: a file, chmod 600; a copy off the server"),
+    ("email_test_sent", "email", False, "System settings → Email: Send test email; it arrives"),
+    ("email_dns", "email", False, "SPF, DKIM and DMARC pass in the received message's headers"),
+    ("email_verification", "email", False, "Register a test account; the verification email arrives and verifies"),
+    ("email_password_reset", "email", False, "Forgot password, email, reset; other sessions are signed out"),
+    ("email_password_changed", "email", False, "The \"password changed\" email arrives after the reset"),
+    ("email_invitation", "email", False, "A studio invitation email arrives; its link joins the studio"),
+    ("email_support_reply", "email", False, "An admin reply to a ticket reaches the user by email"),
+    ("security_two_factor", "security", False, "Every system admin has 2FA; sign in with a code, then with a "
+                                               "recovery code"),
+    ("security_sessions", "security", False, "Sign out another session from Settings, Security"),
+    ("security_rate_limit", "security", False, "Wrong passwords end in 429 and the lockout email; an unknown account "
+                                               "gets the same answer as a wrong password"),
+    ("security_headers", "security", False, "curl -sI the public origin: HTTPS, HSTS, CSP, nosniff, Referrer-Policy; "
+                                            "rf_session is HttpOnly, Secure, SameSite=Strict"),
+    ("security_foreign_origin", "security", False, "A POST with a foreign Origin is refused (403)"),
+    ("security_client_ip", "security", False, "Admin → Audit log shows your real public address for a sign-in, "
+                                              "not 127.0.0.1"),
+    ("security_spoofed_headers", "security", False, "A forged CF-Connecting-IP / X-Forwarded-For sent from outside "
+                                                    "does not change the recorded address"),
+    ("gemini_text_live", "ai", True, "A script step with Gemini"),
     ("gemini_tts_live", "ai", True, "python -m app.smoke_test voice --live"),
-    ("final_render_live", "ai", True, "Run a workflow with Render"),
-    ("movie_recap_live", "ai", True, "Movie Recap template"),
-    ("article_video_live", "ai", True, "Article → Video template"),
-    ("product_video_live", "ai", True, "Product Video template"),
-    ("youtube_upload", "publishing", False, "Publish a private video to YouTube"),
-    ("tiktok_upload", "publishing", False, "Publish to TikTok (inbox draft)"),
-    ("facebook_reel", "publishing", False, "Publish a Facebook Reel"),
+    ("transcription_live", "ai", True, "A Transcript step on a short clip with speech"),
+    ("runway_image_live", "ai", True, "An Image step with Runway"),
+    ("runway_video_live", "ai", True, "A Video step with Runway (one short clip)"),
+    ("ai_credits_once", "ai", False, "Credit history: each successful step charged once; a failed provider call refunded"),
+    ("final_render_live", "render", True, "Render with voice, subtitles and music: an MP4 under the media root"),
+    ("article_video_live", "render", True, "Article → Video template (a slideshow)"),
+    ("product_video_live", "render", True, "Product Video template (a slideshow)"),
+    ("movie_recap_live", "render", True, "Movie Recap template"),
+    ("movie_review_live", "render", True, "Movie Review template"),
+    ("youtube_upload", "publishing", False, "Publish a private video to YouTube; note its video ID"),
+    ("tiktok_upload", "publishing", False, "Publish to TikTok (inbox draft); note its publish ID"),
+    ("facebook_reel", "publishing", False, "Publish a Facebook Reel; note its URL"),
     ("scheduled_publishing", "publishing", False, "Schedule a post a few minutes ahead"),
+    ("bank_qr_round_trip", "vietqr", True, "Manual VietQR: transfer, report, admin confirms, credits once, receipt; "
+                                           "confirming again changes nothing"),
     ("payos_config_saved", "vietqr", False, "Admin → Payments → Payment gateways → VietQR: Save, then Test"),
     ("payos_payment", "vietqr", True, "One small VietQR payment"),
     ("payos_webhook_received", "vietqr", False, "The last webhook time appears under VietQR activity"),
     ("payos_credits_once", "vietqr", False, "The credit history shows the plan's credits once"),
-    ("bank_qr_round_trip", "vietqr", True, "Manual VietQR: scan, transfer, report, admin confirms, credits once"),
     ("onepay_sandbox_configured", "card", False, "Card: Sandbox mode, saved"),
     ("onepay_sandbox_check", "card", False, "Card: Test configuration and the QueryDR check"),
     ("onepay_sandbox_payment", "card", False, "OnePAY test card on the sandbox page"),
@@ -51,22 +83,49 @@ CHECKLIST = (
     ("onepay_production_configured", "card", False, "Card: Production mode saved after confirmation"),
     ("onepay_production_payment", "card", True, "One small real card payment"),
     ("onepay_credits_once", "card", False, "The credit history shows the plan's credits once"),
-    ("notification_realtime", "operations", False, "Check the notification stream below"),
+    ("notification_realtime", "operations", False, "Check the notification stream below, through Cloudflare"),
+    ("alerts_delivered", "operations", False, "Stop one worker past its stale time, then start it: the admins are "
+                                              "alerted"),
     ("support_round_trip", "operations", False, "User ticket → admin reply → user sees it"),
     ("cleanup_dry_run", "operations", False, "python -m app.media_maintenance --intermediates"),
     ("maintenance_timer", "operations", False, "systemctl list-timers reelforge-media-maintenance.timer"),
-    ("email_verification", "email", False, "Register a test account; the verification email arrives and verifies"),
-    ("email_password_reset", "email", False, "Forgot password, email, reset; other sessions are signed out"),
-    ("email_support_reply", "email", False, "An admin reply to a ticket reaches the user by email"),
-    ("security_two_factor", "security", False, "Enable 2FA; sign in with a code, then with a recovery code"),
-    ("security_sessions", "security", False, "Sign out another session from Settings, Security"),
-    ("security_rate_limit", "security", False, "Repeated wrong passwords are throttled (429)"),
-    ("security_client_ip", "security", False, "Settings, Security shows your real address, not 127.0.0.1"),
-    ("backup_timer", "operations", False, "systemctl list-timers reelforge-backup.timer; a dump appears daily"),
+    ("backup_timer", "operations", False, "systemctl list-timers reelforge-backup.timer; a dump appears daily; "
+                                          "retention reviewed"),
+    ("backup_offsite", "operations", False, "The dumps and, separately, the master key are copied off the server"),
     ("restore_rehearsal", "operations", False, "deploy/restore-check.sh with --scratch-url and --master-key passes"),
+    ("media_backup_verified", "operations", False, "Media copied elsewhere; python -m app.media_manifest verify "
+                                                   "finds nothing missing"),
     ("server_reboot", "operations", False, "Reboot; every service and the tunnel come back; readiness is green"),
+    ("legal_terms_reviewed", "legal", False, "Terms of Service: every [bracketed] item filled in and reviewed; "
+                                             "TERMS_VERSION set"),
+    ("legal_privacy_reviewed", "legal", False, "Privacy Policy: processors, retention and contact filled in, reviewed"),
 )
 CHECKLIST_KEYS = tuple(item[0] for item in CHECKLIST)
+# A provider or platform an installation may leave switched off: only these may be "not applicable". Every other
+# gate must pass (docs/V1_RELEASE_STATUS.md).
+OPTIONAL = frozenset({
+    "runway_image_live", "runway_video_live", "tiktok_upload", "facebook_reel",
+    "payos_config_saved", "payos_payment", "payos_webhook_received", "payos_credits_once",
+    *(key for key in CHECKLIST_KEYS if key.startswith("onepay_")),
+})
+STATUSES = ("passed", "failed", "not_applicable", "not_checked")
+
+
+def checklist_summary(statuses: dict) -> dict:
+    """Counts per status and the gates still open: every gate passes, or is not applicable where that is allowed.
+
+    ``statuses`` maps a key to what an administrator recorded (None or absent: not checked). Only recorded statuses
+    count: the server never completes a gate by itself."""
+    counts = dict.fromkeys(STATUSES, 0)
+    still_open = []
+    for key in CHECKLIST_KEYS:
+        status = statuses.get(key) or "not_checked"
+        counts[status if status in counts else "not_checked"] += 1
+        if not (status == "passed" or (status == "not_applicable" and key in OPTIONAL)):
+            still_open.append(key)
+    return {**counts, "total": len(CHECKLIST_KEYS), "open": still_open, "complete": not still_open}
+
+
 AI_KEYS = (("gemini", ("GEMINI_API_KEY",), True), ("runway", ("RUNWAYML_API_SECRET", "RUNWAY_OUTPUT_HOSTS"), True),
            ("openai", ("OPENAI_API_KEY",), True), ("anthropic", ("ANTHROPIC_API_KEY",), False),
            ("fal", ("FAL_KEY",), False), ("runware", ("RUNWARE_API_KEY",), False),

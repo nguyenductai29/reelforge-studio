@@ -696,6 +696,19 @@ No new feature and no migration (head `0024_operations`); fixes from the audit i
 - **Docs:** every document now agrees with the code (migration head, the master key's place, bootstrap order, email, storage).
 - **Tests:** `tests/test_phase27.py` (isolation across every ID route, the role matrix, setup, spoofed address headers, timing, metrics, audit, email, readiness, backups, recovery, deployment and CI files) and the browser test of the public setup refusal.
 
+### Release closure (v1.0 production verification)
+
+Verification tooling only; no product feature. The release stays a release candidate until every gate passes on the
+production server ([V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
+
+- **Pre-flight:** `bash deploy/release-preflight.sh` (`python -m app.release_check preflight`): source and working tree, database and migration head, master key (permissions, every stored secret decrypts), services, timers and unit files, ports on 127.0.0.1 only, `/health/*`, media root, backups, FFmpeg, configuration (no development override, no legacy runtime values, the public origin, Secure cookies, trusted proxies) and administrators. PASS, WARN, FAIL or MANUAL; read-only; never prints a secret; exit status 1 only on a FAIL.
+- **Report:** `bash deploy/release-report.sh`: the pre-flight, readiness needing attention, the recorded gates and the CI result GitHub reports for the commit; `READY_FOR_TAG` only when nothing blocks. `--json` for machines.
+- **Release gates in Admin → Verification:** 62 gates covering [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (now an index without status columns), each *Passed*, *Failed*, *Not applicable* (optional providers only) or *Not checked*, with who, when and a note. Migration `0025_verification_status` adds the status; verified rows become passed.
+- **Deployment:** `deploy.sh` now runs pull, bootstrap check (database answering), master key, dependencies, migration (and checks the head), build, restart, the check of every restarted service, `/health/ready`, unit files and timers, and exits 1 on any failure.
+- **CI:** failing tests become annotations on the run page (`tests/ci_annotate.py`, Playwright's `github` reporter); the piped test run keeps its exit status. A temp-folder test that failed only on Linux (a fresh symlink's own time) was fixed.
+- **Docs:** [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) has the procedure of every manual gate; [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md) the state, the legal placeholders, the bug-fix rule and the tag procedure.
+- **Tests:** `tests/test_phase28.py`.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional legacy `payos` credentials.

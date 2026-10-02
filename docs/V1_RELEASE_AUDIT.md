@@ -16,7 +16,7 @@ Nothing marked MANUAL was verified here, and nothing in [RELEASE_V1_CHECKLIST.md
 
 | Check | Status |
 | --- | --- |
-| Head is `0024_operations`; no migration added in Phase 27; 0001–0024 unchanged | PASS |
+| Head is `0024_operations`; no migration added in Phase 27; 0001–0024 unchanged (the release closure later added `0025_verification_status`: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)) | PASS |
 | PostgreSQL 16: `upgrade head` → `alembic check` → `downgrade base` → `upgrade head` → `alembic check`, no drift | PASS |
 | Every migration test both ways on SQLite and PostgreSQL 16, rows kept | PASS |
 | 0022–0024 only add nullable columns and new tables: code that predates them keeps running on the new schema | PASS (read) |
@@ -133,7 +133,9 @@ SE12 added; evidence updated). Migration heads, ports (127.0.0.1:8000, 127.0.0.1
 ## J. Remaining manual checks
 
 Every item of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (all "Not checked") and the 41 items of Admin →
-Verification. In short:
+Verification. (The release closure since turned the checklist into an index of 62 gates recorded in Admin →
+Verification or by `deploy/release-preflight.sh`; the current state is in [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).)
+In short:
 
 | Area | MANUAL checks |
 | --- | --- |

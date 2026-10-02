@@ -25,6 +25,7 @@ import type {
   SystemReadiness,
   SupportTicketDetail,
   VerificationItem,
+  VerificationSummary,
   Billing,
   ChannelStatus,
   Dashboard,
@@ -466,7 +467,7 @@ export function useSystemReadiness(enabled: boolean) {
 export function useVerification(enabled: boolean) {
   return useQuery({
     queryKey: keys.verification,
-    queryFn: () => api<{ items: VerificationItem[] }>("admin/verification").then((data) => data.items),
+    queryFn: () => api<{ items: VerificationItem[]; summary?: VerificationSummary }>("admin/verification"),
     enabled,
   });
 }

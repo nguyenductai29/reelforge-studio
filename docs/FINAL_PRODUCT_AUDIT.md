@@ -1,6 +1,7 @@
 # Final product audit (v1.0: Phases 14–27)
 
-> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-02. Database head: `0024_operations`.
+> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-02. Database head: `0025_verification_status`.
+> Release state and the remaining production gates: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).
 > The release audit itself (findings, fixes, test results, what remains manual) is [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md);
 > the operator's gate is [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md).
 
@@ -12,7 +13,8 @@
 - **Configuration:** everything else in Admin → System settings and Admin → Payments, stored in PostgreSQL with secrets
   encrypted, applied without restarts. Every environment variable the backend still reads is classified and tested.
 - **Services:** hardened systemd units (`deploy/systemd/`) need no secret; `deploy.sh` stops without a usable master key,
-  waits for `/health/ready`, and fails when a service did not start.
+  checks the migration head, every restarted service and `/health/ready`, and fails when one is not right.
+  `deploy/release-preflight.sh` checks the server read-only; `deploy/release-report.sh` gives the release verdict.
 - **Security, teams, email, observability, backups:** see §§ 2–6.
 
 **Rule applied since Phase 16:** every control in the production interface works. An unfinished feature was built or
@@ -69,7 +71,7 @@ release gate.
 | Support | Filters; reply, change status or priority, resolve, close |
 | Credit reconciliation | The review of held credits |
 | Operations | Worker heartbeats, jobs, stuck-work audit, media disk and studios per storage level |
-| Verification | Readiness (database, migrations, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security, configuration, backups, email, accounts, alerts), a stream check, and the 41-item manual live checklist |
+| Verification | Readiness (database, migrations, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security, configuration, backups, email, accounts, alerts), a stream check, and the 62 release gates, each passed, failed, not applicable or not checked, recorded by an admin with the date and a note |
 | System settings | Security (master key, trusted proxies), General, Email, AI providers, Social OAuth, Storage, Backups, Runtime, Credit pricing, Notifications; each value's source |
 | Audit log | Security and administration events, filtered and paginated on the server |
 
@@ -195,8 +197,8 @@ wins. `REELFORGE_TOKEN_ENCRYPTION_KEY` is only the legacy source of the master k
 
 ## 12. Database migration head
 
-`0024_operations`. Migrations 0001–0021 are unchanged; 0022–0024 only add nullable columns to existing tables and new
-tables, so code that predates them keeps working on the new schema.
+`0025_verification_status`. Migrations 0001–0021 are unchanged; 0022–0025 only add nullable columns to existing tables
+and new tables, so code that predates them keeps working on the new schema.
 
 | Migration | Adds | Test |
 | --- | --- | --- |
@@ -210,6 +212,7 @@ tables, so code that predates them keeps working on the new schema.
 | `0022_account_security` | User verification, 2FA and terms columns; session ids, devices and activity; `account_tokens`, `recovery_codes`, `email_outbox`, `audit_events`, `rate_limit_buckets`; existing accounts marked verified | `test_phase22.py` |
 | `0023_workspace_team` | `workspace_invites`; the active studio per session and per user; membership dates | `test_phase23.py` |
 | `0024_operations` | `backup_runs`, `system_alerts` | `test_phase25.py` |
+| `0025_verification_status` | `verification_checks.status` (passed, failed, not applicable; NULL is not checked); verified rows become passed | `test_phase28.py` |
 
 Every migration test runs on SQLite and, with `REELFORGE_TEST_DATABASE_URL`, on PostgreSQL 16, in both directions,
 keeping every row. CI also runs `alembic check` after upgrading and after a full downgrade and upgrade.
@@ -232,11 +235,11 @@ separately from them.
 ## 15. Verification
 
 **Automated (no paid or live service):** backend tests on SQLite and PostgreSQL 16, Alembic upgrade/check/downgrade,
-frontend typecheck and build, ten browser flows on SQLite and PostgreSQL, a load baseline
+frontend typecheck and build, eleven browser flows on PostgreSQL, a load baseline
 ([LOAD_BASELINE.md](LOAD_BASELINE.md)), a responsive and accessibility pass. Results: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md).
 
-**Manual, on the real server:** every item of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) and the 41-item
-checklist in Admin → Verification ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)): real email, real AI providers, real
+**Manual, on the real server:** every gate of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md), recorded in
+Admin → Verification or by the pre-flight ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)): real email, real AI providers, real
 payments (manual VietQR, payOS, OnePAY sandbox and one small production card payment), real YouTube / TikTok / Facebook
 uploads and scheduling, the client address through Cloudflare, backups and a restore rehearsal, a server reboot, and the
 legal review. Operator-verified before v1.0: Gemini text, Runway `gen4.5` and `gen4_image`.

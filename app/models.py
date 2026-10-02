@@ -376,14 +376,21 @@ class SupportMessage(Base):
 
 
 class VerificationCheck(Base):
-    """One item of the system admin's manual live-verification checklist (migration 0017)."""
+    """One item of the system admin's manual live-verification checklist (migration 0017).
+
+    Migration 0025: ``status`` is passed, failed, not_applicable or None (not checked); ``verified_at`` and
+    ``verified_by_user_id`` say when and by whom the current status was recorded. Only an admin sets them."""
 
     __tablename__ = "verification_checks"
+    __table_args__ = (
+        CheckConstraint("status IN ('passed', 'failed', 'not_applicable')", name="ck_verification_checks_status"),
+    )
     key: Mapped[str] = mapped_column(String(40), primary_key=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     verified_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class PaymentProviderConfig(Base):

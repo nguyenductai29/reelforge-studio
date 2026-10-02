@@ -321,7 +321,7 @@ The time of the last verified payOS webhook, OnePAY IPN, status query and succes
    Cancel one payment, and press **Check** on an order.
 4. **Go live.** Enter the production credentials from the merchant contract, select **Production**, save and confirm. Register the production IPN and Return URLs.
 5. **Pay once for real.** Make one small real payment and check that the credits are posted once.
-6. **Record it.** Tick each step in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
+6. **Record it.** Set each step's status in Admin → Kiểm định ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)).
 
 ### Disaster recovery
 

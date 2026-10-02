@@ -91,10 +91,11 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    (cd frontend && npm ci && npm run build)
    ```
 
-7. **Services** (`deploy/systemd/`; adjust `User` and paths if they differ):
+7. **Services** (`deploy/systemd/`; adjust `User` and paths in the copies if they differ). This is the one install
+   sequence; it copies only the `reelforge-*` units and touches no other unit:
 
    ```bash
-   sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
+   sudo cp deploy/systemd/reelforge-*.service deploy/systemd/reelforge-*.timer /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable --now reelforge-api reelforge-frontend
    sudo systemctl enable --now reelforge-worker@{text,image,video,voice,render,source,youtube,social,scheduler}
@@ -102,7 +103,12 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    sudo systemctl enable --now reelforge-backup.timer        # daily database backup, 02:30
    sudo mkdir -p /etc/systemd/journald.conf.d && sudo cp deploy/journald/reelforge.conf /etc/systemd/journald.conf.d/
    sudo systemctl restart systemd-journald                   # journal size limits
+   systemctl --failed                                        # no reelforge unit listed
    ```
+
+   Later, when `deploy.sh` notes that a unit changed, review the difference (`diff deploy/systemd/<unit>
+   /etc/systemd/system/<unit>`), copy that one unit the same way, run `sudo systemctl daemon-reload`, then
+   `./deploy.sh` again. `deploy.sh` itself never copies a unit.
 
    No unit sets a provider key.
    - Every unit is hardened (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, kernel protections) without blocking
@@ -138,15 +144,20 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
       - VietQR: manual (bank account) or payOS;
       - Card: OnePAY, sandbox first.
    4. In **Cấu hình gói:** the plan prices.
-11. **Check:** `curl -fsS http://127.0.0.1:8000/health/ready`, then open **Kiểm định**. Every readiness section should be green (backups, email and the master key backup included). **Cấu hình** should read "no setting from the environment" and no runtime file. Then work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)) and the release checklist ([RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md)), including a recovery rehearsal ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)).
+11. **Check:** `curl -fsS http://127.0.0.1:8000/health/ready`, then `bash deploy/release-preflight.sh` (every check
+    PASS, WARN, FAIL or MANUAL; exit status 1 on a FAIL; never prints a secret), then open **Kiểm định**. Every readiness section should be green (backups, email and the master key backup included). **Cấu hình** should read "no setting from the environment" and no runtime file. Then work through the checklist ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)) and the release checklist ([RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md)), including a recovery rehearsal ([BACKUP_RECOVERY.md](BACKUP_RECOVERY.md)).
 
 ## Updates
 
-`./deploy.sh` does the following:
+`./deploy.sh` does the following, in this order, and stops (or ends with exit status 1) on any failure; it never
+reports success over a failed migration, build or service:
 
-1. pulls the source and installs the dependencies;
-2. stops if `instance/bootstrap.json` sets `frontend_origin` or `secure_cookies` (a development override);
-3. makes sure there is a master key (`deploy/ensure-master-key.sh`):
+1. **Pulls** the source and prints the commit (a warning when tracked files differ from it). It first puts back
+   `frontend/next-env.d.ts`, which every build rewrites, so the pull cannot conflict on it.
+2. **Verifies the bootstrap:** `instance/bootstrap.json` (or `REELFORGE_DATABASE_URL`) exists, sets no
+   `frontend_origin` / `secure_cookies` (a development override: STOP), is not readable by others (a warning), and the
+   database answers.
+3. **Makes sure there is a master key** (`deploy/ensure-master-key.sh`):
    - **A usable key** (the key file, or the legacy key the services still load from `/etc/reelforge/runtime.env`): continue.
    - **No key file, but the legacy key exists:** copy that same key into `/etc/reelforge/master.key`.
    - **No key at all:** check PostgreSQL (`python -m app.master_key encrypted`).
@@ -156,14 +167,24 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    - **Then:** verify with `python -m app.master_key status`, remind you to back the key up, and continue.
 
    `/etc/reelforge` belongs to root, so a new key is created as the service account in a private staging directory and installed with `sudo install` (owner `tai`, 600). Run `deploy.sh` as the account the services run as.
-4. migrates and builds;
-5. restarts the API, the frontend and every enabled worker (`reelforge-<name>-worker` or `reelforge-worker@<name>`);
-6. waits up to 30 s for `http://127.0.0.1:8000/health/ready` (database, migrations at head, master key usable and decrypting; no paid provider is called) and up to 30 s for `http://127.0.0.1:3001`;
-7. checks, a few seconds later, that the API, the frontend and every worker it restarted are still active;
-8. checks the public origin stored in System Settings. A failure there is a warning only, since the tunnel runs on its own;
-9. notes every unit in `deploy/systemd/` that differs from the installed copy or is not installed yet, and reminds you when the backup timer is not enabled;
-10. warns loudly while no administrator exists yet (create it with `npm run create-admin`);
-11. **fails** (exit status 1) when a service is not running, naming it, instead of reporting success.
+4. **Installs** the backend dependencies.
+5. **Migrates** (`alembic upgrade head`) and checks that `alembic current` is the head.
+6. **Builds** the frontend (`npm ci`, `npm run build`), then puts `frontend/next-env.d.ts` back: the checkout stays
+   exactly the deployed commit.
+7. **Restarts** the API, the frontend and every enabled worker (`reelforge-<name>-worker` or `reelforge-worker@<name>`).
+8. **Checks every restarted service** a few seconds later (a unit that crashes at start shows only then).
+9. **Waits for health:** up to 30 s for `http://127.0.0.1:8000/health/ready` (database, migrations at head, master key
+   usable and decrypting; no paid provider is called) and up to 30 s for `http://127.0.0.1:3001`; then checks the
+   public origin stored in System Settings (a warning only: the tunnel runs on its own).
+10. **Unit files:** notes every unit in `deploy/systemd/` that differs from the installed copy or is not installed yet,
+    and every restarted unit systemd should reload (`daemon-reload`). It copies nothing.
+11. **Timers:** shows `reelforge-backup.timer` and `reelforge-media-maintenance.timer`, with the command to enable one
+    that is not.
+
+It warns loudly while no administrator exists yet (create it with `npm run create-admin`), and **fails** (exit status
+1) when a service is not running or the API or the frontend does not answer, naming them, instead of reporting
+success. After a successful deploy, `bash deploy/release-preflight.sh` checks the rest
+([V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
 
 Configuration changes never need a deploy: save them in the admin UI.
 
