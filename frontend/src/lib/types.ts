@@ -966,3 +966,97 @@ export type HomeSummary = {
     failed: number;
   };
 };
+
+/** Admin → Overview (GET /api/admin/overview): the whole installation at a glance; ``periods`` names every window. */
+export type HealthStatus = "healthy" | "warning" | "critical" | "not_configured";
+export type AdminTab =
+  | "overview" | "users" | "studios" | "plans" | "payments" | "support" | "reconciliation" | "operations"
+  | "verification" | "system" | "audit";
+export type AdminAttention = {
+  key: string;
+  severity: "critical" | "warning" | "info";
+  tab: AdminTab;
+  /** A filter of that tab: a payment status, a support priority or a system settings section. */
+  filter?: string;
+  count?: number;
+  worker?: string;
+  workers?: string[];
+  percent?: number;
+  full?: number;
+  credits?: number;
+  since?: string | null;
+  detail?: string | null;
+  problem?: string | null;
+  max_age_hours?: number;
+};
+export type AdminHealthRow =
+  | { key: "api"; status: HealthStatus }
+  | { key: "database"; status: HealthStatus; detail: string | null; dialect?: string; migration?: string | null }
+  | { key: "workers"; status: HealthStatus; healthy: number; total: number; stale: string[]; error: string[]; missing: string[] }
+  | { key: "storage"; status: HealthStatus; detail: string | null; percent?: number; used_bytes?: number; total_bytes?: number; free_bytes?: number }
+  | { key: "backups"; status: HealthStatus; detail: string | null; last_success: string | null; age_hours: number | null; max_age_hours: number | null }
+  | { key: "email"; status: HealthStatus; detail: string | null; failed_24h: number; queued: number }
+  | { key: "configuration"; status: HealthStatus; errors: number; advisories: number };
+export type AdminTask = "text" | "image" | "video" | "voice" | "source" | "render";
+export type AdminDashboard = {
+  generated_at: string;
+  periods: { days: number; since: string; jobs_hours: number; jobs_since: string; growth_from: string };
+  overview: {
+    users: number;
+    active_users: number;
+    workspaces: number;
+    active_subscriptions: number;
+    paid_subscriptions: number;
+    paid_orders: number;
+    paid_amount_vnd: number;
+    jobs_24h: number;
+    system_status: Exclude<HealthStatus, "not_configured">;
+  };
+  attention: AdminAttention[];
+  health: { status: Exclude<HealthStatus, "not_configured">; rows: AdminHealthRow[] };
+  ai_usage: {
+    tasks: { task: AdminTask; jobs: number; jobs_24h: number; succeeded: number; failed: number; active: number; credits: number }[];
+    jobs: number;
+    jobs_24h: number;
+    succeeded: number;
+    failed: number;
+    active: number;
+    credits: number;
+  };
+  credits: {
+    added_by_plans: number;
+    admin_added: number;
+    admin_removed: number;
+    admin_adjustments: number;
+    refunded: number;
+    other_added: number;
+    consumed: number;
+    available: number;
+    held: number;
+    held_jobs: number;
+  };
+  payments: {
+    paid: number;
+    paid_amount_vnd: number;
+    by_provider: { provider: string; paid: number; amount_vnd: number }[];
+    pending: number;
+    awaiting_confirmation: number;
+    paid_unapplied: number;
+    failed: number;
+  };
+  publishing: {
+    channels: { channel: ChannelId; configured: boolean; published: number; scheduled: number; failed: number }[];
+    published: number;
+    scheduled: number;
+    failed: number;
+  };
+  storage: {
+    stored_bytes: number;
+    files: number;
+    disk: { total_bytes: number; used_bytes: number; free_bytes: number; percent: number } | null;
+    levels: Record<Exclude<StorageLevel, "ok">, number>;
+  };
+  support: { awaiting_support: number; waiting_user: number; high_priority: number; oldest_waiting_since: string | null };
+  growth: { days: string[]; users: number[]; workspaces: number[] };
+  activity: { id: number; action: string; outcome: string; actor: string | null; created_at: string | null }[];
+};

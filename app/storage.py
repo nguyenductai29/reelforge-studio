@@ -29,7 +29,7 @@ from pathlib import Path
 import re
 import shutil
 
-from sqlalchemy import exists, func, inspect, select, update
+from sqlalchemy import case, exists, func, inspect, literal, select, update
 from sqlalchemy.orm import aliased
 
 from app import notifications
@@ -211,11 +211,27 @@ def usage_by_workspace(db, workspace_ids: list[str] | None = None) -> dict[str, 
 
 
 def level_counts(db) -> dict[str, int]:
-    """How many workspaces are at each warning level (70, 80, 90 and 100 %)."""
+    """How many workspaces are at each warning level (70, 80, 90 and 100 %), in one grouped query: the quota and
+    the level are those of ``usage`` (``effective_quota``, ``level``), computed in SQL for the studios storing
+    anything (an empty one is never at a level)."""
     counts = {name: 0 for _, name in LEVELS}
-    for item in usage_by_workspace(db).values():
-        if item["level"] in counts:
-            counts[item["level"]] += 1
+    used = (select(Asset.workspace_id.label("workspace_id"), func.sum(Asset.bytes).label("used"))
+            .group_by(Asset.workspace_id).subquery())
+    default, cap = default_quota(), server_cap()
+    source = used
+    if _plan_limits_available(db):
+        limit = Plan.storage_limit_bytes
+        capped = case((limit > cap, cap), else_=limit) if cap else limit
+        quota = case((limit > 0, capped), else_=default)
+        source = (used.outerjoin(Subscription, Subscription.workspace_id == used.c.workspace_id)
+                  .outerjoin(Plan, Plan.code == Subscription.plan_code))
+    else:
+        quota = literal(default)
+    level_of = case(*((used.c.used * 100 >= quota * threshold, name) for threshold, name in LEVELS), else_="ok")
+    levels = select(level_of.label("level")).select_from(source).where(used.c.used > 0).subquery()
+    for name, count in db.execute(select(levels.c.level, func.count()).group_by(levels.c.level)):
+        if name in counts:
+            counts[name] = int(count)
     return counts
 
 

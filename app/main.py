@@ -28,10 +28,10 @@ from app.body_limit import MULTIPART_OVERHEAD_BYTES, RequestBodyLimitMiddleware
 from app.models import Notification, PaymentOrderEvent, SupportMessage, SupportTicket, UserProfile, VerificationCheck
 from app.models import User, LoginSession, Workspace, Membership, Project, Asset, Workflow, SystemSetting, WorkspaceSetting, Plan, Subscription, PaymentOrder, CreditAccount, CreditLedger, UsageEvent, AITool, WorkflowRun, WorkflowRunStep, WorkflowJob
 from app.models import AccountToken, WorkspaceInvite
-from app import (accounts, audit, auth_security, bank_qr, billing, client_ip, config_checks, heartbeat, home, jobs,
-                 mailer, master_key, media_maintenance, notifications, payment_config, payment_providers, payments,
-                 permissions, publications, ratelimit, readiness, reconciliation, run_summary, secret_box, sources,
-                 storage, support, system_config, team, usage)
+from app import (accounts, admin_dashboard, audit, auth_security, bank_qr, billing, client_ip, config_checks,
+                 heartbeat, home, jobs, mailer, master_key, media_maintenance, notifications, payment_config,
+                 payment_providers, payments, permissions, publications, ratelimit, readiness, reconciliation,
+                 run_summary, secret_box, sources, storage, support, system_config, team, usage)
 from app import alerts, backup, email_templates, health, http_security, metrics, passwords, request_context
 from app.passwords import check_password, hashed_password
 from app.payment_providers import onepay
@@ -2210,6 +2210,15 @@ def admin_overview(request: Request):
             "plans": [plan_data(p) for p in db.scalars(select(Plan).order_by(Plan.code))],
             "payment_providers": payment_providers.readiness(),
         }
+
+
+@app.get("/api/admin/overview")
+def admin_overview_dashboard(request: Request):
+    """Admin → Overview: the whole installation at a glance (users, health, what needs an administrator, AI usage,
+    credits, payments, publishing, storage, support, growth), from aggregate queries (app/admin_dashboard.py)."""
+    with Session() as db:
+        admin_for(request, db)
+        return admin_dashboard.summary(db)
 
 
 def _iso_or_none(value):

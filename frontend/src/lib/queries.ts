@@ -12,6 +12,7 @@ import type {
   MemberRow,
   Onboarding,
   AdminJobs,
+  AdminDashboard,
   AdminOverview,
   AdminPayment,
   AdminStorage,
@@ -93,6 +94,7 @@ export const keys = {
   scripts: ["scripts"] as const,
   settings: ["settings"] as const,
   admin: ["admin"] as const,
+  adminDashboard: ["admin", "overview"] as const,
   reconciliation: ["admin", "reconciliation"] as const,
   nodeTypes: ["workflow-node-types"] as const,
   status: ["status"] as const,
@@ -353,6 +355,17 @@ export function useAdminStorage(enabled: boolean, offset = 0, limit = 20) {
 
 export function useSettings() {
   return useQuery({ queryKey: keys.settings, queryFn: () => api<Settings>("settings") });
+}
+
+/** Admin → Overview in one request, refreshed every minute while it is open. */
+export function useAdminDashboard(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.adminDashboard,
+    queryFn: () => api<AdminDashboard>("admin/overview"),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+  });
 }
 
 export function useAdmin(enabled: boolean) {

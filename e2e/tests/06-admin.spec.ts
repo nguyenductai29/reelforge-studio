@@ -1,7 +1,7 @@
 import { ADMIN, adminApi, apiAs, expect, registerApi, signIn, test } from "./helpers";
 
-const TABS = ["Users", "Studios & credits", "Plans", "Payments", "Support", "Credit reconciliation", "Operations",
-              "Verification", "System settings", "Audit log"];
+const TABS = ["Overview", "Users", "Studios & credits", "Plans", "Payments", "Support", "Credit reconciliation",
+              "Operations", "Verification", "System settings", "Audit log"];
 
 test("every administration tab opens without an error", async ({ page }) => {
   await adminApi();
@@ -60,11 +60,13 @@ test("a member who is not a system administrator gets no admin data", async ({ p
   expect((await member.get("/api/admin/users")).status()).toBe(403);
   expect((await member.get("/api/admin/audit")).status()).toBe(403);
   expect((await member.get("/api/admin/system-config")).status()).toBe(403);
+  expect((await member.get("/api/admin/overview")).status()).toBe(403);
   await member.dispose();
 
   await signIn(page, "not-admin@example.com", "not-admin-password");
   await page.goto("/admin");
   await expect(page.getByRole("tab", { name: "Users" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Overview" })).toHaveCount(0);
 
   // Without the browser's origin, a signed-in request that changes something is refused.
   const api = await apiAs("not-admin@example.com", "not-admin-password");

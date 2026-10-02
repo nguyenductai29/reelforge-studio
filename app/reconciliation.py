@@ -185,7 +185,9 @@ def public_item(db, step, job, run, decision=None):
     }
 
 
-def list_items(db, *, status="pending", limit=50, offset=0):
+def _items(db, status):
+    """The paid jobs of ``status`` (pending: waiting for a decision; else decided), newest first, each with its
+    reservation; jobs whose references do not validate are left out."""
     query = (select(WorkflowRunStep, WorkflowJob, WorkflowRun, CreditReconciliation)
              .join(WorkflowJob, WorkflowJob.step_id == WorkflowRunStep.id)
              .join(WorkflowRun, WorkflowRun.id == WorkflowRunStep.run_id)
@@ -205,11 +207,22 @@ def list_items(db, *, status="pending", limit=50, offset=0):
         if status == "pending" and not _uncertain(step, job, _output(step)):
             continue
         try:
-            paid_reservation(db, job, step, run)
+            reservation = paid_reservation(db, job, step, run)
         except ReconciliationError:
             continue
-        rows.append((step, job, run, decision))
-    return {"items": [public_item(db, *row) for row in rows[offset:offset + limit]], "total": len(rows)}
+        rows.append((step, job, run, decision, reservation))
+    return rows
+
+
+def list_items(db, *, status="pending", limit=50, offset=0):
+    rows = _items(db, status)
+    return {"items": [public_item(db, *row[:4]) for row in rows[offset:offset + limit]], "total": len(rows)}
+
+
+def pending_summary(db) -> dict:
+    """How many paid jobs wait for a decision, and the credits they hold (Admin → Overview)."""
+    rows = _items(db, "pending")
+    return {"count": len(rows), "credits": sum(row[4].credits for row in rows)}
 
 
 def reconcile(db, *, decision, admin_user_id, note=None, step_id=None, job_id=None):

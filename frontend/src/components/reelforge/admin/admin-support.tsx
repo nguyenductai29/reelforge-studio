@@ -118,14 +118,15 @@ function TicketDialog({ id, onClose }: { id: string | null; onClose: () => void 
 }
 
 /** Every studio's support requests, one page at a time from the server. */
-export function AdminSupport({ initialTicket }: { initialTicket?: string | null }) {
+/** ``initialPriority`` starts filtered (Admin → Overview links to high-priority tickets). */
+export function AdminSupport({ initialTicket, initialPriority }: { initialTicket?: string | null; initialPriority?: string | null }) {
   const { t, formatRelative } = useI18n();
   const a = t.admin.support;
   const s = t.support;
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [category, setCategory] = useState("");
-  const [priority, setPriority] = useState("");
+  const [priority, setPriority] = useState(initialPriority === "high" || initialPriority === "normal" ? initialPriority : "");
   const [offset, setOffset] = useState(0);
   const [viewing, setViewing] = useState<string | null>(initialTicket ?? null);
   const search = useDebounced(q.trim());

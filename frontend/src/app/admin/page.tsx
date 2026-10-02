@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, FieldLabel } from "@/components/reelforge/primitives";
 import { AdminAudit } from "@/components/reelforge/admin/admin-audit";
+import { AdminOverview } from "@/components/reelforge/admin/admin-overview";
 import { AdminPayments } from "@/components/reelforge/admin/admin-payments";
 import { AdminSupport } from "@/components/reelforge/admin/admin-support";
 import { AdminSystem } from "@/components/reelforge/admin/admin-system";
@@ -24,11 +25,14 @@ import { useDocumentTitle, useSearchParam } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { keys, useAdmin, useDashboard } from "@/lib/queries";
 import { GIB, formatBytes } from "@/lib/studio";
-import type { Plan } from "@/lib/types";
+import type { AdminTab, Plan } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification", "system", "audit"] as const;
+const TABS = ["overview", "users", "studios", "plans", "payments",
+              "support", "reconciliation", "operations", "verification", "system", "audit"] as const satisfies readonly AdminTab[];
 type Tab = (typeof TABS)[number];
+/** A tab opened with a filter (from Overview or a ?tab=…&status|priority|section=… link); ``nonce`` remounts it. */
+type Opened = { tab: Tab; filter: string | null; nonce: number };
 
 /** Why a plan can or cannot be bought right now (the checkout enforces the same rules). */
 function purchasability(plan: Plan, paymentReady: boolean): "free" | "inactive" | "noPrice" | "noGateway" | "ok" {
@@ -136,16 +140,31 @@ export default function AdminPage() {
   useDocumentTitle(t.admin.title);
   const { data: dashboard } = useDashboard();
   const admin = useAdmin(Boolean(dashboard?.is_admin));
-  const [tab, setTab] = useState<Tab>("users");
+  const [tab, setTab] = useState<Tab>("overview");
+  const [opened, setOpened] = useState<Opened | null>(null);
   // Notifications link here with ?tab=support&ticket=…
   const requestedTab = useSearchParam("tab");
   const requestedTicket = useSearchParam("ticket");
-  // A transfer notification links here with ?tab=payments&review=1.
+  // A transfer notification links here with ?tab=payments&review=1; Overview's links carry a filter of the tab.
   const reviewTransfers = useSearchParam("review") === "1";
+  const statusParam = useSearchParam("status");
+  const priorityParam = useSearchParam("priority");
+  const sectionParam = useSearchParam("section");
+  const requestedFilter = statusParam ?? priorityParam ?? sectionParam;
   useEffect(() => {
-    if (requestedTab && (TABS as readonly string[]).includes(requestedTab)) setTab(requestedTab as Tab);
-  }, [requestedTab]);
+    if (requestedTab && (TABS as readonly string[]).includes(requestedTab)) {
+      setTab(requestedTab as Tab);
+      if (requestedFilter) setOpened({ tab: requestedTab as Tab, filter: requestedFilter, nonce: 0 });
+    }
+  }, [requestedTab, requestedFilter]);
   const a = t.admin;
+  const filterOf = (key: Tab) => (opened?.tab === key ? opened.filter : null);
+  const keyOf = (key: Tab) => (opened?.tab === key ? `${key}-${opened.nonce}` : key);
+  function open(next: AdminTab, filter?: string) {
+    setTab(next as Tab);
+    setOpened((current) => ({ tab: next as Tab, filter: filter ?? null, nonce: (current?.nonce ?? 0) + 1 }));
+    if (window.location.search) window.history.replaceState(null, "", window.location.pathname);
+  }
 
   if (!dashboard?.is_admin) {
     return <EmptyState icon={ShieldCheck} title={a.title} description={t.errors.server["System admin required"] ?? ""} />;
@@ -177,8 +196,10 @@ export default function AdminPage() {
           {overview.api_outdated && <p className="text-xs text-warning">{a.apiOutdated}</p>}
           {!paymentReady && <p className="text-xs text-warning">{a.noGateway}</p>}
         </div>
-        {/* One scrolling row on a phone, so the counts never push the tab's content out of the window. */}
-        <dl className="scrollbar-thin flex min-w-0 max-w-full gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
+        {/* One scrolling row on a phone, so the counts never push the tab's content out of the window. Overview
+            shows them all, with more, so its header keeps the space. */}
+        <dl className={cn("scrollbar-thin flex min-w-0 max-w-full gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible",
+                          tab === "overview" && "hidden")}>
           {stats.map(([label, value, warn]) => (
             <div key={label} className="shrink-0 rounded-lg border border-border bg-surface px-2.5 py-1">
               <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</dt>
@@ -192,6 +213,7 @@ export default function AdminPage() {
         value={tab}
         onValueChange={(value) => {
           setTab(value as Tab);
+          setOpened(null);
           // A ?tab=… link is applied once; switching tabs drops it so a reload keeps the tab you chose.
           if (window.location.search) window.history.replaceState(null, "", window.location.pathname);
         }}
@@ -204,6 +226,11 @@ export default function AdminPage() {
             </TabsTrigger>
           ))}
         </TabsList>
+        {/* The dashboard scrolls inside when it is longer than the window; the header and the tabs stay put.
+            relative: its screen-reader-only labels are absolutely positioned and must scroll with it, not stretch the page. */}
+        <TabsContent value="overview" className="scrollbar-thin relative mt-3 min-h-0 flex-1 overflow-y-auto">
+          <AdminOverview onOpen={open} />
+        </TabsContent>
         <TabsContent value="users" className="mt-3 flex min-h-0 flex-1 flex-col">
           <AdminUsers plans={overview.plans} selfEmail={dashboard.user.email} />
         </TabsContent>
@@ -224,11 +251,12 @@ export default function AdminPage() {
           </div>
         </TabsContent>
         <TabsContent value="payments" className="mt-3 flex min-h-0 flex-1 flex-col">
-          <AdminPayments providers={overview.payment_providers} initialStatus={reviewTransfers ? "awaiting_confirmation" : ""}
+          <AdminPayments key={keyOf("payments")} providers={overview.payment_providers}
+                         initialStatus={filterOf("payments") ?? (reviewTransfers ? "awaiting_confirmation" : "")}
                          awaitingCount={counts.transfers_to_confirm ?? 0} />
         </TabsContent>
         <TabsContent value="support" className="mt-3 flex min-h-0 flex-1 flex-col">
-          <AdminSupport initialTicket={requestedTicket} />
+          <AdminSupport key={keyOf("support")} initialTicket={requestedTicket} initialPriority={filterOf("support")} />
         </TabsContent>
         <TabsContent value="reconciliation" className="mt-3 flex min-h-0 flex-1 flex-col">
           <Reconciliation />
@@ -243,7 +271,7 @@ export default function AdminPage() {
           <AdminAudit />
         </TabsContent>
         <TabsContent value="system" className="mt-3 flex min-h-0 flex-1 flex-col">
-          <AdminSystem />
+          <AdminSystem key={keyOf("system")} initialSection={filterOf("system")} />
         </TabsContent>
       </Tabs>
     </div>

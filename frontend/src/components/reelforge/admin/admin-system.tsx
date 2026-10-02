@@ -572,11 +572,12 @@ function BackupsPanel({ data, version }: { data: SystemConfigOverview; version: 
 }
 
 /** Admin → System settings: everything the server used to read from .env.runtime, edited here, never a secret shown. */
-export function AdminSystem() {
+/** ``initialSection`` opens one section (Admin → Overview links to Backups or Email). */
+export function AdminSystem({ initialSection }: { initialSection?: string | null } = {}) {
   const { t } = useI18n();
   const s = t.admin.system;
   const config = useSystemConfig(true);
-  const [nav, setNav] = useState<Nav>("security");
+  const [nav, setNav] = useState<Nav>((NAV as readonly string[]).includes(initialSection ?? "") ? (initialSection as Nav) : "security");
   const data = config.data;
   const group = (section: SystemSection, name: string) => (data?.sections[section] ?? []).filter((x) => x.group === name);
   const keyed = (data: SystemConfigOverview) =>

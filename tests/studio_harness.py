@@ -260,6 +260,9 @@ def run_program(body: str, env: dict | None = None):
                                         "REELFORGE_TOKEN", "TIKTOK_", "FACEBOOK_", "TRANSCRIPTION_", "RUNWAY",
                                         "ANTHROPIC", "REPLICATE", "RUNWARE", "DOLA", "ONEPAY_", "WORKSPACE_MEDIA",
                                         "REELFORGE_STORAGE", "REELFORGE_RETENTION"))}
-        return subprocess.run([sys.executable, "-c", PRELUDE + body], cwd=target,
+        # A file, not ``-c``: a long program would pass the Windows command-line limit (32,767 characters).
+        program = target / "program.py"
+        program.write_text(PRELUDE + body, encoding="utf-8")
+        return subprocess.run([sys.executable, str(program)], cwd=target,
                               env={**clean, **(env or {}), "PYTHONPATH": str(target), "PYTHONIOENCODING": "utf-8"},
                               capture_output=True, text=True, encoding="utf-8")

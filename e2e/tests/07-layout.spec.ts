@@ -3,8 +3,8 @@ import { asAdmin, expect, test } from "./helpers";
 
 // Settings and Admin behave like a desktop app: the window never scrolls; long regions scroll inside.
 const SETTINGS = ["general", "workspace", "defaults", "members", "ai", "publishing", "storage", "security", "system"];
-const ADMIN_TABS = ["users", "studios", "plans", "payments", "support", "reconciliation", "operations", "verification",
-                    "system", "audit"];
+const ADMIN_TABS = ["overview", "users", "studios", "plans", "payments", "support", "reconciliation", "operations",
+                    "verification", "system", "audit"];
 // Short enough to show without any scrollbar on a laptop window or larger.
 const SHORT = ["general", "workspace", "defaults", "ai", "publishing", "storage", "system"];
 const PAGES = [...SETTINGS.map((tab) => `/settings?tab=${tab}`), ...ADMIN_TABS.map((tab) => `/admin?tab=${tab}`)];
