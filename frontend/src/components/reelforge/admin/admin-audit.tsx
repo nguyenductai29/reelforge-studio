@@ -41,7 +41,7 @@ export function AdminAudit() {
 
   const columns: Column<AuditEvent>[] = [
     { key: "time", header: a.columns.time, className: "whitespace-nowrap text-muted-foreground", cell: (event) => formatDateTime(event.at) },
-    { key: "action", header: a.columns.action, className: "max-w-[240px]",
+    { key: "action", header: a.columns.action, className: "max-w-[240px] 2xl:max-w-[320px]",
       cell: (event) => <span className="block truncate font-medium">{t.auditActions[event.action] ?? event.action}</span> },
     { key: "outcome", header: a.columns.outcome, className: "whitespace-nowrap",
       cell: (event) => (
@@ -49,14 +49,14 @@ export function AdminAudit() {
           {a.outcomes[event.outcome]}
         </span>
       ) },
-    { key: "actor", header: a.columns.actor, className: "max-w-[220px]",
+    { key: "actor", header: a.columns.actor, className: "max-w-[220px] 2xl:max-w-[320px]",
       cell: (event) => (
         <span className="block truncate">
           {event.actor?.email ?? a.system}
           {event.workspace?.name && <span className="block truncate text-xs text-muted-foreground">{event.workspace.name}</span>}
         </span>
       ) },
-    { key: "target", header: a.columns.target, className: "max-w-[340px]",
+    { key: "target", header: a.columns.target, className: "max-w-[340px] 2xl:max-w-[520px]",
       cell: (event) => <span className="block truncate text-xs text-muted-foreground" title={details(event)}>{details(event) || "—"}</span> },
     { key: "ip", header: a.columns.ip, className: "whitespace-nowrap font-mono text-xs text-muted-foreground",
       cell: (event) => event.ip ?? "—" },

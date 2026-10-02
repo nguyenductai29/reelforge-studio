@@ -30,7 +30,7 @@ export default function CreatePage() {
   return (
     <div className="space-y-10">
       <PageHeader title={t.create.title} subtitle={t.create.subtitle} />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 3xl:grid-cols-6">
         {mainTemplates.map((id) => {
           const template = templateById(id);
           return (

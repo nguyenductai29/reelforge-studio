@@ -35,7 +35,7 @@ export default function WorkflowsPage() {
         {workflows.length === 0 ? (
           <div className="panel p-5 text-sm text-muted-foreground">{t.workflows.empty}</div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-3 2xl:grid-cols-4 3xl:grid-cols-5">
             {workflows.map((workflow) => {
               const run = lastRun(workflow.id);
               return (
@@ -68,7 +68,7 @@ export default function WorkflowsPage() {
 
       <section>
         <SectionTitle>{t.workflows.fromTemplate}</SectionTitle>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 3xl:grid-cols-6">
           {workflowTemplates.map((template) => (
             <div key={template.id} className="panel flex flex-col gap-3 p-4">
               <MiniDiagram kinds={template.preview} branches={template.branches} />

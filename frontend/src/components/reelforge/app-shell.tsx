@@ -31,6 +31,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { PAGE_FRAME } from "@/lib/layout";
 import { cn } from "@/lib/utils";
 import { OfflineBanner } from "./query-state";
 import { StorageAlert } from "./storage";
@@ -546,7 +547,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               id="main"
               tabIndex={-1}
               className={cn(
-                "mx-auto w-full max-w-[1400px] px-4 py-6 focus:outline-none sm:px-6 lg:px-8",
+                PAGE_FRAME,
+                "py-6 focus:outline-none",
                 // 3.5rem: the top bar. The padding is inside this height (border-box).
                 fitted && "scrollbar-thin flex h-[calc(100dvh-3.5rem)] min-h-0 flex-col overflow-y-auto overflow-x-hidden",
               )}

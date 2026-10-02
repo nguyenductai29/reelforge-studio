@@ -33,7 +33,7 @@ async function expectFitted(page: Page, url: string) {
   expect(overflow.main, `${url} scrolls its header away`).toBeLessThanOrEqual(1);
 }
 
-for (const [width, height] of [[1366, 768], [1680, 1050]] as const) {
+for (const [width, height] of [[1366, 768], [1440, 900], [1680, 1050], [1920, 1080]] as const) {
   test(`settings and admin never scroll the page at ${width}x${height}`, async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width, height });

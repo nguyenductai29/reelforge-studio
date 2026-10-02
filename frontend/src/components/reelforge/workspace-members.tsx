@@ -336,7 +336,7 @@ export function WorkspaceMembersPanel() {
   }
 
   const columns: Column<MemberRow>[] = [
-    { key: "member", header: m.columns.member, className: "max-w-[320px]",
+    { key: "member", header: m.columns.member, className: "max-w-[320px] 2xl:max-w-[480px]",
       cell: (row) => (
         <div className="min-w-0">
           <p className="flex min-w-0 items-center gap-1.5">

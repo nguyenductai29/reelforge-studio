@@ -10,7 +10,9 @@ import { WorkflowEditor } from "@/components/workflow/workflow-editor";
 import { errorText } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { PAGE_FRAME } from "@/lib/layout";
 import { useDashboard, useNodeTypes } from "@/lib/queries";
+import { cn } from "@/lib/utils";
 
 function WorkflowPage() {
   const { workflowId } = useParams<{ workflowId: string }>();
@@ -23,7 +25,7 @@ function WorkflowPage() {
 
   if (!workflow) {
     return (
-      <div className="mx-auto max-w-[1400px] space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+      <div className={cn(PAGE_FRAME, "space-y-6 py-6")}>
         <Link href="/workflows" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="size-3.5" /> {t.editor.back}
         </Link>

@@ -140,16 +140,16 @@ export function AdminSupport({ initialTicket, initialPriority }: { initialTicket
   };
 
   const columns: Column<SupportTicket>[] = [
-    { key: "ticket", header: a.columns.ticket, className: "max-w-[280px]",
+    { key: "ticket", header: a.columns.ticket, className: "max-w-[280px] 2xl:max-w-[420px]",
       cell: (ticket) => (
         <button type="button" className="block max-w-full text-left hover:text-primary" onClick={() => setViewing(ticket.id)}>
           <span className="block truncate font-medium">{ticket.subject}</span>
           <span className="block font-mono text-[11px] text-muted-foreground">#{ticket.id.slice(0, 8)}</span>
         </button>
       ) },
-    { key: "user", header: a.columns.user, className: "max-w-[200px]",
+    { key: "user", header: a.columns.user, className: "max-w-[200px] 2xl:max-w-[300px]",
       cell: (ticket) => <span className="block truncate">{ticket.created_by_email}</span> },
-    { key: "studio", header: a.columns.studio, className: "max-w-[160px]",
+    { key: "studio", header: a.columns.studio, className: "max-w-[160px] 2xl:max-w-[240px]",
       cell: (ticket) => <span className="block truncate text-muted-foreground">{ticket.workspace_name}</span> },
     { key: "category", header: a.columns.category, className: "whitespace-nowrap", cell: (ticket) => s.categories[ticket.category] },
     { key: "status", header: a.columns.status, className: "whitespace-nowrap",

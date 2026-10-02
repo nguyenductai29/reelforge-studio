@@ -272,9 +272,9 @@ export function AdminStudios({ plans }: { plans: Plan[] }) {
   };
 
   const columns: Column<AdminWorkspace>[] = [
-    { key: "studio", header: s.columns.studio, className: "max-w-[220px]",
+    { key: "studio", header: s.columns.studio, className: "max-w-[220px] 2xl:max-w-[320px]",
       cell: (ws) => <span className="block truncate font-medium" title={ws.name}>{ws.name}</span> },
-    { key: "owner", header: s.columns.owner, className: "max-w-[220px]",
+    { key: "owner", header: s.columns.owner, className: "max-w-[220px] 2xl:max-w-[320px]",
       cell: (ws) => <span className="block truncate text-muted-foreground" title={ws.owner_email}>{ws.owner_email}</span> },
     { key: "plan", header: s.columns.plan, cell: (ws) => (ws.plan_code ?? "—").toUpperCase() },
     { key: "credits", header: s.columns.credits, className: "text-right tabular-nums", cell: (ws) => formatNumber(ws.credits) },

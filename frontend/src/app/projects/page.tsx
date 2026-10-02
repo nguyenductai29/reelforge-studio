@@ -105,7 +105,8 @@ export default function ProjectsPage() {
       ) : visible.length === 0 ? (
         <EmptyState icon={Search} title={t.projects.noMatchTitle} description={t.projects.noMatchDescription} />
       ) : layout === "grid" ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        // Three cards a row on a laptop (a title and its status side by side), four from 1536 px, five from 1800.
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 3xl:grid-cols-5">
           {visible.map((item) => (
             <ProjectCard key={item.project.id} {...item} />
           ))}

@@ -266,7 +266,7 @@ export default function ModelsPage() {
           )}
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {visible.map((tool) => {
             const runnable = isRunnable(tool);
             return (

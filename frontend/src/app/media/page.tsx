@@ -250,7 +250,7 @@ function MediaPage() {
           {assets.length === 0 ? (
             <EmptyState icon={Layers} title={t.media.empty} description={t.media.emptyHint} />
           ) : (
-            <div className={cn(layout === "grid" ? "grid gap-3 sm:grid-cols-2 lg:grid-cols-3" : "space-y-2")}>
+            <div className={cn(layout === "grid" ? "grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 3xl:grid-cols-5" : "space-y-2")}>
               {visible.map((asset) => {
                 const kind = assetKind(asset.content_type);
                 const Icon = assetKindIcon[kind];

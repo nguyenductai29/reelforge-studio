@@ -108,9 +108,9 @@ export function AdminPayments({ providers, initialStatus = "", awaitingCount = 0
 
   const columns: Column<AdminPayment>[] = [
     { key: "order", header: p.columns.order, className: "font-mono text-xs", cell: (o) => o.reference },
-    { key: "user", header: p.columns.user, className: "max-w-[200px]",
+    { key: "user", header: p.columns.user, className: "max-w-[200px] 2xl:max-w-[300px]",
       cell: (o) => <span className="block truncate" title={o.owner_email}>{o.owner_email}</span> },
-    { key: "studio", header: p.columns.studio, className: "max-w-[160px]",
+    { key: "studio", header: p.columns.studio, className: "max-w-[160px] 2xl:max-w-[240px]",
       cell: (o) => <span className="block truncate text-muted-foreground" title={o.workspace_name}>{o.workspace_name}</span> },
     { key: "provider", header: p.columns.provider, className: "whitespace-nowrap", cell: (o) => providerLabel(o.provider) },
     { key: "plan", header: p.columns.plan, className: "whitespace-nowrap", cell: (o) => o.plan_code.toUpperCase() },
@@ -119,7 +119,7 @@ export function AdminPayments({ providers, initialStatus = "", awaitingCount = 0
     { key: "status", header: p.columns.status, className: "whitespace-nowrap",
       cell: (o) => <StatusBadge status={o.status} label={statusLabel(o.status)} /> },
     // Manual VietQR: the content to look for on the bank statement, and when the buyer said they paid.
-    { key: "transfer", header: p.columns.transfer, className: "max-w-[200px] text-xs",
+    { key: "transfer", header: p.columns.transfer, className: "max-w-[200px] text-xs 2xl:max-w-[300px]",
       cell: (o) => o.provider === "bank_qr" ? (
         <span className="block">
           <span className="block truncate font-mono" title={o.transfer_content ?? ""}>{o.transfer_content ?? "—"}</span>
@@ -132,7 +132,7 @@ export function AdminPayments({ providers, initialStatus = "", awaitingCount = 0
       cell: (o) => formatDateTime(o.created_at) },
     { key: "paid", header: p.columns.paid, className: "whitespace-nowrap text-muted-foreground",
       cell: (o) => (o.paid_at ? formatDateTime(o.paid_at) : "—") },
-    { key: "reference", header: p.columns.reference, className: "max-w-[140px] font-mono text-xs",
+    { key: "reference", header: p.columns.reference, className: "max-w-[140px] font-mono text-xs 2xl:max-w-[220px]",
       cell: (o) => o.provider === "bank_qr" ? <span className="text-muted-foreground">—</span>
         : <span className="block truncate" title={o.provider_reference ?? ""}>{o.provider_reference ?? "—"}</span> },
     { key: "actions", header: <span className="sr-only">{p.columns.actions}</span>, className: "w-10 text-right",

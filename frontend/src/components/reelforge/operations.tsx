@@ -71,7 +71,7 @@ export function Operations() {
       cell: (job) => job.worker_id ?? "—" },
     { key: "updated", header: o.columns.updated, className: "whitespace-nowrap text-muted-foreground",
       cell: (job) => (job.updated_at ? formatDateTime(job.updated_at) : "—") },
-    { key: "error", header: o.columns.error, className: "max-w-[260px]",
+    { key: "error", header: o.columns.error, className: "max-w-[260px] 2xl:max-w-[480px]",
       cell: (job) => <span className="block truncate text-muted-foreground" title={job.last_error ?? ""}>{job.last_error ?? ""}</span> },
   ];
 

@@ -240,7 +240,8 @@ export default function AdminPage() {
         {/* relative: the switches' hidden form inputs are absolutely positioned and must not stretch the page. */}
         <TabsContent value="plans" className="scrollbar-thin relative mt-3 min-h-0 flex-1 overflow-y-auto">
           <p className="mb-3 text-xs text-muted-foreground">{a.plans.hint}</p>
-          <div className="grid gap-3 lg:grid-cols-3">
+          {/* As many plans a row as fit at 19rem (three on a laptop, four from 1600 px), never an empty column. */}
+          <div className="grid gap-3 lg:grid-cols-[repeat(auto-fit,minmax(19rem,1fr))]">
             {overview.plans.map((plan) => (
               <PlanForm
                 key={`${plan.code}-${plan.name}-${plan.price_vnd}-${plan.is_active}-${plan.monthly_credits}-${plan.storage_limit_bytes}`}

@@ -231,7 +231,7 @@ export function AdminUsers({ plans, selfEmail }: { plans: Plan[]; selfEmail: str
   };
 
   const columns: Column<AdminUser>[] = [
-    { key: "email", header: u.columns.email, className: "max-w-[260px]",
+    { key: "email", header: u.columns.email, className: "max-w-[260px] 2xl:max-w-[380px]",
       cell: (user) => (
         <div className="min-w-0">
           <p className="truncate font-medium" title={user.email}>{user.email}</p>
@@ -239,7 +239,7 @@ export function AdminUsers({ plans, selfEmail }: { plans: Plan[]; selfEmail: str
         </div>
       ) },
     { key: "role", header: u.columns.role, cell: (user) => (user.is_admin ? u.admin : u.member) },
-    { key: "studio", header: u.columns.studio, className: "max-w-[200px]",
+    { key: "studio", header: u.columns.studio, className: "max-w-[200px] 2xl:max-w-[300px]",
       cell: (user) => <span className="block truncate" title={user.workspace?.name}>{user.workspace?.name ?? "—"}</span> },
     { key: "plan", header: u.columns.plan, cell: (user) => (user.plan_code ?? "—").toUpperCase() },
     { key: "status", header: u.columns.status, className: "whitespace-nowrap",

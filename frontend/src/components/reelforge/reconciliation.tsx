@@ -99,14 +99,14 @@ export function Reconciliation() {
   }
 
   const columns: Column<ReconciliationItem>[] = [
-    { key: "studio", header: r.columns.studio, className: "max-w-[220px]",
+    { key: "studio", header: r.columns.studio, className: "max-w-[220px] 2xl:max-w-[320px]",
       cell: (item) => (
         <div className="min-w-0">
           <p className="truncate font-medium" title={item.workspace_name}>{item.workspace_name}</p>
           <p className="truncate text-xs text-muted-foreground" title={item.user_email}>{item.user_email}</p>
         </div>
       ) },
-    { key: "step", header: r.columns.step, className: "max-w-[240px]",
+    { key: "step", header: r.columns.step, className: "max-w-[240px] 2xl:max-w-[340px]",
       cell: (item) => (
         <div className="min-w-0 text-xs">
           <p className="truncate">{item.workflow_name} · {item.node_type}
@@ -114,7 +114,7 @@ export function Reconciliation() {
           <p className="truncate text-muted-foreground">{item.provider} / {item.model}</p>
         </div>
       ) },
-    { key: "error", header: r.columns.error, className: "max-w-[260px]",
+    { key: "error", header: r.columns.error, className: "max-w-[260px] 2xl:max-w-[420px]",
       cell: (item) => (
         <span className="block truncate text-xs text-muted-foreground" title={item.error_message || item.error_category || undefined}>
           {item.error_message || item.error_category || "—"}

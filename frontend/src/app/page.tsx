@@ -183,12 +183,14 @@ export default function HomePage() {
             <RecentWorkflows data={data} workflows={dashboard?.workflows ?? []} canCreate={canCreate} />
           </HomeSection>
 
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+          {/* Recent projects beside AI usage and publishing. From 1536 px the projects take three columns and the runs
+              move up under them, beside the same side column, instead of making the page longer. */}
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem] 2xl:grid-cols-[minmax(0,1fr)_24rem]">
             <HomeSection id="home-projects" title={t.home.recentProjects}
                          action={<ViewAll href="/projects">{t.home.allProjects}</ViewAll>}>
               <RecentProjects data={data} canCreate={canCreate} />
             </HomeSection>
-            <div className="grid content-start gap-6 md:grid-cols-2 xl:grid-cols-1">
+            <div className="grid content-start gap-6 md:grid-cols-2 xl:grid-cols-1 2xl:row-span-2">
               <HomeSection id="home-usage" title={<>{t.home.usage.title}{period}</>}
                            action={<ViewAll href="/billing">{t.home.usage.billing}</ViewAll>}>
                 <UsagePanel data={data} />
@@ -198,12 +200,11 @@ export default function HomePage() {
                 <PublishingPanel data={data} canConnect={canConnect} />
               </HomeSection>
             </div>
+            <HomeSection id="home-runs" title={t.home.recentRuns} className="xl:col-span-2 2xl:col-span-1"
+                         action={<ViewAll href="/workflows">{t.home.history}</ViewAll>}>
+              <RecentRuns data={data} />
+            </HomeSection>
           </div>
-
-          <HomeSection id="home-runs" title={t.home.recentRuns}
-                       action={<ViewAll href="/workflows">{t.home.history}</ViewAll>}>
-            <RecentRuns data={data} />
-          </HomeSection>
         </>
       )}
     </div>

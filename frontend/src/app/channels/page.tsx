@@ -188,7 +188,7 @@ export default function ChannelsPage() {
   return (
     <div className="space-y-6">
       <PageHeader title={t.channels.title} subtitle={t.channels.subtitle} />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {channels.isPending && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
         {channels.isError && (
           <QueryError error={channels.error} onRetry={() => void channels.refetch()} className="sm:col-span-2" />

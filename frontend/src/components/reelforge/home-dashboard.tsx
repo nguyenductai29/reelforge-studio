@@ -264,7 +264,7 @@ export function QuickCreate() {
   const { t } = useI18n();
   const { create, pending } = useCreateFromTemplate();
   return (
-    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-2">
+    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-2 2xl:grid-cols-3">
       {QUICK.map((item) => {
         const template = templateById(item.id);
         const Icon = item.icon;
@@ -372,11 +372,17 @@ function ProjectCover({ project }: { project: HomeProject }) {
   );
 }
 
+/** Column spans for the last of ``count`` cards, so it fills its row of two (tablet up) or three (from 1536 px). */
+function fillRow(count: number) {
+  return cn(count % 2 === 1 && "sm:col-span-2", "2xl:col-span-1", count % 3 === 1 && "2xl:col-span-3",
+            count % 3 === 2 && "2xl:col-span-2");
+}
+
 export function RecentProjects({ data, canCreate }: { data?: HomeSummary; canCreate: boolean }) {
   const { t, formatRelative } = useI18n();
   if (!data) {
     return (
-      <div className="grid gap-3 sm:grid-cols-2" aria-busy="true">
+      <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3" aria-busy="true">
         {[0, 1, 2, 3, 4, 5].map((index) => (
           <Skeleton key={index} className={cn("h-[11.5rem] rounded-xl", index >= 4 && "hidden sm:block")} />
         ))}
@@ -397,12 +403,12 @@ export function RecentProjects({ data, canCreate }: { data?: HomeSummary; canCre
     );
   }
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
       {data.recent_projects.map((project, index, all) => (
-        // Six beside the usage and publishing panels (an odd last one spans both columns); four on a phone.
+        // Six of them, four on a phone; the last card fills its row (two columns, three from 1536 px).
         <Link key={project.id} href={`/projects/${encodeURIComponent(project.id)}`}
               className={cn(CARD_LINK, "flex-col overflow-hidden", index < 4 ? "flex" : "hidden sm:flex",
-                            all.length % 2 === 1 && index === all.length - 1 && "sm:col-span-2")}>
+                            index === all.length - 1 && fillRow(all.length))}>
           <ProjectCover project={project} />
           <div className="flex flex-1 flex-col gap-1.5 p-3.5">
             <div className="flex items-start justify-between gap-2">

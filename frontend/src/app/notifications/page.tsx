@@ -54,18 +54,18 @@ export default function NotificationsPage() {
         ]}
       />
       {page.isError && !items.length ? (
-        <QueryError error={page.error} onRetry={() => void page.refetch()} className="max-w-3xl" />
+        <QueryError error={page.error} onRetry={() => void page.refetch()} />
       ) : !items.length && !page.isPending ? (
         <EmptyState icon={Bell} title={t.notifications.empty} description={t.notifications.emptyHint} />
       ) : (
-        <div className="panel max-w-3xl space-y-1 p-2">
+        <div className="panel space-y-1 p-2">
           {items.map((item) => (
             <NotificationRow key={item.id} item={item} onOpen={() => void open(item)} />
           ))}
         </div>
       )}
       {total > PAGE && (
-        <div className="flex max-w-3xl items-center justify-between text-xs text-muted-foreground">
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>{t.table.range(String(offset + 1), String(Math.min(offset + PAGE, total)), String(total))}</span>
           <div className="flex gap-1.5">
             <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>

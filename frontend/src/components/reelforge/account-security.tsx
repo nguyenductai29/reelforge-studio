@@ -16,9 +16,15 @@ import { cn } from "@/lib/utils";
 import { FieldLabel, StatusBadge } from "./primitives";
 import { FormError } from "./public-shell";
 
-function Card({ title, icon: Icon, children, aside }: { title: string; icon: typeof KeyRound; children: ReactNode; aside?: ReactNode }) {
+function Card({ title, icon: Icon, children, aside, className }: {
+  title: string;
+  icon: typeof KeyRound;
+  children: ReactNode;
+  aside?: ReactNode;
+  className?: string;
+}) {
   return (
-    <section className="panel space-y-4 p-5" aria-labelledby={`security-${title}`}>
+    <section className={cn("panel space-y-4 p-5", className)} aria-labelledby={`security-${title}`}>
       <div className="flex items-center justify-between gap-3">
         <h3 id={`security-${title}`} className="flex items-center gap-2 text-sm font-semibold">
           <Icon className="size-4 text-muted-foreground" aria-hidden />
@@ -271,7 +277,8 @@ export function AccountSecurityPanel() {
 
   const others = data.sessions.filter((session) => !session.current);
   return (
-    <div className="grid max-w-5xl grid-cols-1 gap-4 lg:grid-cols-2">
+    // Two columns on a laptop; three from 1536 px: email, password and 2FA side by side, the sessions across.
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
       <Card title={a.email.title} icon={KeyRound}
             aside={<StatusBadge status={data.email_verified ? "completed" : "blocked"}
                                 label={data.email_verified ? a.email.verified : a.email.unverified} />}>
@@ -312,9 +319,10 @@ export function AccountSecurityPanel() {
         </form>
       </Card>
 
-      <div className="lg:col-span-2"><TwoFactorCard data={data} /></div>
+      {/* A grid of one, so the card stretches to the row like the email and password cards beside it. */}
+      <div className="grid lg:col-span-2 2xl:col-span-1"><TwoFactorCard data={data} /></div>
 
-      <div className="lg:col-span-2">
+      <div className="lg:col-span-2 2xl:col-span-3">
         <Card title={a.sessions.title} icon={MonitorSmartphone}
               aside={others.length > 0 && (
                 <Button size="sm" variant="outline" disabled={busy === "others"} onClick={() => void act("others", async () => {
@@ -355,7 +363,7 @@ export function AccountSecurityPanel() {
         </Card>
       </div>
 
-      <Card title={a.activity.title} icon={ShieldCheck}>
+      <Card title={a.activity.title} icon={ShieldCheck} className="2xl:col-span-2">
         {activity.isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> :
           activity.isError ? <p className="text-sm text-destructive">{errorText(activity.error, t)}</p> :
           activity.data.length === 0 ? <p className="text-sm text-muted-foreground">{a.activity.empty}</p> : (

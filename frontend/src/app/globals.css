@@ -64,6 +64,9 @@
   --color-ig: var(--ig);
   --font-display: "Space Grotesk Variable", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-sans: var(--app-font-sans);
+  /* Large desktops (1800 px): one more column in card grids. A theme breakpoint, so it sorts after 2xl; an arbitrary
+     min-[1800px] lands before sm and every named breakpoint overrides it. */
+  --breakpoint-3xl: 112.5rem;
 }
 
 :root {

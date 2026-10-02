@@ -62,11 +62,11 @@ function SupportPage() {
         }
       />
       {tickets.isError && !items.length ? (
-        <QueryError error={tickets.error} onRetry={() => void tickets.refetch()} className="max-w-4xl" />
+        <QueryError error={tickets.error} onRetry={() => void tickets.refetch()} />
       ) : !items.length && !tickets.isPending ? (
         <EmptyState icon={LifeBuoy} title={s.empty} description={s.emptyHint} />
       ) : (
-        <div className="panel max-w-4xl divide-y divide-border">
+        <div className="panel divide-y divide-border">
           {items.map((ticket) => (
             <Link
               key={ticket.id}
@@ -89,7 +89,7 @@ function SupportPage() {
         </div>
       )}
       {total > PAGE && (
-        <div className="flex max-w-4xl items-center justify-end gap-1.5">
+        <div className="flex items-center justify-end gap-1.5">
           <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
             {t.table.previous}
           </Button>

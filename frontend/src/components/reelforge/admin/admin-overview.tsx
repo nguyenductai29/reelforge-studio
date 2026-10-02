@@ -587,11 +587,11 @@ function Support({ data }: { data: AdminDashboard }) {
   );
 }
 
-function RecentActivity({ data }: { data: AdminDashboard }) {
+function RecentActivity({ data, className }: { data: AdminDashboard; className?: string }) {
   const { t, formatRelative, formatDateTime } = useI18n();
   const r = t.admin.overview.activity;
   return (
-    <Panel id="admin-overview-activity" title={r.title} tab="audit" action={t.admin.tabs.audit}>
+    <Panel id="admin-overview-activity" title={r.title} tab="audit" action={t.admin.tabs.audit} className={className}>
       {data.activity.length === 0 ? (
         <Empty>{r.none}</Empty>
       ) : (
@@ -624,8 +624,8 @@ function Loading() {
         {Array.from({ length: 7 }, (_, index) => <Skeleton key={index} className="h-[4.75rem] rounded-xl" />)}
       </div>
       <Skeleton className="h-28 rounded-xl" />
-      <div className="grid gap-4 xl:grid-cols-2">
-        {Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-52 rounded-xl" />)}
+      <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+        {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-52 rounded-xl" />)}
       </div>
     </div>
   );
@@ -646,7 +646,8 @@ export function AdminOverview({ onOpen }: { onOpen: Open }) {
       <div className="space-y-4 pb-1">
         <Stats data={data} />
         <Attention data={data} />
-        <div className="grid gap-4 xl:grid-cols-2">
+        {/* Two columns on a laptop, three from 1536 px: nine panels in three rows instead of five. */}
+        <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
           <Health data={data} />
           <AiUsage data={data} />
           <Payments data={data} />
@@ -655,8 +656,8 @@ export function AdminOverview({ onOpen }: { onOpen: Open }) {
           <Publishing data={data} />
           <Storage data={data} />
           <Support data={data} />
+          <RecentActivity data={data} className="xl:col-span-2 2xl:col-span-1" />
         </div>
-        <RecentActivity data={data} />
         <p className="text-right text-[11px] text-muted-foreground">{t.admin.overview.updated(formatRelative(data.generated_at))}</p>
       </div>
     </OpenContext.Provider>

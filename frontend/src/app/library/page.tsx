@@ -80,7 +80,7 @@ export default function LibraryPage() {
             <EmptyState icon={FileText} title={t.library.tabs.scripts} description={t.library.noScripts} />
           ) : (
             <div className="space-y-3">
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                 {scripts.data.items.map((script) => {
                   const project = data?.projects.find((p) => p.id === script.project_id);
                   return (
@@ -118,7 +118,7 @@ export default function LibraryPage() {
         ) : visible.length === 0 ? (
           <div className="panel p-5 text-sm text-muted-foreground">{t.library.noMatch}</div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 3xl:grid-cols-5">
             {visible.map((asset) => (
               <Link key={asset.id} href={`/media?asset=${asset.id}`} className="panel group overflow-hidden transition-colors hover:border-border-strong">
                 <div className="aspect-video overflow-hidden bg-black">

@@ -4,6 +4,12 @@ import { cn } from "@/lib/utils";
 import type { NodeKind } from "@/lib/workflow";
 import { kindIcon } from "./kind-icon";
 
+// A step is 28 px with a 12 px link before it, so the n-th (from 0) is drawn once the diagram is 40 (n + 1) px wide:
+// a narrow card drops the last steps instead of clipping the first and the last. A container query on the diagram's
+// own width, the classes written out for Tailwind to find them.
+const FITS = ["", "@max-[80px]:hidden", "@max-[120px]:hidden", "@max-[160px]:hidden", "@max-[200px]:hidden",
+              "@max-[240px]:hidden", "@max-[280px]:hidden", "@max-[320px]:hidden"];
+
 export function MiniDiagram({
   kinds,
   branches = 0,
@@ -33,16 +39,18 @@ export function MiniDiagram({
   return (
     <div
       className={cn(
-        "flex h-24 items-center justify-center gap-0 overflow-hidden rounded-lg bg-[radial-gradient(circle,var(--border)_1px,transparent_1px)] bg-[size:12px_12px] px-3",
+        "@container flex h-24 items-center justify-center gap-0 overflow-hidden rounded-lg bg-[radial-gradient(circle,var(--border)_1px,transparent_1px)] bg-[size:12px_12px]",
         className,
       )}
     >
       {main.map((kind, index) => {
         const Icon = kindIcon[kind];
+        // The branches at the end take the room of one step.
+        const fit = FITS[index + (branches > 0 ? 1 : 0)];
         return (
           <Fragment key={index}>
-            {index > 0 && <span className="h-px w-3 shrink-0 bg-border-strong" />}
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border-strong bg-card">
+            {index > 0 && <span className={cn("h-px w-3 shrink-0 bg-border-strong", fit)} />}
+            <span className={cn("flex size-7 shrink-0 items-center justify-center rounded-md border border-border-strong bg-card", fit)}>
               <Icon className="size-3.5 text-primary" />
             </span>
           </Fragment>
