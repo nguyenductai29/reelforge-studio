@@ -1,7 +1,8 @@
 # Backup and recovery (v1.0)
 
 What has to survive a disk failure, how it is backed up, how a backup is checked without touching production, and
-how to restore. Record each rehearsal in [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (Recovery rehearsal).
+how to restore. Record each rehearsal in Admin → Verification (gate `restore_rehearsal`, BK6 of
+[RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#backups)).
 
 | What | How | Where | When |
 | --- | --- | --- | --- |
@@ -125,7 +126,7 @@ deploy/restore-check.sh --dump /srv/data/backups/reelforge/reelforge-20261002-02
 4. Every secret should decrypt (`decrypted == stored`). A mismatch means the key copy is not the key in use: fix that
    now, not during a disaster.
 5. Clean up: `dropdb reelforge_restore_test`, `shred -u /tmp/key-copy/master.key`.
-6. Record the date, the dump name and the result in the release checklist.
+6. Record the result in Admin → Verification (`restore_rehearsal`), with the dump name and the counts in its note.
 
 ## Full restore (a real disaster)
 

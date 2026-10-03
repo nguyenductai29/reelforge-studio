@@ -1,6 +1,7 @@
 # Final product audit (v1.0: Phases 14–27)
 
-> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-02. Database head: `0026_change_production_origin`.
+> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-03 (code of `56ada10`). Database head:
+> `0026_change_production_origin`. What v1.0 ships, in short: [RELEASE_NOTES_V1.md](RELEASE_NOTES_V1.md).
 > Release state and the remaining production gates: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).
 > The release audit itself (findings, fixes, test results, what remains manual) is [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md);
 > the operator's gate is [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md).
@@ -35,6 +36,13 @@ or Instagram in the channel lists.
 - **Background Music** under the narration (1–100 %, loop or play once); **image slideshows**; workspace content
   defaults (platform, tone, length).
 
+**Home (the member's dashboard):** an idea box that creates a project; the studio's figures (credits, projects, runs
+and publications in the last 30 days, storage); what needs the member's attention (runs to review, failed or blocked
+runs, failed publications, channels to reconnect, low credits, storage, an inactive plan, support replies, held
+credits, runs in progress: only what the member's role can act on); quick templates, the onboarding
+checklist, recent workflows, projects and runs, AI usage by kind and publishing per channel. One request
+(`GET /api/home`), within the member's role and the active studio; only recorded data, no estimate or trend.
+
 **Library, media and storage:** scripts in the Library; add uploads to a project; Media page filters and owner-confirmed
 deletion; storage used / quota with warnings at 70, 80, 90 and 100 %; "Delete intermediate media" after a preview.
 
@@ -60,10 +68,11 @@ publishing, payments, credits, storage and support; in-app support requests with
 registration form. They are templates with `[bracketed]` operator items and a visible notice; legal review is a
 release gate.
 
-**Administration:** the console fits the window, each table scrolls inside it. Ten tabs:
+**Administration:** the console fits the window, each table scrolls inside it. Eleven tabs:
 
 | Tab | What it shows and does |
 | --- | --- |
+| Overview | The first tab (`GET /api/admin/overview`, system administrators only, counted in the database): users, active users, studios, active subscriptions, paid volume, jobs in 24 h and the system state; what needs attention; system health, AI usage, payments, credits, growth, publishing, storage, support and recent activity, each opening the tab that handles it |
 | Users | Search, role and status filters; create account; view, lock, unlock; reset a user's 2FA; sign a user out everywhere |
 | Studios & credits | Search, plan and status filters, storage; change plan, adjust credits, pause, activate |
 | Plans | Name, price, limits, monthly credits, storage limit, and why a plan is not purchasable |
@@ -237,8 +246,10 @@ separately from them.
 ## 15. Verification
 
 **Automated (no paid or live service):** backend tests on SQLite and PostgreSQL 16, Alembic upgrade/check/downgrade,
-frontend typecheck and build, eleven browser flows on PostgreSQL, a load baseline
-([LOAD_BASELINE.md](LOAD_BASELINE.md)), a responsive and accessibility pass. Results: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md).
+frontend typecheck and build, the browser suite on PostgreSQL (30 tests in 11 specs, including the layout at seven
+window sizes from 390 to 1920 px), a load baseline ([LOAD_BASELINE.md](LOAD_BASELINE.md)), an accessibility pass.
+Current results: [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-03-release-closure);
+CI on the release candidate: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).
 
 **Manual, on the real server:** every gate of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md), recorded in
 Admin → Verification or by the pre-flight ([LIVE_VERIFICATION.md](LIVE_VERIFICATION.md)): real email, real AI providers, real

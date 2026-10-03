@@ -11,6 +11,11 @@ or any real provider.
 | `04-billing` | manual VietQR: the buyer reports the transfer, an administrator confirms it, the plan activates once, the receipt email and notification arrive |
 | `05-support` | a support request, the administrator's reply as a live notification and an email, mark all as read |
 | `06-admin` | every admin tab opens without an error; the audit log filters on the server; a non-admin gets 403; a request from a foreign origin is refused |
+| `07-layout` | Settings and Admin never scroll the page (1366×768 to 1920×1080), nor on a phone or a tablet; a window too short for the page scrolls the region under the top bar, and dialogs scroll on their own |
+| `08-members` | Settings → Members: search, filters and pages; invitations and member actions; nothing beyond the member's role |
+| `09-home` | Home: the overview, what needs attention, quick create and recent work; a viewer only reads |
+| `10-admin-overview` | Admin → Overview is the first tab; its figures and what needs attention each open the tab that handles it |
+| `11-wide-layout` | Fifteen pages at 390×844, 768×1024, 1024×768, 1366×768, 1440×900, 1680×1050 and 1920×1080: no sideways scrolling, the content uses the width beside the sidebar, workflow diagrams not clipped, the plans side by side; at 1680 and 1920 the admin figures in one row, the panels side by side, the members table across the page and more templates a row |
 
 ## Run locally
 

@@ -21,20 +21,24 @@ Related: [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) · [BACKUP_RECOVERY.
 [SECURITY.md](SECURITY.md) · [EMAIL.md](EMAIL.md) · [TEAMS.md](TEAMS.md) · [LOAD_BASELINE.md](LOAD_BASELINE.md) ·
 the release audit: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md)
 
-## Automated evidence (development machine, 2026-10-02, after the domain change)
+## Automated evidence (development machine, 2026-10-03, release closure)
 
-Results of the automated suites on the release candidate, on a development machine. **They do not replace CI**: only
-a green CI run on the deployed commit passes `release_ci_green`.
+Results of the automated suites on the code of the release candidate (`56ada10`, exported with `git archive`: no
+`instance/`, like a CI checkout), on a Windows development machine (Python 3.14.7, Node 22.23.2, PostgreSQL 16.2).
+**They do not replace CI**: only a green CI run on the deployed commit passes `release_ci_green`. CI itself was green
+on `56ada10` (14 / 14 check runs, [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Backend tests, SQLite | `python -m unittest discover -s tests` | Passed: 610 tests, 28 skipped (15 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks; the 6 YouTube retry tests run inside a disposable copy instead) |
-| Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 610 tests, 13 skipped (live providers, FFmpeg, symlinks; the YouTube retry tests run in their copy) |
-| Alembic: upgrade head, `alembic check`, downgrade base, upgrade head, `alembic check` (PostgreSQL 16) | CI job *migrations* | Passed on PostgreSQL 16.2: no drift, head `0026_change_production_origin` |
-| Frontend typecheck and production build | `npm run typecheck`, `npm run build` | Passed |
-| Browser tests (11 tests: first-run setup refused from a public address then done locally, sign-in, forgot/reset, sessions and a session lost in an open tab, 2FA, invitations and switching, project and workflow, manual VietQR confirmed by an admin, support and notifications, admin pages, release gates recorded in Admin → Verification, non-admin refusal) | `e2e/` on PostgreSQL 16.2 | Passed: 11 / 11 |
-| Load baseline | `tests/load_check.py` | Recorded in LOAD_BASELINE.md and re-run after Phase 27; no errors, no double claim, no double credit |
-| Responsive and accessibility pass: 33 pages at 390×844, 768×1024, 1366×768, 1680×1050; axe-core (WCAG 2.1 A/AA rules) at 1366×768; keyboard: skip link, dialog focus trap, Escape, named controls | QA scripts on the E2E stack | No horizontal scrolling of the page; no axe violation; keyboard checks passed. Automated rules catch only part of accessibility: this is not a compliance claim (run on the Phase 26 build; later interface changes are covered by the browser tests) |
+| Backend tests, SQLite | `python -m unittest discover -s tests -v` | Passed: 613 tests, 28 skipped (15 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks; the 6 YouTube retry tests run inside a disposable copy instead) |
+| Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 613 tests, 13 skipped (2 live providers, 1 FFmpeg, 4 symlinks; the 6 YouTube retry tests run in their copy) |
+| Alembic on PostgreSQL 16.2 | `alembic upgrade head`, `alembic check`, `alembic downgrade base`, `alembic upgrade head`, `alembic check` (`REELFORGE_DATABASE_URL` on a scratch database) | Passed: no drift either time; `alembic current` is `0026_change_production_origin (head)` |
+| Frontend install, typecheck and production build | `npm ci`, `npm run typecheck`, `npm run build` | Passed. `npm ci` reports 2 advisories, both in the PostCSS copy bundled inside `next@15.5.26` (`postcss@8.4.31`, build time only, for CSS the app writes itself; the app's own pipeline uses `postcss@8.5.28`): LOW, fixed only by Next.js 16 ([POST_V1_ROADMAP.md](POST_V1_ROADMAP.md)) |
+| Documentation checks after the release-closure edits | `tests.test_phase28` (release docs, checklist coverage, deploy script), `tests.test_product_audit` | Passed: 44 tests |
+| Browser tests (30 tests in 11 specs, [e2e/README.md](../e2e/README.md): first-run setup, sign-in, password reset, sessions, 2FA; teams; project and workflow; manual VietQR; support; admin pages and release gates; Settings and Admin fitting the window; members; Home; Admin → Overview; every main page at 390×844, 768×1024, 1024×768, 1366×768, 1440×900, 1680×1050 and 1920×1080) | `e2e/` on PostgreSQL 16.2, a fresh database | Passed: 30 / 30 |
+| Table actions (a one-off check, not kept as a test): every button in the rows of Admin → Users, Studios, Payments, Support, Reconciliation, Operations, Audit log and Settings → Members, at 390×844, 1024×768 and 1366×768 | Playwright on the same stack, after the suite | No button cut off at any of the three sizes: Users 16 rows / 16 buttons, Studios 16 / 16, Payments 1 / 1, Support 3 / 6, Members of a studio with 19 members and invitations 20 / 19. Reconciliation and Operations had no row needing an action in that data, and the Audit log has no row buttons |
+| Load baseline | `tests/load_check.py` | Not re-run in the release closure; last run after Phase 27 ([LOAD_BASELINE.md](LOAD_BASELINE.md)). Optional, not a gate |
+| Accessibility pass: axe-core (WCAG 2.1 A/AA rules) at 1366×768; keyboard: skip link, dialog focus trap, Escape, named controls | QA scripts on the E2E stack | Last run on the Phase 26 build: no axe violation, keyboard checks passed; not re-run since (the layout is covered by the browser tests above). Automated rules catch only part of accessibility: this is not a compliance claim |
 
 ## Release
 

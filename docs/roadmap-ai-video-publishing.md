@@ -1,5 +1,9 @@
 # ReelForge Studio: roadmap tạo video AI và đăng mạng xã hội
 
+> **Tài liệu lịch sử:** roadmap trước v1.0; mọi trạng thái bên dưới là của ngày 2026-09-24. Trạng thái phát hành hiện
+> tại: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md); những gì v1.0 có: [RELEASE_NOTES_V1.md](RELEASE_NOTES_V1.md); sau
+> v1.0: [POST_V1_ROADMAP.md](POST_V1_ROADMAP.md).
+
 Ngày rà soát và cập nhật trạng thái: 2026-09-24. Đây là roadmap sản phẩm và kỹ thuật; mỗi giai đoạn là một phần mềm chạy được, có thể kiểm tra độc lập. Ước lượng thời gian và lựa chọn gói dịch vụ sẽ cần dữ liệu về ngân sách, lưu lượng và quyền truy cập API. Trạng thái dưới đây phản ánh mã nguồn và kiểm thử giả lập; chưa xác nhận upload hay tạo video với tài khoản dịch vụ thật.
 
 ## Mục tiêu và giả định

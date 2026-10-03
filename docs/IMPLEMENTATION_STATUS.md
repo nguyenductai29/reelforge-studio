@@ -728,6 +728,31 @@ The production domain moved from `https://studio.imokome-cloud.com` to `https://
 - **Tests:** `tests/test_domain_migration.py` (cases A–G, callbacks, redirects, the same-origin check),
   `tests/test_production_origin.py` (0021 as history).
 
+### Interface work after the domain change (2026-10-02 / 03, no migration)
+
+Commits `4a41892`, `775d7f2`, `552c325` and `56ada10`; head unchanged (`0026_change_production_origin`).
+
+- **Settings and Admin fit the window:** no page scroll, tables and long tabs scroll inside; Settings → Members with
+  server-side search, filters and pages (`tests/test_members_page.py`, `e2e/tests/07-layout`, `08-members`).
+- **Home, the member's dashboard:** one request, `GET /api/home` (`app/home.py`): the overview, what needs attention
+  (only what the member's role can act on), quick templates, recent work, AI usage and publishing
+  (`tests/test_home_summary.py`, `e2e/tests/09-home`).
+- **Admin → Overview:** the first admin tab, `GET /api/admin/overview` (`app/admin_dashboard.py`, system
+  administrators only, counted in the database): figures, what needs attention and panels that open the tab handling
+  each item (`tests/test_admin_dashboard.py`, `e2e/tests/10-admin-overview`).
+- **Wide desktop layout:** one page frame (`frontend/src/lib/layout.ts`: 16 / 20 / 24 px gutters, the full width
+  beside the sidebar, 2400 px at most), more grid columns at 1280, 1536 and 1800 px, workflow diagrams that drop
+  their last steps instead of clipping (`e2e/tests/11-wide-layout`).
+
+### Release closure v1.0 (2026-10-03)
+
+Documentation, release metadata and the documentation checks (`tests/test_phase28.py`) only, on top of `56ada10` (CI
+green on it); no application code, no migration. The release status names the audited
+commit, the head, the origin, CI, deployment and the gates ([V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)); release
+notes ([RELEASE_NOTES_V1.md](RELEASE_NOTES_V1.md)) and the post-v1.0 roadmap ([POST_V1_ROADMAP.md](POST_V1_ROADMAP.md));
+out-of-date statements corrected (README, the product audit, the e2e README, backups, bootstrap). No code or
+configuration blocker found; the release stays a candidate until the manual gates pass on the server.
+
 ### Configuration sources
 
 - **`instance/bootstrap.json`:** `database_url` and optional legacy `payos` credentials.

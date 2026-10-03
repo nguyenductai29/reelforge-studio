@@ -277,9 +277,13 @@ class ReleaseDocsTest(unittest.TestCase):
 
     def test_the_release_stays_a_candidate_until_recorded_otherwise(self):
         status = (ROOT / "docs" / "V1_RELEASE_STATUS.md").read_text(encoding="utf-8")
-        self.assertRegex(status.splitlines()[2], r"\*\*Status: (RELEASE_CANDIDATE|RELEASED v1\.0\.0)\.?\*\*")
+        self.assertRegex(status.splitlines()[2],
+                         r"\*\*Status: (RELEASE_CANDIDATE|READY_FOR_TAG|RELEASED v1\.0\.0)\.?\*\*")
         self.assertIn("git tag -a v1.0.0", status)
         self.assertIn("# git push origin v1.0.0", status)  # documented, never run by a tool
+        # The audited commit is named in full, and no blank is left to fill in by hand.
+        self.assertRegex(status, r"`[0-9a-f]{40}`")
+        self.assertNotIn("____", status)
 
 
 class FakeProbe(release_check.Probe):

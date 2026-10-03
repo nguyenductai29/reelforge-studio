@@ -47,7 +47,7 @@ A backup on the same HDD does **not** survive that disk failing. Copy the dumps 
    sudo apt install -y python3-venv ffmpeg fonts-noto-core fonts-noto-cjk
    ```
 
-   Also install Node.js 20+ and PostgreSQL.
+   Also install Node.js 20.9 or newer (22, the LTS, recommended; CI builds on 20 and 22) and PostgreSQL (CI tests 16).
 2. **Source and dependencies:**
 
    ```bash

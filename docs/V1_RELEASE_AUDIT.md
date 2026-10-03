@@ -1,5 +1,10 @@
 # ReelForge Studio v1.0 — release audit (Phase 27)
 
+> **Historical record: the Phase 27 audit of 2026-10-02, made on `17a8bf5`.** Its commit, test counts and migration
+> head are those of that day. The current state of the release (candidate commit, head `0026_change_production_origin`,
+> CI, gates) is [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md); the current automated evidence is in
+> [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-03-release-closure).
+
 Status values: **PASS** (verified here, automatically or by reading the code), **FAIL** (a blocker that remains),
 **MANUAL** (needs the real server, a real provider, a real payment or a person), **NOT_APPLICABLE**.
 Nothing marked MANUAL was verified here, and nothing in [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) was ticked.
@@ -134,8 +139,9 @@ them.
 ## J. Remaining manual checks
 
 Every item of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (all "Not checked") and the 41 items of Admin →
-Verification. (The release closure since turned the checklist into an index of 62 gates recorded in Admin →
-Verification or by `deploy/release-preflight.sh`; the current state is in [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).)
+Verification. (The release closure since turned the checklist into an index of gates recorded in Admin →
+Verification or by `deploy/release-preflight.sh`: 62 then, 68 since the domain change; the current state is in
+[V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).)
 In short:
 
 | Area | MANUAL checks |
