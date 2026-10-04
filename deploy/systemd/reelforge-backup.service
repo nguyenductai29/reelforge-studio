@@ -1,0 +1,30 @@
+# Daily PostgreSQL backup (Phase 25): python -m app.backup run, as the service account.
+# Writes /srv/data/backups/reelforge (Admin -> System settings -> Backups), chmod 600, rotated 14 daily /
+# 8 weekly / 6 monthly. Never copies /etc/reelforge/master.key next to the dumps: back the key up separately.
+[Unit]
+Description=ReelForge Studio database backup
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tai
+Group=tai
+WorkingDirectory=/home/tai/apps/reelforge-studio
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m app.backup run
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/reelforge/runtime.env
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+# Hardening (Phase 25): no privilege gain, a private /tmp, /usr /boot /etc read-only, kernel settings off-limits.
+# /home (the application, instance/, .venv) and /srv (media, backups) stay writable as before.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes

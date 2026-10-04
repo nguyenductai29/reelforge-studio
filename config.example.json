@@ -1,0 +1,5 @@
+{
+  "database_url": "postgresql://studio_admin:PASSWORD@db.imokome-cloud.com:5432/reelforge_studio_db?uselibpqcompat=true&sslmode=require",
+  "frontend_origin": "http://localhost:3000",
+  "secure_cookies": false
+}

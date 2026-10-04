@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+instance/
+*.sqlite3
+*.db
+.pytest_cache/
+frontend/node_modules/
+frontend/.next/
+frontend/.next-dev/
+frontend/instance/
+frontend/*.tsbuildinfo
+
+# Runtime environment files hold provider keys; only the example is committed.
+.env
+.env.*
+!.env.runtime.example

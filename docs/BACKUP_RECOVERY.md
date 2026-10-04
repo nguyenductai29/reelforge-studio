@@ -1,0 +1,198 @@
+# Backup and recovery (v1.0)
+
+What has to survive a disk failure, how it is backed up, how a backup is checked without touching production, and
+how to restore. Record each rehearsal in Admin → Verification (gate `restore_rehearsal`, BK6 of
+[RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#backups)).
+
+| What | How | Where | When |
+| --- | --- | --- | --- |
+| PostgreSQL | `reelforge-backup.timer` → `python -m app.backup run` (`pg_dump --format=custom`) | `/srv/data/backups/reelforge`, then a copy off the server | Daily at 02:30 (± 10 min) |
+| Master key `/etc/reelforge/master.key` | By hand, **never next to the dumps** | Offline: a password manager entry or an encrypted USB key | Once, and after any key change |
+| `instance/bootstrap.json` | By hand (it holds the database password) | With the key | When it changes |
+| Media (final renders, uploaded sources) | `rsync` or `restic` of the media root, checked with a manifest | An external disk or a NAS | Weekly, or after important work |
+| Configuration | The repository (`deploy/`), plus `/etc/cloudflared` | — | When it changes |
+
+A backup on the same HDD as the data does not survive that disk. Copy the dumps elsewhere too.
+
+## Automatic database backups
+
+Install once (the unit runs as the service account; adjust `User` and paths if they differ):
+
+```bash
+sudo mkdir -p /srv/data/backups/reelforge
+sudo chown tai:tai /srv/data/backups/reelforge && sudo chmod 700 /srv/data/backups/reelforge
+sudo cp deploy/systemd/reelforge-backup.service deploy/systemd/reelforge-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now reelforge-backup.timer
+sudo systemctl start reelforge-backup.service          # a first backup now
+journalctl -u reelforge-backup.service -n 30 --no-pager
+systemctl list-timers reelforge-backup.timer
+```
+
+`deploy.sh` reminds you when the timer is not enabled.
+
+What a run does (`app/backup.py`):
+
+1. `pg_dump --format=custom` into `reelforge-YYYYMMDD-HHMMSS.dump` (UTC time). The password reaches pg_dump only
+   through the `PGPASSWORD` environment variable: never on a command line, in a log line or in the database.
+2. The dump is written as `….dump.partial`, checked with `pg_restore --list`, and only then renamed. A crash never
+   leaves a half file that looks complete.
+3. The directory is `chmod 700`, every file `chmod 600`.
+4. The run is recorded (`backup_runs`): **Admin → Verification** shows the last success, its age and the last
+   failure. An alert is raised when the newest success is older than `backups.max_age_hours` (26 h by default) or the
+   last run failed (Admin notifications, with a 12-hour cooldown).
+5. Only after a successful dump, the retention removes old dumps: the newest per day for 14 days, per ISO week for
+   8 weeks and per month for 6 months. **The newest dump is never removed, and nothing is removed when the run
+   fails.**
+
+Settings in **Admin → System settings → Backups**: directory, `keep_daily`, `keep_weekly`, `keep_monthly`,
+`max_age_hours`. The directory must be an absolute path to a dedicated folder: a run refuses a relative path or a
+system or shared folder (`/`, `/etc`, `/home`, `/srv`, `/srv/data`, …) before touching anything, because it makes its
+folder chmod 700. By hand:
+
+```bash
+deploy/backup.sh                       # one backup now (same as the timer)
+.venv/bin/python -m app.backup status  # the last success and failure (JSON)
+.venv/bin/python -m app.backup prune --dry-run   # what the retention would remove
+```
+
+The dumps hold personal data and the encrypted secrets: treat them as sensitive, and encrypt the off-site copy
+(for example `restic`, or `gpg --symmetric` before uploading).
+
+## The master key
+
+Every secret in the database (AI provider keys, payment gateway credentials, OAuth tokens, email passwords, the
+users' 2FA secrets) is encrypted with the master key. A dump alone reveals none of them, and a dump without the key
+cannot use them. That is why **the key is never copied next to the dumps**, by the timer or by anything else.
+
+Back it up by hand, off the server:
+
+```bash
+sudo cat /etc/reelforge/master.key     # copy the single line into a password manager entry, or:
+sudo install -m 600 /etc/reelforge/master.key /media/usb-encrypted/reelforge-master.key
+```
+
+Then open **Admin → System settings → Backups** and tick *I have stored a copy of the master key off this server*.
+Only a fingerprint of the key is stored with the confirmation; if the key ever changes, the confirmation stops
+matching and Admin → Verification asks for it again.
+
+If the key is lost: the data is intact but every secret has to be entered again (providers, gateways, OAuth apps,
+email), every social channel reconnected, and every user with 2FA has to sign in with a recovery code (or an admin
+resets their 2FA) and enrol again.
+
+## Media
+
+The database dump does not contain media. Final renders and uploaded sources are worth keeping; intermediate files
+are regenerated by a run and cleaned up by the media retention anyway.
+
+**Movie sources are not backed up**, by design: the copies in Google Drive, the import folder and the movie scratch
+space (`<media root>/.movie-scratch` unless configured elsewhere) are temporary and are deleted after use. The dump
+keeps every source's row (name, size, checksums, dates, status); the manifest below lists final renders and uploads
+only, and the `rsync` may exclude the scratch space (`--exclude .movie-scratch/`). After a restore, a source whose
+Drive file is gone reports it on its next use; deleting it is harmless ([MOVIE_SOURCES.md](MOVIE_SOURCES.md)).
+
+```bash
+# A manifest of what matters (asset id, workspace, kind, size, SHA-256, relative path; no titles or user text):
+.venv/bin/python -m app.media_manifest create --output /srv/data/backups/reelforge/media-manifest-$(date +%F).jsonl
+# The copy (the media root is set in Admin → System settings → Storage):
+rsync -a --exclude .movie-scratch/ /srv/data/videos/reelforge/ /mnt/backup/reelforge-media/
+# Check the copy against the manifest (missing or different files are listed):
+.venv/bin/python -m app.media_manifest verify --manifest /srv/data/backups/reelforge/media-manifest-$(date +%F).jsonl \
+    --root /mnt/backup/reelforge-media
+```
+
+## Checking a backup without touching production
+
+`deploy/restore-check.sh` never writes to the production database:
+
+```bash
+# 1. The archive itself: readable, and holding users, workspaces, payment orders and the migration version.
+deploy/restore-check.sh --dump /srv/data/backups/reelforge/reelforge-20261002-023012.dump
+
+# 2. A rehearsal: restore into a separate scratch database, count the rows, decrypt with a COPY of the key.
+createdb -O studio_admin reelforge_restore_test      # the name must contain restore, rehearsal, scratch or test
+deploy/restore-check.sh --dump /srv/data/backups/reelforge/reelforge-20261002-023012.dump \
+    --scratch-url postgresql://studio_admin@127.0.0.1:5432/reelforge_restore_test \
+    --master-key /tmp/key-copy/master.key
+```
+
+* The scratch password goes in `~/.pgpass`, not on the command line.
+* The check refuses the production database (the one in `instance/bootstrap.json`), and any database whose name does
+  not say it is disposable.
+* Its JSON report gives the row counts, the dump's migration version against the code's head, and how many secrets
+  decrypt with the key copy. It never prints a value. Exit status 0 means every check passed.
+
+## Recovery rehearsal (before launch, then every quarter)
+
+1. Take the newest dump, and the master key **from its off-server copy** (not from `/etc/reelforge`). Put the copy in a
+   private temporary folder: `install -d -m 700 /tmp/key-copy`.
+2. Run the rehearsal above.
+3. Compare the counts with the live numbers (Admin overview: users, studios). The dump is at most a day old, so recent
+   rows may be missing; nothing should be missing beyond that.
+4. Every secret should decrypt (`decrypted == stored`). A mismatch means the key copy is not the key in use: fix that
+   now, not during a disaster.
+5. Clean up: `dropdb reelforge_restore_test`, `shred -u /tmp/key-copy/master.key`.
+6. Record the result in Admin → Verification (`restore_rehearsal`), with the dump name and the counts in its note.
+
+## Full restore (a real disaster)
+
+1. Stop everything that writes:
+
+   ```bash
+   sudo systemctl stop reelforge-api reelforge-frontend 'reelforge-worker@*' reelforge-backup.timer reelforge-media-maintenance.timer
+   ```
+
+2. Create an empty database and restore the dump into it:
+
+   ```bash
+   createdb -O studio_admin reelforge_studio_db_restored
+   pg_restore --no-owner --role=studio_admin -d reelforge_studio_db_restored /path/to/reelforge-YYYYMMDD-HHMMSS.dump
+   ```
+
+3. Put the master key back: `sudo install -o tai -g tai -m 600 /path/to/copy/master.key /etc/reelforge/master.key`.
+4. Point `instance/bootstrap.json` at the restored database (chmod 600).
+5. Bring the schema to the code's version: `.venv/bin/python -m alembic upgrade head`.
+6. Restore the media (`rsync` back from the copy) and verify it with the manifest.
+7. Start the services (`sudo systemctl start reelforge-api reelforge-frontend 'reelforge-worker@*'`, then the timers),
+   check `curl -fsS http://127.0.0.1:8000/health/ready`, open Admin → Verification, and run the live checks of
+   the critical paths (sign-in, a payment, a publish).
+
+## Locked out of the administrator account
+
+If the only administrator cannot sign in (forgotten password while email does not work, or lost authenticator and
+recovery codes), use the server command: [SECURITY.md](SECURITY.md#break-glass-recovery). A restore is never needed for
+that.
+
+## Logs
+
+Every service logs JSON lines to the journal, each with its `request_id` where there is one; never a password, token,
+key or cookie. Limit the journal's size on the home server:
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo cp deploy/journald/reelforge.conf /etc/systemd/journald.conf.d/
+sudo systemctl restart systemd-journald
+journalctl --disk-usage
+```
+
+(`SystemMaxUse=2G`, `SystemKeepFree=4G`, `MaxRetentionSec=1month`.)
+
+## systemd hardening
+
+Every unit in `deploy/systemd/` sets `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full` (`/usr`, `/boot` and
+`/etc` read-only), `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`, `RestrictSUIDSGID`,
+`LockPersonality` and `RestrictRealtime`. Deliberately **not** set: `ProtectHome` (the application and its virtualenv
+live in `/home/tai/apps`) and `ProtectSystem=strict` (media and backups are written under `/srv/data`, and
+`/etc/reelforge/master.key` is read). After installing changed units, check every service once:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart reelforge-api reelforge-frontend 'reelforge-worker@*'
+systemctl --failed
+for unit in reelforge-api reelforge-frontend reelforge-worker@{text,image,video,voice,render,source,youtube,social,scheduler}; do
+  printf '%-34s %s\n' "$unit" "$(systemctl is-active "$unit")"
+done
+sudo systemctl start reelforge-backup.service reelforge-media-maintenance.service && journalctl -u reelforge-backup -n 5
+```
+
+Then run one workflow end to end (a render writes to the media root) and open Admin → Verification.

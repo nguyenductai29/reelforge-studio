@@ -1,0 +1,236 @@
+# ReelForge Studio v1.0 — release checklist
+
+Every gate below must pass on the production server, on the commit being released, before `v1.0.0` is tagged. This
+file is the index of the gates. **It holds no status:** each gate is recorded in exactly one place, named in its
+*Recorded as* column.
+
+| Recorded as | Where the result lives |
+| --- | --- |
+| `preflight` | `bash deploy/release-preflight.sh` on the server: PASS, WARN, FAIL or MANUAL per check, every time it runs (exit status 1 on any FAIL). Read-only; never prints a secret |
+| `ci` | The automated suites. They count only through CI on the deployed commit: gate `release_ci_green` |
+| a key such as `email_dns` | **Admin → Verification**, recorded by the person who checked it: *Passed*, *Failed*, *Not applicable* or *Not checked*, who, when and a note (an order code, a video ID, a file name; never a secret). Nothing is recorded automatically |
+
+* *Not applicable* is allowed only for a provider the installation does not use: payOS, OnePAY, Runway, TikTok,
+  Facebook (their domain-change gates included). Every other gate must pass.
+* `bash deploy/release-report.sh` combines the pre-flight, the recorded gates and the CI result GitHub reports for the
+  commit, and gives the verdict. The release stays a **release candidate** until it says `READY_FOR_TAG`.
+* How to perform each manual gate: [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md). The state at release time and the tag
+  procedure: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).
+
+Related: [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) · [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md) ·
+[SECURITY.md](SECURITY.md) · [EMAIL.md](EMAIL.md) · [TEAMS.md](TEAMS.md) · [LOAD_BASELINE.md](LOAD_BASELINE.md) ·
+the release audit: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md)
+
+## Automated evidence (development machine, 2026-10-04, movie source phase)
+
+Results of the automated suites on the movie source phase (migration `0027_movie_sources`), run on the working tree
+before it was committed, copied without `instance/` like a CI checkout, on the same Windows development machine
+(Python 3.14.7, Node 22.23.2, PostgreSQL 16.2, a portable FFmpeg 9.0.2 build). **They do not replace CI**: CI has not
+run on this code yet, and only a green CI run on the deployed commit passes `release_ci_green`. No paid or live service
+was called: Google Drive was the in-memory double `tests/fake_drive.py`, direct URLs and AI providers were mocked. The
+seven movie-source gates stay MANUAL ([MOVIE_SOURCE_VERIFICATION.md](MOVIE_SOURCE_VERIFICATION.md)).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Backend tests, SQLite | `python -m unittest discover -s tests -v` with FFmpeg on `PATH`, `REELFORGE_TEST_FFMPEG`, `REELFORGE_TEST_FFPROBE` and `REELFORGE_REQUIRE_FFMPEG=1` | Passed: 649 tests, 31 skipped (18 need PostgreSQL, 2 need live providers, 5 need symlinks, which this Windows machine lacks; the 6 YouTube retry tests run inside a disposable copy instead). The real FFmpeg render test and the real movie pipeline ran |
+| Backend tests, PostgreSQL 16 (as on 2026-10-03, plus migration 0027 both ways, the movie-source work leases with `SKIP LOCKED` and a deletion waiting on a starting run's row lock, `tests/test_movie_postgres.py`; the other movie-source flows run on SQLite in this suite and on PostgreSQL in the browser tests) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 649 tests, 13 skipped (2 live providers, 5 symlinks; the 6 YouTube retry tests run in their copy). FFmpeg was on `PATH`, so the real render test and the real movie pipeline ran here too |
+| The movie pipeline with real FFmpeg: a synthetic 40-second movie (test-pattern video, a sine tone as sound) taken from a studio's import folder, uploaded to the Drive double, downloaded to scratch, then Prepare Movie, transcript, visual analysis of real JPEG frames, timeline, story analysis, review script, clip selection, clip extraction, voice, subtitles and render up to the human review; after approval and the 24-hour grace (simulated) the source is deleted and its scratch copy swept, and the final render and the transcript stay | `tests/test_movie_sources.py`, inside both runs above | Passed in both runs. The sound is a tone, not speech: the transcript and every AI answer were mocked, so this proves the plumbing and FFmpeg, not the quality of a real review |
+| Alembic on PostgreSQL 16.2 | `alembic upgrade head`, `alembic check`, `alembic downgrade base`, `alembic upgrade head`, `alembic check` (`REELFORGE_DATABASE_URL` on a scratch database) | Passed: no drift either time; `alembic current` is `0027_movie_sources (head)` |
+| Frontend typecheck and production build | `npm run typecheck`; `next build` | Passed: no type error; the production build (with its lint and type checks, run by `e2e/prepare.py` on a copy of `frontend/`) succeeded, `/media/movie-sources` 13.3 kB. No dependency was added (`requirements*.txt` and the `package*.json` files unchanged), so `npm ci` was not re-run |
+| Documentation checks after the movie-source edits | `tests.test_phase28`, `tests.test_product_audit` | Passed: 60 tests (1 skipped: the PostgreSQL migration test, which ran in the PostgreSQL suite) |
+| Browser tests (31 tests in 12 specs: the 30 of the release closure, below, plus movie sources against the Drive double: the Drive connection test, server file, URL and Drive inbox imports, details, retention, a Movie Review to the human review step, deletion refused while in use, approval, then *Delete now*, the failed import in Admin → Overview and the movie source Drive figures in Admin → Operations; Media → Movie sources added to the pages checked at the seven window sizes) | `e2e/` on PostgreSQL 16.2, a fresh database | Passed: 31 / 31 (4.7 minutes) |
+
+## Automated evidence (development machine, 2026-10-03, release closure)
+
+Results of the automated suites on the code of the release candidate (`56ada10`, exported with `git archive`: no
+`instance/`, like a CI checkout), on a Windows development machine (Python 3.14.7, Node 22.23.2, PostgreSQL 16.2).
+**They do not replace CI**: only a green CI run on the deployed commit passes `release_ci_green`. CI itself was green
+on `56ada10` (14 / 14 check runs, [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Backend tests, SQLite | `python -m unittest discover -s tests -v` | Passed: 613 tests, 28 skipped (15 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks; the 6 YouTube retry tests run inside a disposable copy instead) |
+| Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 613 tests, 13 skipped (2 live providers, 1 FFmpeg, 4 symlinks; the 6 YouTube retry tests run in their copy) |
+| Alembic on PostgreSQL 16.2 | `alembic upgrade head`, `alembic check`, `alembic downgrade base`, `alembic upgrade head`, `alembic check` (`REELFORGE_DATABASE_URL` on a scratch database) | Passed: no drift either time; `alembic current` was the head of that day, `0026_change_production_origin` |
+| Frontend install, typecheck and production build | `npm ci`, `npm run typecheck`, `npm run build` | Passed. `npm ci` reports 2 advisories, both in the PostCSS copy bundled inside `next@15.5.26` (`postcss@8.4.31`, build time only, for CSS the app writes itself; the app's own pipeline uses `postcss@8.5.28`): LOW, fixed only by Next.js 16 ([POST_V1_ROADMAP.md](POST_V1_ROADMAP.md)) |
+| Documentation checks after the release-closure edits | `tests.test_phase28` (release docs, checklist coverage, deploy script), `tests.test_product_audit` | Passed: 44 tests |
+| Browser tests (30 tests in 11 specs, [e2e/README.md](../e2e/README.md): first-run setup, sign-in, password reset, sessions, 2FA; teams; project and workflow; manual VietQR; support; admin pages and release gates; Settings and Admin fitting the window; members; Home; Admin → Overview; every main page at 390×844, 768×1024, 1024×768, 1366×768, 1440×900, 1680×1050 and 1920×1080) | `e2e/` on PostgreSQL 16.2, a fresh database | Passed: 30 / 30 |
+| Table actions (a one-off check, not kept as a test): every button in the rows of Admin → Users, Studios, Payments, Support, Reconciliation, Operations, Audit log and Settings → Members, at 390×844, 1024×768 and 1366×768 | Playwright on the same stack, after the suite | No button cut off at any of the three sizes: Users 16 rows / 16 buttons, Studios 16 / 16, Payments 1 / 1, Support 3 / 6, Members of a studio with 19 members and invitations 20 / 19. Reconciliation and Operations had no row needing an action in that data, and the Audit log has no row buttons |
+| Load baseline | `tests/load_check.py` | Not re-run in the release closure; last run after Phase 27 ([LOAD_BASELINE.md](LOAD_BASELINE.md)). Optional, not a gate |
+| Accessibility pass: axe-core (WCAG 2.1 A/AA rules) at 1366×768; keyboard: skip link, dialog focus trap, Escape, named controls | QA scripts on the E2E stack | Last run on the Phase 26 build: no axe violation, keyboard checks passed; not re-run since (the layout is covered by the browser tests above). Automated rules catch only part of accessibility: this is not a compliance claim |
+
+## Release
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| R1 | CI is green on the exact deployed commit: backend on SQLite (Python 3.11 and 3.14) and PostgreSQL, migrations both ways, frontend (Node 20 and 22), Playwright | The GitHub Actions run of that commit (the report reads it); a local run does not count | `release_ci_green` |
+| R2 | `./deploy.sh` on the release commit ends with "ReelForge deployment completed OK", every service active | Its output | `release_deploy` |
+| R3 | The pre-flight has no FAIL on the release commit | `bash deploy/release-preflight.sh --expect-commit <commit>` | `release_preflight` |
+| R4 | The report says `READY_FOR_TAG` | `bash deploy/release-report.sh` | `preflight` |
+
+## Domain change (`https://studio.imokome-cloud.com` → `https://reelforge.mul-service.com`)
+
+Migration `0026_change_production_origin` moves the stored origin; every outside system that holds the public address
+is changed by hand, then recorded. The exact URLs: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md#domain-change).
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| DC1 | System settings → General shows `https://reelforge.mul-service.com` with Secure cookies; no OAuth redirect override is left on another origin | Pre-flight, SYSTEM CONFIG (public origin, OAuth redirects) | `preflight` |
+| DC2 | Cloudflare Tunnel: `reelforge.mul-service.com` → `http://127.0.0.1:3001`; the old hostname removed or redirected to the new one | Cloudflare Zero Trust | `domain_cloudflare_route` |
+| DC3 | Google Cloud OAuth client: the new YouTube redirect URI | Google Cloud Console | `domain_google_redirect` |
+| DC4 | TikTok for Developers: the new redirect URI (if TikTok is used) | TikTok developer portal | `domain_tiktok_redirect` |
+| DC5 | Meta for Developers, Facebook Login: the new valid OAuth redirect URI (if Facebook is used) | Meta developer dashboard | `domain_facebook_redirect` |
+| DC6 | payOS: the new webhook URL (if payOS is used) | payOS dashboard | `domain_payos_webhook` |
+| DC7 | OnePAY: the new IPN URL, and the return URL if OnePAY registered it (if cards are offered) | OnePAY merchant support | `domain_onepay_urls` |
+
+## Bootstrap
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| B1 | `instance/bootstrap.json` holds only `database_url`, chmod 600; no `frontend_origin` / `secure_cookies` | Pre-flight, SYSTEM CONFIG | `preflight` |
+| B2 | Public origin `https://reelforge.mul-service.com`, Secure cookies on (Admin → System settings → General) | Pre-flight, SYSTEM CONFIG (`--expect-origin`) | `preflight` |
+| B3 | The API listens on `127.0.0.1:8000` and Next.js on `127.0.0.1:3001` only | Pre-flight, PORTS (`ss -ltn`) | `preflight` |
+| B4 | Cloudflare Tunnel `reelforge.mul-service.com` → `http://127.0.0.1:3001`; the site opens over HTTPS | A browser, then `curl -sI` | `security_headers` |
+| B5 | The first administrator was created on the server (`npm run create-admin`); setup is closed; an active system administrator exists | Pre-flight, SECURITY | `preflight` |
+
+## Database
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| D1 | `alembic current` is the head, `0027_movie_sources` | Pre-flight, DATABASE | `preflight`, `migration_upgraded` |
+| D2 | `/health/ready` answers `"status": "ok"` | Pre-flight, HEALTH | `preflight` |
+| D3 | The application's database role is not a superuser | Pre-flight, DATABASE | `preflight` |
+| D4 | Existing accounts still sign in after the upgrade | Sign in with an account from before the release | `migration_upgraded` |
+
+## Master key
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| K1 | `/etc/reelforge/master.key`, mode 600, owned by the service account; every stored secret decrypts with it | Pre-flight, MASTER KEY | `preflight` |
+| K2 | A copy is stored off the server (password manager or encrypted USB), **not** next to the dumps | By hand | `master_key_file`, `backup_offsite` |
+| K3 | The off-server backup is confirmed in Admin → System settings → Backups (fingerprint matches) | Pre-flight, MASTER KEY | `preflight` |
+| K4 | The off-server copy decrypts every secret in the recovery rehearsal | BK6 | `restore_rehearsal` |
+
+## Storage
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| S1 | Media root `/srv/data/videos/reelforge` on the HDD: exists, writable by the service account, free space under the 80 % / 90 % alert levels | Pre-flight, STORAGE; Admin → Operations shows the disk | `preflight`, `storage_on_hdd` |
+| S2 | `reelforge-media-maintenance.timer` enabled; a dry run lists what it would delete and deletes nothing | Pre-flight, SERVICES; `python -m app.media_maintenance --intermediates` | `preflight`, `maintenance_timer`, `cleanup_dry_run` |
+| S3 | A media copy exists elsewhere and `python -m app.media_manifest verify` reports nothing missing | [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md#media) | `media_backup_verified` |
+
+## Backups
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| BK1 | `reelforge-backup.timer` enabled; a manual `systemctl start reelforge-backup` succeeded | Pre-flight, BACKUPS | `preflight`, `backup_timer` |
+| BK2 | `/srv/data/backups/reelforge` mode 700, dumps mode 600, no key file beside them | Pre-flight, BACKUPS | `preflight` |
+| BK3 | The last success is under 26 h old and the newest dump is on disk | Pre-flight, BACKUPS | `preflight` |
+| BK4 | Retention reviewed (14 daily / 8 weekly / 6 monthly) | Admin → System settings → Backups | `backup_timer` |
+| BK5 | Dumps are copied off the server on a schedule (encrypted), apart from the key | By hand | `backup_offsite` |
+| BK6 | Rehearsal: `deploy/restore-check.sh --dump <newest>`, then into `reelforge_restore_test` with the off-server key copy: counts plausible, migration version, every secret decrypts; scratch database dropped and the key copy shredded afterwards | [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md#backup-and-recovery) | `restore_rehearsal` |
+
+## Security
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| SE1 | Every system administrator has 2FA on and the recovery codes stored; sign-in asks for the code; a recovery code works once | Pre-flight, SECURITY (warns about an administrator without 2FA), then by hand | `security_two_factor` |
+| SE2 | *Sign out all other sessions* ends a second browser's session | By hand | `security_sessions` |
+| SE3 | Wrong passwords end in "too many attempts" (429) and the lockout email arrives; an account that does not exist gets the same answer as a wrong password | By hand, through the public site | `security_rate_limit` |
+| SE4 | The audit log shows your real public address for a sign-in through the tunnel (not `127.0.0.1`), and no password, token or key | Admin → Audit log | `security_client_ip` |
+| SE5 | A forged `CF-Connecting-IP` / `X-Forwarded-For` sent from outside does not change the recorded address | `curl` through the public site | `security_spoofed_headers` |
+| SE6 | HTTPS with HSTS, CSP with `frame-ancestors 'none'`, `nosniff`, `Referrer-Policy`; `rf_session` is `HttpOnly`, `Secure`, `SameSite=Strict` | `curl -sI`, browser devtools | `security_headers` |
+| SE7 | A POST with a foreign `Origin` is refused (403) | `curl` | `security_foreign_origin` |
+| SE8 | `systemctl --failed` lists no ReelForge unit; every enabled worker is active with a fresh heartbeat | Pre-flight, SERVICES | `preflight` |
+| SE9 | The break-glass command runs (`python -m app.account_recovery --help`; never reset a real account to test it) | Pre-flight, SECURITY | `preflight` |
+| SE10 | The trusted proxies do not trust every address; the client address header is `CF-Connecting-IP` | Pre-flight, SYSTEM CONFIG | `preflight` |
+
+## Email
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| E1 | Provider configured (SMTP or Resend); *Send test email* arrives | Admin → System settings → Email | `email_test_sent` |
+| E2 | SPF, DKIM and DMARC pass | The received message's headers | `email_dns` |
+| E3 | A new account receives the verification email and the link verifies it | By hand | `email_verification` |
+| E4 | Forgot password: the email arrives, the link sets a new password, other sessions end | By hand | `email_password_reset` |
+| E5 | "Password changed" arrives after the reset | By hand | `email_password_changed` |
+| E6 | An invitation email arrives and the link joins the studio | By hand | `email_invitation` |
+| E7 | A support reply email arrives | By hand | `email_support_reply` |
+
+## AI providers (paid: in this order, once each)
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| A1 | Gemini text: a script step | [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md#ai-providers) | `gemini_text_live` |
+| A2 | Gemini TTS: a voice step | `python -m app.smoke_test voice --live` or a Voice step | `gemini_tts_live` |
+| A3 | Transcription: a short clip with speech | A Transcript step | `transcription_live` |
+| A4 | Runway image (if Runway is used) | An Image step | `runway_image_live` |
+| A5 | Runway video (if Runway is used) | A Video step, one short clip | `runway_video_live` |
+| A6 | Each successful step creates its asset and is charged once; a provider failure is refunded | The studio's credit history | `ai_credits_once` |
+
+## Render
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| RE1 | `ffmpeg` and `ffprobe` found; the subtitle font installed | Pre-flight, FFMPEG; `python -m app.render_worker --check` | `preflight`, `ffmpeg_verified` |
+| RE2 | Voice, subtitles and music rendered into one MP4 under the media root | A workflow ending in Render | `final_render_live` |
+| RE3 | Slideshow: Article → Video and Product Video | The templates | `article_video_live`, `product_video_live` |
+| RE4 | Movie Recap | The template on a short source you may use | `movie_recap_live` |
+| RE5 | Movie Review | The template on a short source you may use | `movie_review_live` |
+
+## Payments (manual VietQR first, then payOS, then OnePAY)
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| P1 | Manual VietQR: a real small transfer; *I have transferred* → awaiting confirmation; the admin confirms; plan and credits once; receipt; confirming again changes nothing | [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md#payments) | `bank_qr_round_trip` |
+| P2 | payOS: saved and tested, webhook registered and received, one small payment paid once, credits once | Same | `payos_config_saved`, `payos_webhook_received`, `payos_payment`, `payos_credits_once` |
+| P3 | OnePAY sandbox: saved, checked, a test card succeeds, a cancel shows cancelled, IPN received, QueryDR confirms | Same | `onepay_sandbox_configured`, `onepay_sandbox_check`, `onepay_sandbox_payment`, `onepay_sandbox_cancel`, `onepay_ipn_received`, `onepay_querydr_verified` |
+| P4 | OnePAY production: saved after confirmation, one small real payment, credits once | Same | `onepay_production_configured`, `onepay_production_payment`, `onepay_credits_once` |
+| P5 | Wording "VietQR / Bank Transfer" and "Credit / Debit Card" in every language | `tests/test_product_audit.py`, the billing browser test | `ci` |
+
+## Publishing
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| PU1 | YouTube upload, private; note the video ID | [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md#publishing) | `youtube_upload` |
+| PU2 | TikTok, inbox draft; note the publish ID (if TikTok is used) | Same | `tiktok_upload` |
+| PU3 | Facebook Reel; note its URL (if Facebook is used) | Same | `facebook_reel` |
+| PU4 | A scheduled publication goes out at its time | Same | `scheduled_publishing` |
+
+## Operations
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| O1 | Live notifications arrive through Cloudflare without reloading (Server-Sent Events) | Admin → Verification: *Check notification stream* from outside | `notification_realtime` |
+| O2 | A system alert reaches the admins | Stop one worker past its stale time, then start it | `alerts_delivered` |
+| O3 | A user's support request reaches Admin → Support; the reply reaches the user (app, notification, email); an account closure request arrives the same way and is handled as in [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md#support-and-account-closure) | By hand | `support_round_trip` |
+| O4 | *Download account data* returns the JSON; *Request account closure* opens a support request | `tests/test_phase22.py` | `ci` |
+| O5 | `/internal/metrics` answers on `127.0.0.1`; journald limits installed | Pre-flight, HEALTH and SERVICES | `preflight` |
+| O6 | Admin → Verification shows no unexpected red readiness item; active alerts understood | The report lists the readiness checks needing attention | `preflight` |
+| O7 | Server reboot: every service, timer and the tunnel come back by themselves; `/health/ready` is ok; a workflow runs | [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md#reboot) | `server_reboot` |
+
+Optional, not a gate: re-run `tests/load_check.py` on the server against a disposable database
+([LOAD_BASELINE.md](LOAD_BASELINE.md)).
+
+## Movie sources (optional: *Not applicable* while movie sources are off)
+
+Added after the release closure ([MOVIE_SOURCES.md](MOVIE_SOURCES.md)); each procedure is in
+[MOVIE_SOURCE_VERIFICATION.md](MOVIE_SOURCE_VERIFICATION.md).
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| M1 | Google Drive: *Test connection* passes (credentials, root folder, upload, delete) and leaves no test file | Admin → System settings → Movie sources; `python -m app.google_drive_check` | `movie_drive_connection` |
+| M2 | A movie from the studio's import folder on the server (`<root>/<studio id>/`) becomes Ready with the right size and length; a path outside it is refused and another studio does not see the file | Media → Movie sources | `movie_import_local` |
+| M3 | A movie from an https URL becomes Ready; an internal address and a page that is not a movie are refused | Same | `movie_import_url` |
+| M4 | Two reviews of one source download it once (`movie_scratch_downloaded` logged once) | The movie worker's journal | `movie_scratch_download` |
+| M5 | A live Movie Review from a source ends in an MP4 with narration, subtitles and short excerpts; each paid step charged once (paid) | *Use for Movie Review* | `movie_pipeline_live` |
+| M6 | *Delete now* is refused while a run uses the source; on a free source it ends Deleted with the Drive file in the trash | Same | `movie_source_deletion` |
+| M7 | A source past its retention, or past the grace period after a successful review, is deleted automatically | Audit log | `movie_retention_cleanup` |
+
+## Legal
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| L1 | Terms of Service: every `[bracketed]` item filled in and reviewed by a lawyer for the jurisdiction; `TERMS_VERSION` (`app/accounts.py`) set to the published version (changing it asks every user to accept again) | [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md#legal) lists the placeholders | `legal_terms_reviewed` |
+| L2 | Privacy Policy: processors, retention, contact and applicable law filled in, reviewed | Same | `legal_privacy_reviewed` |
+| L3 | /terms and /privacy are public in every language; registration requires accepting them | `tests/test_phase22.py`, `tests/test_phase26.py` | `ci` |

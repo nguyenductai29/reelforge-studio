@@ -1,0 +1,40 @@
+# ReelForge API (FastAPI). Install: sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
+# Adjust User/Group/WorkingDirectory/ExecStart to your server. It needs only:
+#   instance/bootstrap.json (database URL) and /etc/reelforge/master.key (chmod 600, owned by User).
+# Every other setting comes from Admin -> System settings, read from PostgreSQL without restarts.
+[Unit]
+Description=ReelForge Studio FastAPI
+After=network-online.target postgresql.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tai
+Group=tai
+WorkingDirectory=/home/tai/apps/reelforge-studio
+ExecStart=/home/tai/apps/reelforge-studio/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Optional: only for a non-default key path. The default is /etc/reelforge/master.key.
+#Environment=REELFORGE_MASTER_KEY_FILE=/etc/reelforge/master.key
+# Optional legacy fallback (the leading "-" lets the unit start without it).
+EnvironmentFile=-/etc/reelforge/runtime.env
+UMask=0077
+# Hardening (Phase 25): no privilege gain, a private /tmp, /usr /boot /etc read-only, kernel settings off-limits.
+# /home (the application, instance/, .venv) and /srv (media, backups) stay writable as before.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

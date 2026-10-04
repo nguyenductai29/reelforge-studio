@@ -1,0 +1,9 @@
+# The disposable stack, the SMTP sink's mail and the Playwright output are rebuilt on every run.
+node_modules/
+.stack/
+.mail/
+test-results/
+playwright-report/
+# The repository root ignores package files of local scratch scripts; these two belong to the suite.
+!package.json
+!package-lock.json
