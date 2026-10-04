@@ -703,7 +703,7 @@ production server ([V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
 
 - **Pre-flight:** `bash deploy/release-preflight.sh` (`python -m app.release_check preflight`): source and working tree, database and migration head, master key (permissions, every stored secret decrypts), services, timers and unit files, ports on 127.0.0.1 only, `/health/*`, media root, backups, FFmpeg, configuration (no development override, no legacy runtime values, the public origin, Secure cookies, trusted proxies) and administrators. PASS, WARN, FAIL or MANUAL; read-only; never prints a secret; exit status 1 only on a FAIL.
 - **Report:** `bash deploy/release-report.sh`: the pre-flight, readiness needing attention, the recorded gates and the CI result GitHub reports for the commit; `READY_FOR_TAG` only when nothing blocks. `--json` for machines.
-- **Release gates in Admin → Verification:** 62 gates (68 since the domain change) covering [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (now an index without status columns), each *Passed*, *Failed*, *Not applicable* (optional providers only) or *Not checked*, with who, when and a note. Migration `0025_verification_status` adds the status; verified rows become passed.
+- **Release gates in Admin → Verification:** 62 gates (68 since the domain change, 75 with the optional movie source gates) covering [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) (now an index without status columns), each *Passed*, *Failed*, *Not applicable* (optional providers only) or *Not checked*, with who, when and a note. Migration `0025_verification_status` adds the status; verified rows become passed.
 - **Deployment:** `deploy.sh` now runs pull, bootstrap check (database answering), master key, dependencies, migration (and checks the head), build, restart, the check of every restarted service, `/health/ready`, unit files and timers, and exits 1 on any failure.
 - **CI:** failing tests become annotations on the run page (`tests/ci_annotate.py`, Playwright's `github` reporter); the piped test run keeps its exit status. A temp-folder test that failed only on Linux (a fresh symlink's own time) was fixed.
 - **Docs:** [LIVE_VERIFICATION.md](LIVE_VERIFICATION.md) has the procedure of every manual gate; [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md) the state, the legal placeholders, the bug-fix rule and the tag procedure.
@@ -752,6 +752,34 @@ commit, the head, the origin, CI, deployment and the gates ([V1_RELEASE_STATUS.m
 notes ([RELEASE_NOTES_V1.md](RELEASE_NOTES_V1.md)) and the post-v1.0 roadmap ([POST_V1_ROADMAP.md](POST_V1_ROADMAP.md));
 out-of-date statements corrected (README, the product audit, the e2e README, backups, bootstrap). No code or
 configuration blocker found; the release stays a candidate until the manual gates pass on the server.
+
+### Movie source automation (2026-10-04, migration 0027)
+
+Added after the release closure; the release stays a candidate ([V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
+Everything is described in [MOVIE_SOURCES.md](MOVIE_SOURCES.md).
+
+- **Migration `0027_movie_sources`:** `movie_sources` (lifecycle, failure, checksums, Drive IDs, retention, a work
+  lease), `movie_source_uses` (which runs use a source), `assets.movie_source_id`. Head: `0027_movie_sources`.
+- **Sources:** `app/movie_sources.py` (create, list, extend, delete, retry, active use, retention scheduling, leases),
+  `app/movie_media.py` (recognition, ffprobe, hashing, the SSRF-checked URL fetch, audio, scene cuts, frames),
+  `app/google_drive.py` (OAuth refresh token or service account, folders by ID, resumable uploads, moves, downloads
+  with resume, trash or delete, the connection test; `python -m app.google_drive_check`).
+- **Worker:** `app/movie_worker.py` (`reelforge-worker@movie`): imports, uploads and deletions under leases; the step
+  jobs `movie.prepare`, `vision.analyze` (paid per batch, reconciled like other paid jobs) and `movie.clip_extract`;
+  the scratch copy downloaded once per source; the sweep. Its heartbeat is expected only while movie sources are on.
+- **Workflow:** six steps (`app/workflow/nodes/movie.py`: Movie Source, Prepare Movie, Visual Analysis, Movie
+  Timeline, Review Script, Clip Selector), `app/movie_timeline.py`, `app/clip_selection.py`; Extract Source Clips cuts
+  movie excerpts; Story Analysis reads a timeline; Render shares a section's narration across its excerpts; the
+  templates `movie_source_review` and `movie_source_recap`; text providers accept images.
+- **API and UI:** `/api/movie-sources…`, `/api/admin/movie-sources`, the Drive test; Media → Movie sources (table,
+  filters, pages, add dialog with server file / URL / Drive tabs, details with the run's progress, extend, delete,
+  use for a review or recap); Admin → System settings → Movie sources; Admin → Operations (*Movie source Drive*:
+  files, bytes, oldest, expiring, failing deletions; the `movie` job queue); readiness, alerts, Admin → Overview items;
+  seven optional gates; vi, en and ja.
+- **Tests:** `tests/test_movie_units.py`, `tests/test_movie_sources.py` (with a fake Drive, `tests/fake_drive.py`, and a
+  real FFmpeg run on a synthetic 40-second movie), `tests/test_movie_migration.py`, `tests/test_movie_postgres.py`
+  (PostgreSQL: work leases with `SKIP LOCKED`, a deletion waiting on a starting run's row lock),
+  `e2e/tests/12-movie-sources.spec.ts` (`e2e/movie_driver.py`). CI installs FFmpeg for the backend jobs.
 
 ### Configuration sources
 

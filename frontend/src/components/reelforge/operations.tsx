@@ -16,7 +16,7 @@ import { STORAGE_TEXT, StorageBar } from "./storage";
 
 const LIMIT = 25;
 const STATES = ["queued", "leased", "succeeded", "failed"] as const;
-const QUEUES = ["text", "image", "video", "voice", "render", "source", "publish"] as const;
+const QUEUES = ["text", "image", "video", "voice", "render", "source", "publish", "movie"] as const;
 const WORKER_TONE: Record<WorkerHealth["status"], string> = {
   ok: "connected",
   stale: "failed",
@@ -50,7 +50,7 @@ function StuckList({ title, jobs }: { title: string; jobs: StuckJob[] }) {
  * audit and storage above, and every recent job (identifiers and timing only, never payloads) below.
  */
 export function Operations() {
-  const { t, formatRelative, formatDateTime } = useI18n();
+  const { t, formatRelative, formatDateTime, formatNumber } = useI18n();
   const o = t.admin.operations;
   const [state, setState] = useState("");
   const [queue, setQueue] = useState("");
@@ -60,6 +60,10 @@ export function Operations() {
   // The fullest studios first; the rest are in Studios & credits.
   const storage = useAdminStorage(true, 0, 8);
   const stuck = jobs.data?.stuck;
+  // Shown once movie sources are on, or while Drive still holds some (or fails to delete them).
+  const movie = storage.data?.movie_sources;
+  const showMovie = movie && (movie.enabled || movie.files > 0 || movie.delete_failures > 0);
+  const driveProblems = t.admin.system.movie.problems as Record<string, string>;
   const nothingStuck = stuck && !stuck.expired_leases.length && !stuck.overdue.length && !stuck.orphan_steps.length;
 
   const columns: Column<AdminJob>[] = [
@@ -161,6 +165,32 @@ export function Operations() {
             <p className="text-[11px] text-muted-foreground">
               {t.storage.retention(storage.data.retention.intermediate_days, storage.data.retention.temp_days)}
             </p>
+          )}
+          {showMovie && (
+            <div className="space-y-1 border-t border-border pt-2" data-testid="movie-drive">
+              <h2 className="text-sm font-semibold">{o.movieDrive.title}</h2>
+              <p className="text-[11px] text-muted-foreground">{o.movieDrive.hint}</p>
+              {movie.drive_problem && (
+                <p className="text-[11px] text-warning">{driveProblems[movie.drive_problem] ?? movie.drive_problem}</p>
+              )}
+              <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 text-xs">
+                <dt className="text-muted-foreground">{o.movieDrive.files}</dt>
+                <dd className="text-right tabular-nums">{formatNumber(movie.files)}</dd>
+                <dt className="text-muted-foreground">{o.movieDrive.bytes}</dt>
+                <dd className="text-right tabular-nums">{formatBytes(movie.bytes)}</dd>
+                <dt className="text-muted-foreground">{o.movieDrive.oldest}</dt>
+                <dd className="text-right tabular-nums">{movie.oldest_at ? formatDateTime(movie.oldest_at) : "—"}</dd>
+                <dt className="text-muted-foreground">{o.movieDrive.expiring}</dt>
+                <dd className="text-right tabular-nums">{formatNumber(movie.expiring_soon)}</dd>
+                <dt className="text-muted-foreground">{o.movieDrive.deleteFailures}</dt>
+                <dd className={cn("text-right tabular-nums", movie.delete_failures > 0 && "text-destructive")}>
+                  {formatNumber(movie.delete_failures)}
+                </dd>
+              </dl>
+              {movie.over_warning && (
+                <p className="text-[11px] text-warning">{o.movieDrive.overWarning(formatBytes(movie.warning_bytes))}</p>
+              )}
+            </div>
           )}
         </section>
       </div>

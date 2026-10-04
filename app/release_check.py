@@ -170,9 +170,10 @@ def counts(checks: list[Check]) -> dict:
 
 
 def _workers() -> tuple[str, ...]:
-    from app.heartbeat import WORKERS
+    from app.heartbeat import WORKERS, expected
 
-    return tuple(name.removesuffix("_worker") for name in WORKERS)
+    # The movie worker is checked only while movie sources are enabled (Admin -> System settings).
+    return tuple(name.removesuffix("_worker") for name in WORKERS if expected(name))
 
 
 def mirror_service_environment() -> dict[str, list[str] | None]:

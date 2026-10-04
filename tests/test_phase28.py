@@ -264,7 +264,7 @@ class ReleaseDocsTest(unittest.TestCase):
 
         script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
         head = script.get_current_head()  # raises if two migrations ever share a parent (two heads)
-        self.assertEqual(head, "0026_change_production_origin")
+        self.assertEqual(head, "0027_movie_sources")
         for name in ("RELEASE_V1_CHECKLIST.md", "LIVE_VERIFICATION.md", "V1_RELEASE_STATUS.md", "FINAL_PRODUCT_AUDIT.md",
                      "PRODUCTION_BOOTSTRAP.md"):
             with self.subTest(doc=name):
@@ -272,7 +272,8 @@ class ReleaseDocsTest(unittest.TestCase):
         for path in [ROOT / "README.md", *(ROOT / "docs").glob("*.md")]:
             with self.subTest(doc=path.name):
                 text = path.read_text(encoding="utf-8")
-                for old in ("0024_operations (head)", "0025_verification_status (head)", "head `0025_verification_status`"):
+                for old in ("0024_operations (head)", "0025_verification_status (head)", "head `0025_verification_status`",
+                            "0026_change_production_origin (head)", "head `0026_change_production_origin`"):
                     self.assertNotIn(old, text)
 
     def test_the_release_stays_a_candidate_until_recorded_otherwise(self):
@@ -505,11 +506,13 @@ class ReleaseCheckUnitTest(unittest.TestCase):
                          "could not connect to postgresql://***@127.0.0.1/reelforge_studio_db")
 
     def test_workers_match_the_heartbeats_and_deploy(self):
-        from app.heartbeat import WORKERS
+        from app.heartbeat import WORKERS, expected
 
-        names = release_check._workers()
-        self.assertEqual(names, tuple(name.removesuffix("_worker") for name in WORKERS))
-        self.assertIn("for worker in " + " ".join(names) + "; do", (ROOT / "deploy.sh").read_text(encoding="utf-8"))
+        every = tuple(name.removesuffix("_worker") for name in WORKERS)
+        # The movie worker is checked only while movie sources are enabled; deploy.sh restarts it when enabled.
+        self.assertEqual(release_check._workers(),
+                         tuple(name.removesuffix("_worker") for name in WORKERS if expected(name)))
+        self.assertIn("for worker in " + " ".join(every) + "; do", (ROOT / "deploy.sh").read_text(encoding="utf-8"))
 
 
 PREFLIGHT = r'''

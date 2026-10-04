@@ -109,6 +109,22 @@ CHECKLIST = (
     ("media_backup_verified", "operations", False, "Media copied elsewhere; python -m app.media_manifest verify "
                                                    "finds nothing missing"),
     ("server_reboot", "operations", False, "Reboot; every service and the tunnel come back; readiness is green"),
+    # Movie sources (docs/MOVIE_SOURCE_VERIFICATION.md): optional, "not applicable" while the feature is off.
+    ("movie_drive_connection", "movie_sources", False, "Admin → System settings → Movie sources → Test connection: "
+                                                       "credentials, root folder, upload and delete pass; no test "
+                                                       "file is left in Drive"),
+    ("movie_import_local", "movie_sources", False, "Media → Movie sources → Add → Server file: a movie from the "
+                                                   "import folder becomes Ready with the right size and duration"),
+    ("movie_import_url", "movie_sources", False, "Add → Direct URL: an https movie you may use becomes Ready; "
+                                                 "https://127.0.0.1/… and a page that is not a movie are refused"),
+    ("movie_scratch_download", "movie_sources", False, "Two reviews of one source: the movie worker log shows "
+                                                       "movie_scratch_downloaded once"),
+    ("movie_pipeline_live", "movie_sources", True, "Use for Movie Review on a Ready source: frames analysed, a "
+                                                   "review with time ranges, excerpts, voice, subtitles, a final MP4"),
+    ("movie_source_deletion", "movie_sources", False, "Delete now on a source no run uses: Deleted, the Drive file "
+                                                      "in the trash; a source in use is refused"),
+    ("movie_retention_cleanup", "movie_sources", False, "A source past its retention, or past the grace period "
+                                                        "after a successful review, is deleted automatically"),
     ("legal_terms_reviewed", "legal", False, "Terms of Service: every [bracketed] item filled in and reviewed; "
                                              "TERMS_VERSION set"),
     ("legal_privacy_reviewed", "legal", False, "Privacy Policy: processors, retention and contact filled in, reviewed"),
@@ -121,6 +137,8 @@ OPTIONAL = frozenset({
     "payos_config_saved", "payos_payment", "payos_webhook_received", "payos_credits_once",
     *(key for key in CHECKLIST_KEYS if key.startswith("onepay_")),
     "domain_tiktok_redirect", "domain_facebook_redirect", "domain_payos_webhook", "domain_onepay_urls",
+    *(key for key in CHECKLIST_KEYS if key.startswith("movie_") and key not in ("movie_recap_live",
+                                                                                 "movie_review_live")),
 })
 STATUSES = ("passed", "failed", "not_applicable", "not_checked")
 
@@ -219,6 +237,45 @@ def ffmpeg_checks() -> list[dict]:
     except render.RenderError as exc:
         font = (exc.code, str(exc))
     checks.append(_check("subtitle_font", "warning" if font else "ok", font[0] if font else None))
+    return checks
+
+
+def movie_source_checks(db, now: datetime) -> list[dict]:
+    """Movie sources (app/movie_sources.py): ``off`` until enabled, then Google Drive, the import folder, the
+    scratch space, the Drive space they use and deletions that keep failing. Drive itself is not called here:
+    Admin → System settings → Movie sources → Test connection does that on purpose."""
+    from sqlalchemy import inspect
+
+    from app import google_drive, movie_sources
+
+    current = movie_sources.settings()
+    if not inspect(db.connection()).has_table("movie_sources"):
+        return [_check("movie_sources", "off", "not_migrated")]
+    if not current.enabled:
+        return [_check("movie_sources", "off", "disabled")]
+    checks = [_check("movie_sources", "ok")]
+    problem = google_drive.config().problem()
+    checks.append(_check("google_drive", "missing" if problem else "ok", problem))
+    root = movie_sources.import_root()
+    found = root is not None and root.is_dir()
+    checks.append(_check("import_folder", "ok" if found else "warning", None if found else "not_found"))
+    scratch = movie_sources.scratch_root(db)
+    if not scratch.is_dir():
+        checks.append(_check("scratch_space", "warning", "not_created"))  # created by the first import
+    else:
+        probe = scratch / f".readiness-{uuid.uuid4()}"
+        try:
+            probe.write_bytes(b"ok")
+            probe.unlink()
+            checks.append(_check("scratch_space", "ok"))
+        except OSError:
+            checks.append(_check("scratch_space", "error", "not_writable"))
+    summary = movie_sources.summary(db, now)
+    checks.append(_check("drive_usage", "warning" if summary["over_warning"] else "ok",
+                         "over_warning" if summary["over_warning"] else None, files=summary["files"],
+                         bytes=summary["bytes"], warning_bytes=summary["warning_bytes"]))
+    checks.append(_check("deletions", "warning" if summary["delete_failures"] else "ok",
+                         "failing" if summary["delete_failures"] else None, failing=summary["delete_failures"]))
     return checks
 
 
@@ -470,6 +527,7 @@ def report(db, *, streams: int, poll_seconds: float) -> dict:
         ("accounts", account_checks(db)),
         ("alerts", alert_checks(db)),
         ("configuration", configuration_checks()),
+        ("movie_sources", movie_source_checks(db, now)),
         ("realtime", [_check("stream", "ok", open_streams=streams, poll_seconds=poll_seconds)]),
         ("support", [_check("tickets", "ok", awaiting_support=int(open_tickets or 0))]),
     ]

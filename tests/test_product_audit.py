@@ -289,7 +289,7 @@ class Phase20FrontendTest(unittest.TestCase):
         self.assertIn('"verification", "system", "audit"] as const', admin)
         self.assertIn('<TabsContent value="system" className="mt-3 flex min-h-0 flex-1 flex-col">', admin)
         system = source("components/reelforge/admin/admin-system.tsx")
-        self.assertIn('const NAV = ["security", "general", "email", "ai", "social", "storage", "backups", "runtime", "credits",'
+        self.assertIn('const NAV = ["security", "general", "email", "ai", "social", "storage", "backups", "movie_sources", "runtime", "credits",'
                       ' "notifications"]', system)
         self.assertIn("`admin/system-config/${section}`", system)
         self.assertIn("`admin/system-config/ai/${provider}/test`", system)

@@ -19,7 +19,18 @@ Movie Recap / Review (use only content you are authorized to use)::
                                           → Review → Publish  (Recap Script → Metadata → Publish)
 
 Movie Review is the same graph with the Recap Script set to a review with light
-spoilers. Article to Video and Product Video illustrate each scene with an AI
+spoilers.
+
+Movie Review and Movie Recap from a movie source (migration 0027, app/workflow/nodes/movie.py): the
+movie stays in the operator's Google Drive and the movie worker prepares it::
+
+    Movie Source → Prepare Movie ─audio─→ Transcript ────────────┐
+                        └─frames─→ Visual Analysis ──────────────┴→ Movie Timeline → Story Analysis
+                                                                        └────────────┬→ Review Script
+    Review Script ─┬→ Voice ─┬→ Clip Selector → Extract Source Clips → Render → Review → Publish
+                   └→ Subtitle ←┘ (audio)                    Review Script → Metadata → Publish
+
+Article to Video and Product Video illustrate each scene with an AI
 image instead of an AI clip (Render shows the images as stills)::
 
     URL Source | Idea → AI Writer → Scene Splitter ─┬→ Image ─────────────┐
@@ -51,6 +62,12 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                     "line_chars": 32, "notice": RIGHTS_NOTICE},
     "movie_review": {"kind": "movie_recap", "platform": "youtube_shorts", "script_seconds": 90, "scene_count": 8,
                      "line_chars": 32, "style": "review", "spoiler_level": "light", "notice": RIGHTS_NOTICE},
+    "movie_source_review": {"kind": "movie_auto", "platform": "youtube_shorts", "mode": "review",
+                            "spoiler_level": "light", "script_seconds": 90, "section_count": 8, "line_chars": 32,
+                            "notice": RIGHTS_NOTICE},
+    "movie_source_recap": {"kind": "movie_auto", "platform": "youtube_shorts", "mode": "recap",
+                           "spoiler_level": "full", "script_seconds": 120, "section_count": 10, "line_chars": 32,
+                           "notice": RIGHTS_NOTICE},
     "article_to_video": {"kind": "slideshow", "source": "source_url", "platform": "youtube_shorts",
                          "script_seconds": 60, "scene_seconds": 6, "max_scenes": 10, "aspect_ratio": "9:16",
                          "line_chars": 32},
@@ -186,9 +203,66 @@ def _movie_recap(settings: dict) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def _movie_auto(settings: dict) -> dict:
+    """A movie source → prepared once → transcript + described frames → timeline → story → review script →
+    narration, excerpts, subtitles → render. The Movie Source step is left empty (or set by the caller)."""
+    script = {"mode": settings["mode"], "spoiler_level": settings["spoiler_level"],
+              "duration": settings["script_seconds"], "section_count": settings["section_count"],
+              "platform": settings["platform"]}
+    nodes = [
+        _node("movie", "movie_source", 0, 1),
+        _node("prepare", "movie_prepare", 1, 1),
+        _node("transcript", "transcribe", 2, 0),
+        _node("visual", "visual_analysis", 2, 2),
+        _node("timeline", "movie_timeline", 3, 1),
+        _node("analysis", "story_analysis", 4, 0),
+        _node("script", "review_script", 5, 1, script),
+        _node("voice", "voice", 6, 0),
+        _node("subtitle", "subtitle", 7, 0, {"max_chars": settings["line_chars"]}),
+        _node("select", "clip_select", 7, 2),
+        _node("clips", "extract_clips", 8, 2),
+        _node("render", "render", 9, 1),
+        _node("review", "review", 10, 1),
+        _node("metadata", "metadata", 6, 3, {"platform": settings["platform"]}),
+        _node("publish", "publish", 11, 1),
+    ]
+    edges = [
+        _edge("movie", "movie", "prepare", "movie"),
+        _edge("prepare", "audio", "transcript", "media"),
+        _edge("prepare", "frames", "visual", "frames"),
+        _edge("prepare", "movie", "visual", "movie"),
+        _edge("transcript", "transcript", "timeline", "transcript"),
+        _edge("visual", "visual", "timeline", "visual"),
+        _edge("prepare", "movie", "timeline", "movie"),
+        _edge("timeline", "source", "analysis", "source"),
+        _edge("analysis", "analysis", "script", "analysis"),
+        _edge("timeline", "timeline", "script", "timeline"),
+        _edge("prepare", "movie", "script", "movie"),
+        _edge("script", "scenes", "voice", "scenes"),
+        _edge("script", "scenes", "subtitle", "scenes"),
+        _edge("voice", "audio_assets", "subtitle", "audio"),
+        _edge("script", "scenes", "select", "scenes"),
+        _edge("prepare", "movie", "select", "movie"),
+        _edge("timeline", "timeline", "select", "timeline"),
+        _edge("voice", "audio_assets", "select", "audio"),
+        _edge("select", "source_clips", "clips", "source_clips"),
+        _edge("clips", "video_assets", "render", "media"),
+        _edge("voice", "audio_assets", "render", "audio"),
+        _edge("subtitle", "subtitle_asset", "render", "subtitle"),
+        _edge("render", "rendered_video", "review", "media"),
+        _edge("review", "video_assets", "publish", "video"),
+        _edge("script", "title", "metadata", "topic"),
+        _edge("script", "script", "metadata", "source"),
+        _edge("metadata", "metadata", "publish", "metadata"),
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
 def template_graph(template_id: str) -> dict:
     """The workflow graph of a starter template; ``KeyError`` for an unknown name."""
     settings = TEMPLATES[template_id]
+    if settings["kind"] == "movie_auto":
+        return _movie_auto(settings)
     if settings["kind"] == "movie_recap":
         return _movie_recap(settings)
     if settings["kind"] == "slideshow":

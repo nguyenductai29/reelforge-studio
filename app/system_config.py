@@ -121,6 +121,8 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("credits.render_per_job", "credits", "credits", "int", "RENDER_CREDITS_PER_JOB", 0, 0, 100000),
     Setting("credits.transcription_per_job", "credits", "credits", "int", "TRANSCRIPTION_CREDITS_PER_JOB", 2, 1,
             100000),
+    # One batch of movie frames described by a vision-capable text model (app/workflow/nodes/movie.py).
+    Setting("credits.vision_per_batch", "credits", "credits", "int", "VISION_CREDITS_PER_BATCH", 1, 1, 100000),
     # Notifications.
     Setting("notifications.sse_poll_seconds", "notifications", "stream", "float", "REELFORGE_SSE_POLL_SECONDS", 3,
             0.1, 30),
@@ -164,6 +166,37 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("backups.keep_weekly", "backups", "retention", "int", None, 8, 0, 260),
     Setting("backups.keep_monthly", "backups", "retention", "int", None, 6, 0, 120),
     Setting("backups.max_age_hours", "backups", "backups", "int", None, 26, 1, 720),
+    # Movie sources (app/movie_sources.py): temporary source movies, kept in the operator's Google Drive while a
+    # workflow needs them, then deleted. Off until an admin turns it on with a working Drive.
+    Setting("movie_sources.enabled", "movie_sources", "general", "bool", None, False),
+    Setting("movie_sources.retention_days", "movie_sources", "retention", "int", None, 7, 1, 90),
+    Setting("movie_sources.max_retention_days", "movie_sources", "retention", "int", None, 30, 1, 365),
+    Setting("movie_sources.delete_after_success", "movie_sources", "retention", "bool", None, True),
+    Setting("movie_sources.success_grace_hours", "movie_sources", "retention", "int", None, 24, 0, 720),
+    Setting("movie_sources.max_source_bytes", "movie_sources", "limits", "int", None, 20 * 1024 ** 3,
+            1024 ** 2, 1 << 41),
+    Setting("movie_sources.max_duration_seconds", "movie_sources", "limits", "int", None, 4 * 3600, 60, 43200),
+    Setting("movie_sources.local_import_root", "movie_sources", "paths", "str", None, "/srv/data/import/reelforge",
+            max_length=1000),
+    Setting("movie_sources.scratch_root", "movie_sources", "paths", "str", None, "", max_length=1000),
+    Setting("movie_sources.delete_local_temp", "movie_sources", "paths", "bool", None, True),
+    Setting("movie_sources.delete_scratch", "movie_sources", "paths", "bool", None, True),
+    Setting("movie_sources.frame_interval_seconds", "movie_sources", "analysis", "int", None, 10, 2, 120),
+    Setting("movie_sources.max_frames", "movie_sources", "analysis", "int", None, 300, 10, 500),
+    Setting("movie_sources.drive.enabled", "movie_sources", "drive", "bool", None, False),
+    Setting("movie_sources.drive.auth_mode", "movie_sources", "drive", "str", None, "oauth",
+            pattern=r"oauth|service_account"),
+    Setting("movie_sources.drive.root_folder_id", "movie_sources", "drive", "str", None, "",
+            pattern=r"[A-Za-z0-9_-]{0,200}"),
+    Setting("movie_sources.drive.client_id", "movie_sources", "drive", "str", None, "", max_length=300,
+            pattern=r"[A-Za-z0-9._-]*"),
+    Setting("movie_sources.drive.client_secret", "movie_sources", "drive", "secret"),
+    Setting("movie_sources.drive.refresh_token", "movie_sources", "drive", "secret"),
+    Setting("movie_sources.drive.service_account_json", "movie_sources", "drive", "secret"),
+    Setting("movie_sources.drive.delete_mode", "movie_sources", "drive", "str", None, "trash",
+            pattern=r"trash|delete"),
+    Setting("movie_sources.drive.warning_bytes", "movie_sources", "drive", "int", None, 500 * 1024 ** 3,
+            1024 ** 3, 1 << 50),
 )
 BY_KEY = {setting.key: setting for setting in SETTINGS}
 BY_ENV = {setting.env: setting for setting in SETTINGS if setting.env}
@@ -194,9 +227,10 @@ ENVIRONMENT: dict[str, tuple[str, str]] = {
     **{name: ("dev", "Live smoke-test choice (python -m app.smoke_test / app.provider_check)") for name in _SMOKE},
     "REELFORGE_LIVE_TESTS": ("dev", "Allows the paid live smoke tests in this shell"),
     "REELFORGE_TEST_DATABASE_URL": ("dev", "Runs the migration tests on an isolated PostgreSQL database"),
+    "REELFORGE_GOOGLE_API_BASE": ("dev", "Points the Google Drive client at a local test server (loopback only)"),
 }
 SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications", "payments", "email", "security",
-            "backups")
+            "backups", "movie_sources")
 # Paths the frontend serves each OAuth callback on.
 REDIRECT_PATHS = {"youtube": "/youtube/callback", "tiktok": "/channels/callback/tiktok",
                   "facebook": "/channels/callback/facebook"}

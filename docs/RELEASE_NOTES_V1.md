@@ -7,14 +7,15 @@
 > claims that a gate has passed.
 
 Production origin: `https://reelforge.mul-service.com` (Cloudflare Tunnel to a home server). Database head:
-`0026_change_production_origin`. Interface in Vietnamese (default), English and Japanese.
+`0027_movie_sources`. Interface in Vietnamese (default), English and Japanese.
 
 ## Creating content
 
 - **Workflow engine:** workflows as graphs of steps with typed connections and per-step settings; each run freezes
-  its graph and settings, records every step, can wait for a person's review and be retried. 47 steps in the library,
+  its graph and settings, records every step, can wait for a person's review and be retried. 54 steps in the library,
   all executable. Templates: Social video, YouTube Short, YouTube (16:9), TikTok video, Facebook Reel, Repurpose
-  existing content, Movie Recap, Movie Review, Article → Video, Product Video, Blank.
+  existing content, Movie Recap, Movie Review, Movie Review and Movie Recap from a movie source, Article → Video,
+  Product Video, Blank.
 - **AI generation:** text (OpenAI, Anthropic, Gemini), images (Runway), video clips, one per scene (fal, Runware,
   Replicate, Runway; Dola as an opt-in experiment), narration (Gemini TTS), transcription (OpenAI Whisper). Credits are
   reserved before a provider call, charged once when the result is stored and refunded on a clear failure; an
@@ -23,6 +24,11 @@ Production origin: `https://reelforge.mul-service.com` (Cloudflare Tunnel to a h
   timestamped transcripts.
 - **Movie Recap / Review:** transcript, story analysis, recap or review script, the matching source scenes cut with
   FFmpeg and rendered with the narration, for material the user is authorized to use.
+- **Movie sources** (added after the release closure): temporary movies from the studio's server import folder, a
+  direct https URL or the studio's Google Drive inbox, kept in the operator's Google Drive with retention and deleted
+  automatically after use, never while a run uses them; *Use for Movie Review / Recap* runs a pipeline with grounded
+  visual analysis of sampled frames, a timeline, time-ranged sections and short excerpts.
+  [MOVIE_SOURCES.md](MOVIE_SOURCES.md)
 - **Rendering:** FFmpeg renders one H.264/AAC MP4 from the clips or an image slideshow, with narration, burned-in
   subtitles (SRT/WebVTT) and background music.
 
@@ -69,8 +75,8 @@ Transactional email through SMTP or Resend, 15 templates in three languages, del
 - **Observability:** `/health/live`, `/health/ready`, Prometheus metrics on `127.0.0.1`, alerts with a cooldown, JSON
   logs with request IDs.
 - **Production deployment:** hardened systemd units, `./deploy.sh` (pull, bootstrap and master key checks,
-  migrations, build, restarts, service and readiness checks), the release pre-flight and the release report, 68 release
-  gates recorded in Admin → Verification. Domain `https://reelforge.mul-service.com` (migration
+  migrations, build, restarts, service and readiness checks), the release pre-flight and the release report, 75 release
+  gates recorded in Admin → Verification (seven of them, optional, for movie sources). Domain `https://reelforge.mul-service.com` (migration
   `0026_change_production_origin` moves an installation from the previous domain).
 
 ## Verified
@@ -79,6 +85,9 @@ Transactional email through SMTP or Resend, 15 templates in three languages, del
   3.11 and 3.14) and PostgreSQL 16, migrations up, down and up with `alembic check`, the frontend build on Node 20 and
   22, and the browser suite on PostgreSQL, layout at seven window sizes included. Counts from the release closure:
   [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-03-release-closure).
+  The movie source phase came after that commit: so far only local runs of the same suites
+  ([2026-10-04](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-04-movie-source-phase)); CI
+  must still pass on its commit.
 - **Live, on the production server:** the release gates (email, AI providers, render, payments, publishing,
   Cloudflare and security, backups, reboot, legal) are recorded by the operator in Admin → Verification; their state
   is in [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md). During development the operator ran Gemini text and Runway
@@ -100,6 +109,6 @@ next: [POST_V1_ROADMAP.md](POST_V1_ROADMAP.md).
 
 ## Upgrading
 
-Back up the database, then `./deploy.sh` on the server: it migrates to `0026_change_production_origin`, builds,
+Back up the database, then `./deploy.sh` on the server: it migrates to `0027_movie_sources`, builds,
 restarts and checks every service. Then `bash deploy/release-preflight.sh` and the domain change steps in
 [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md#domain-change).

@@ -28,8 +28,12 @@ jobs:
           cache-dependency-path: requirements*.txt
       - name: Install Python dependencies
         run: python -m pip install -r requirements-dev.txt
+      - name: FFmpeg (the movie pipeline test renders a real 40-second movie)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Run backend tests
         shell: bash  # with pipefail: tee must not hide a failing run
+        env:
+          REELFORGE_REQUIRE_FFMPEG: '1'
         run: python -m unittest discover -s tests -v 2>&1 | tee unittest.log
       - name: Show failing tests as annotations (readable without access to the log)
         if: failure()
@@ -67,8 +71,12 @@ jobs:
             sudo apt-get update && sudo apt-get install -y postgresql-client
           fi
           echo "REELFORGE_TEST_PG_BIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_ENV"
+      - name: FFmpeg (the movie pipeline test renders a real 40-second movie)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Run backend tests on PostgreSQL
         shell: bash  # with pipefail: tee must not hide a failing run
+        env:
+          REELFORGE_REQUIRE_FFMPEG: '1'
         run: python -m unittest discover -s tests -v 2>&1 | tee unittest.log
       - name: Show failing tests as annotations (readable without access to the log)
         if: failure()
@@ -134,8 +142,8 @@ jobs:
 
   e2e:
     # Browser tests of the critical flows (e2e/README.md) on a disposable stack: the API and the built frontend
-    # from this commit, PostgreSQL, and a local SMTP sink. No AI provider, payment gateway or social network is
-    # contacted.
+    # from this commit, PostgreSQL, a local SMTP sink and an in-memory Google Drive (tests/fake_drive.py). No AI
+    # provider, payment gateway, social network or Google service is contacted.
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest
     needs: [backend, frontend]

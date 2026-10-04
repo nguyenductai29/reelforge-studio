@@ -51,12 +51,13 @@ SCENE_VIDEO = "scene_video"          # Video step clip
 VOICE = "voice"                      # Voice step narration
 SUBTITLE = "subtitle"                # Subtitle step file
 EXTRACTED_CLIP = "extracted_clip"    # Extract Source Clips (Movie Recap)
+MOVIE_AUDIO = "movie_audio"          # Prepare Movie: a movie source's sound for transcription
 FINAL_RENDER = "final_render"        # Render step output
 OTHER = "other"                      # anything not classified: never expires
-KINDS = (SOURCE, GENERATED_IMAGE, SCENE_VIDEO, VOICE, SUBTITLE, EXTRACTED_CLIP, FINAL_RENDER, OTHER)
+KINDS = (SOURCE, GENERATED_IMAGE, SCENE_VIDEO, VOICE, SUBTITLE, EXTRACTED_CLIP, MOVIE_AUDIO, FINAL_RENDER, OTHER)
 NODE_KINDS = {"image": GENERATED_IMAGE, "video": SCENE_VIDEO, "voice": VOICE, "subtitle": SUBTITLE,
-              "extract_clips": EXTRACTED_CLIP, "render": FINAL_RENDER}
-INTERMEDIATE_KINDS = frozenset({GENERATED_IMAGE, SCENE_VIDEO, VOICE, EXTRACTED_CLIP})
+              "extract_clips": EXTRACTED_CLIP, "movie_prepare": MOVIE_AUDIO, "render": FINAL_RENDER}
+INTERMEDIATE_KINDS = frozenset({GENERATED_IMAGE, SCENE_VIDEO, VOICE, EXTRACTED_CLIP, MOVIE_AUDIO})
 
 # Warning levels, highest first: at "full" nothing new may be stored; reading and downloading still work.
 LEVELS = ((100, "full"), (90, "critical"), (80, "warning"), (70, "notice"))

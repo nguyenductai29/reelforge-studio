@@ -200,6 +200,20 @@ def live_lease(db: Session, *, job_id: str, lease_token: str, now: datetime | No
     return job if expires > (now or datetime.now(timezone.utc)) else None
 
 
+def extend_lease(db: Session, *, job_id: str, lease_token: str, lease_seconds: int,
+                 now: datetime | None = None) -> bool:
+    """Keep a live lease alive during long local work (a movie download); False once another worker owns it."""
+    now = now or datetime.now(timezone.utc)
+    result = db.execute(
+        update(WorkflowJob)
+        .where(WorkflowJob.id == job_id, WorkflowJob.lease_token == lease_token,
+               WorkflowJob.state == "leased", WorkflowJob.lease_expires_at > now)
+        .values(lease_expires_at=now + timedelta(seconds=lease_seconds), updated_at=now)
+        .execution_options(synchronize_session="fetch")
+    )
+    return bool(result.rowcount)
+
+
 def complete_job(
     db: Session, *, job_id: str, lease_token: str, now: datetime | None = None,
 ) -> bool:

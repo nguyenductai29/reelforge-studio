@@ -44,6 +44,12 @@ export const kindOf: Record<NodeType, NodeKind> = {
   recap_script: "script",
   match_scenes: "video",
   extract_clips: "video",
+  movie_source: "input",
+  movie_prepare: "edit",
+  visual_analysis: "ai",
+  movie_timeline: "ai",
+  review_script: "script",
+  clip_select: "video",
 };
 
 /** Nodes that generate text with the workspace's text model. */
@@ -87,7 +93,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "uploadImage", kind: "input", type: "source_media" },
       { id: "uploadAudio", kind: "input", type: "source_media" },
       { id: "uploadSubtitle", kind: "input", type: "source_media" },
-      { id: "movieSource", kind: "input", type: "source_media" },
+      { id: "movieSource", kind: "input", type: "movie_source" },
       { id: "transcript", kind: "ai", type: "transcribe" },
     ],
   },
@@ -105,6 +111,11 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "movieRecap", kind: "script", type: "recap_script" },
       { id: "movieReview", kind: "script", type: "recap_script", config: { style: "review", spoiler_level: "light" } },
       { id: "endingExplained", kind: "script", type: "recap_script", config: { style: "explainer", spoiler_level: "full" } },
+      { id: "visualAnalysis", kind: "ai", type: "visual_analysis" },
+      { id: "movieTimeline", kind: "ai", type: "movie_timeline" },
+      { id: "movieReviewScript", kind: "script", type: "review_script" },
+      { id: "movieRecapScript", kind: "script", type: "review_script", config: { mode: "recap", spoiler_level: "full" } },
+      { id: "endingExplainedScript", kind: "script", type: "review_script", config: { mode: "ending_explained", spoiler_level: "full" } },
       { id: "generateCta", kind: "ai", type: "cta" },
       { id: "publishMetadata", kind: "ai", type: "metadata" },
     ],
@@ -126,6 +137,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
       { id: "aiVideoGenerator", kind: "video", type: "video" },
       { id: "textToVideo", kind: "video", type: "video" },
       { id: "clipMatcher", kind: "video", type: "match_scenes" },
+      { id: "clipSelector", kind: "video", type: "clip_select" },
     ],
   },
   {
@@ -139,6 +151,7 @@ export const nodeLibrary: { category: CategoryId; items: LibraryItem[] }[] = [
     category: "editing",
     items: [
       { id: "subtitle", kind: "subtitle", type: "subtitle" },
+      { id: "prepareMovie", kind: "edit", type: "movie_prepare" },
       { id: "extractClips", kind: "video", type: "extract_clips" },
       { id: "mergeClips", kind: "render", type: "render" },
       { id: "renderVideo", kind: "render", type: "render" },
@@ -181,6 +194,12 @@ export const EXECUTABLE: ReadonlySet<NodeType> = new Set([
   "match_scenes",
   "extract_clips",
   "music",
+  "movie_source",
+  "movie_prepare",
+  "visual_analysis",
+  "movie_timeline",
+  "review_script",
+  "clip_select",
 ]);
 
 export type TemplateId = keyof Dictionary["templates"];
@@ -198,6 +217,8 @@ export type WorkflowTemplate = {
     | "repurpose"
     | "movie_recap"
     | "movie_review"
+    | "movie_source_review"
+    | "movie_source_recap"
     | "article_to_video"
     | "product_video";
   /** The compact diagram's node kinds. */
@@ -223,6 +244,8 @@ const clipGraph: Graph = {
 const fullPreview: NodeKind[] = ["input", "ai", "script", "video", "voice", "subtitle", "render", "review", "publish"];
 // The same with one AI image per scene instead of a clip (Article to Video, Product Video).
 const slidePreview: NodeKind[] = ["input", "ai", "script", "image", "voice", "subtitle", "render", "review", "publish"];
+// A movie source prepared once → transcript + described frames → timeline → story → review script → clips → render.
+const moviePreview: NodeKind[] = ["input", "edit", "ai", "ai", "script", "voice", "video", "render", "review", "publish"];
 
 export const workflowTemplates: WorkflowTemplate[] = [
   { id: "social-video", graph: clipGraph, preview: ["input", "video", "review"], steps: 3 },
@@ -242,6 +265,8 @@ export const workflowTemplates: WorkflowTemplate[] = [
     preview: ["input", "ai", "script", "voice", "video", "render", "review", "publish"],
     steps: 12,
   },
+  { id: "movie-source-review", backend: "movie_source_review", preview: moviePreview, steps: 15 },
+  { id: "movie-source-recap", backend: "movie_source_recap", preview: moviePreview, steps: 15 },
   { id: "repurpose", backend: "repurpose", preview: fullPreview, steps: 10 },
   { id: "article-to-video", backend: "article_to_video", preview: slidePreview, steps: 10 },
   { id: "product-video", backend: "product_video", preview: slidePreview, steps: 10 },

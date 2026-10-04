@@ -32,6 +32,8 @@ from app import (accounts, admin_dashboard, audit, auth_security, bank_qr, billi
                  heartbeat, home, jobs, mailer, master_key, media_maintenance, notifications, payment_config,
                  payment_providers, payments, permissions, publications, ratelimit, readiness, reconciliation,
                  run_summary, secret_box, sources, storage, support, system_config, team, usage)
+from app import google_drive, movie_sources
+from app.models import MovieSource
 from app import alerts, backup, email_templates, health, http_security, metrics, passwords, request_context
 from app.passwords import check_password, hashed_password
 from app.payment_providers import onepay
@@ -46,8 +48,8 @@ from app.runtime_env import start_process
 from app.logs import log_event
 from app.workflow import (ExecutionContext, RunOptions, RunRequestError, default_executor, default_registry,
                           parse_graph)
-from app.workflow.config import TOOL, ConfigError, check_assets, check_tools
-from app.workflow.templates import TEMPLATES, describe_templates, template_graph
+from app.workflow.config import TOOL, ConfigError, check_assets, check_movie_sources, check_tools
+from app.workflow.templates import RIGHTS_NOTICE, TEMPLATES, describe_templates, template_graph
 from app.workflow.nodes import ReviewNodeHandler
 from app.workflow.results import produced_asset_ids
 from app.subtitles import CONTENT_TYPES as SUBTITLE_TYPES
@@ -2503,7 +2505,7 @@ def admin_payment_providers(request: Request):
     return {"providers": payment_providers.readiness()}
 
 
-ADMIN_JOB_QUEUES = ("text", "image", "video", "voice", "render", "source", "publish")
+ADMIN_JOB_QUEUES = ("text", "image", "video", "voice", "render", "source", "publish", "movie")
 
 
 def public_job(job):
@@ -2530,7 +2532,7 @@ def admin_workers(request: Request):
 
 @app.get("/api/admin/jobs")
 def admin_jobs(request: Request, state: Literal["queued", "leased", "succeeded", "failed"] | None = None,
-               queue: Literal["text", "image", "video", "voice", "render", "source", "publish"] | None = None,
+               queue: Literal["text", "image", "video", "voice", "render", "source", "publish", "movie"] | None = None,
                limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0)):
     """Recent jobs of every workspace with safe fields, counts per queue and state, and a stuck-work audit."""
     with Session() as db:
@@ -2554,7 +2556,8 @@ def admin_jobs(request: Request, state: Literal["queued", "leased", "succeeded",
 
 @app.get("/api/admin/storage")
 def admin_storage(request: Request, limit: int = ADMIN_LIMIT, offset: int = ADMIN_OFFSET):
-    """Studios by storage use (fullest first, one page), how many are at each warning level, and the disk."""
+    """Studios by storage use (fullest first, one page), how many are at each warning level, the disk, and the
+    movie sources kept in Google Drive (counted from the table, never Drive's quota)."""
     with Session() as db:
         admin_for(request, db)
         usage_rows = storage.usage_by_workspace(db)
@@ -2572,7 +2575,9 @@ def admin_storage(request: Request, limit: int = ADMIN_LIMIT, offset: int = ADMI
                 levels[item["level"]] += 1
         return {"workspaces": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset,
                 "levels": levels, "disk": storage.disk_usage(db), "default_quota_bytes": storage.default_quota(),
-                "retention": retention_data(storage.RetentionPolicy.from_environment())}
+                "retention": retention_data(storage.RetentionPolicy.from_environment()),
+                "movie_sources": movie_sources.summary(db) if inspect(db.connection()).has_table("movie_sources")
+                else None}
 
 
 # --- Phase 18A/19: payment gateway configuration (system admins only) -------------------------------------
@@ -2847,7 +2852,8 @@ def admin_payment_check(data: LegacyPaymentCheckInput, request: Request):
 # --- Phase 20: central system settings (system admins only) ------------------------------------------------
 # The same write-only rules as payment gateways: secrets are encrypted at rest, never returned, never echoed.
 
-ADMIN_SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications", "email", "security", "backups")
+ADMIN_SECTIONS = ("ai", "social", "storage", "runtime", "credits", "notifications", "email", "security", "backups",
+                  "movie_sources")
 
 
 class SystemConfigInput(BaseModel):
@@ -2906,6 +2912,12 @@ def _system_overview(db) -> dict:
         "migrated": system_config.ready(db),
         # Phase 22: whether transactional email is sending, and why not (never a credential).
         "email": {"problem": mailer.problem(), "provider": mailer.config()["provider"], "stats": mailer.stats(db)},
+        # Movie sources: Drive's state as stored (the connection test calls Google), never a credential.
+        "movie_sources": {"drive_problem": google_drive.config().problem(),
+                          "last_test": next((entry for entry in system_config.history(db, "movie_sources", limit=20)
+                                             if entry["action"] == "tested"), None),
+                          "summary": movie_sources.summary(db) if inspect(db.connection()).has_table("movie_sources")
+                          else None},
     }
 
 
@@ -2971,6 +2983,22 @@ def test_ai_provider_config(provider: str, request: Request):
                             remote=result["remote"]["status"])
     log_event(logger, "ai_provider_tested", provider=provider, local=result["local"]["status"],
               remote=result["remote"]["status"])
+    return {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/api/admin/system-config/movie_sources/drive/test")
+def test_movie_drive(request: Request):
+    """Credentials, the root folder, a tiny upload and its permanent deletion; never returns a credential."""
+    same_origin(request)
+    with Session() as db:
+        admin = admin_for(request, db)
+    limit_rate("drive_test", admin.id)
+    result = google_drive.check_connection()
+    with Session.begin() as db:
+        system_config.audit(db, "movie_sources", "tested", admin.id, status=result["status"],
+                            failed=",".join(check["key"] for check in result["checks"] if check["status"] != "ok"))
+    log_event(logger, "movie_drive_tested", status=result["status"],
+              checks={check["key"]: check["status"] for check in result["checks"]})
     return {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
 
 
@@ -4019,7 +4047,22 @@ def public_step_output(step):
             output["jobs"] = {job_id: {key: value for key, value in record.items()
                                        if key not in ("submission", "error_count", "provider_job")}
                               for job_id, record in output["jobs"].items() if isinstance(record, dict)}
+        _preview_movie_output(output)
     return output
+
+
+def _preview_movie_output(output: dict) -> None:
+    """Movie steps keep a whole movie's frame notes and timeline for the next steps; runs show a preview."""
+    visual = output.get("visual")
+    if isinstance(visual, dict) and isinstance(visual.get("frames"), list) and len(visual["frames"]) > 40:
+        output["visual"] = {**visual, "frames": visual["frames"][:40], "truncated": True}
+    timeline = output.get("timeline")
+    if isinstance(timeline, dict) and isinstance(timeline.get("windows"), list) and len(timeline["windows"]) > 60:
+        output["timeline"] = {**timeline, "windows": timeline["windows"][:60], "truncated": True}
+    source = output.get("source")
+    if isinstance(source, dict) and source.get("source_type") == "timeline":
+        output["source"] = {**{key: value for key, value in source.items() if key != "segments"},
+                            "text": str(source.get("text") or "")[:4000]}
 
 
 def public_run(run, steps=None):
@@ -4246,11 +4289,19 @@ def update_workflow(workflow_id: str, graph: WorkflowGraph, request: Request):
         assets = {asset.id: asset for asset in db.scalars(select(Asset).where(Asset.workspace_id == ws.id,
                                                                               Asset.id.in_(asset_ids)))} \
             if asset_ids else {}
+        # Movie sources must be this workspace's own and not deleted (migration 0027).
+        movie_ids = {node.config.get(field.key) for node in graph.nodes if isinstance(node.config, dict)
+                     for field in default_registry.resolve(node.type).config_fields if field.type == "movie_source"}
+        movie_ids = {value for value in movie_ids if isinstance(value, str)}
+        movies = {row.id: row for row in db.scalars(select(MovieSource).where(MovieSource.workspace_id == ws.id,
+                                                                              MovieSource.id.in_(movie_ids)))} \
+            if movie_ids else {}
         for node in graph.nodes:
             try:
                 fields = default_registry.resolve(node.type).config_fields
                 check_tools(fields, node.config, tools)
                 check_assets(fields, node.config, assets)
+                check_movie_sources(fields, node.config, movies)
             except ConfigError as exc:
                 raise config_error(node.id, exc) from exc
         stored = normalize_edges(graph.model_dump(), default_registry)
@@ -4266,8 +4317,8 @@ def workflow_node_types(request: Request):
     return {"data_types": list(DATA_TYPES), "node_types": describe_node_types(default_registry)}
 
 
-SCRIPT_NODES = {"ai_writer": "script", "recap_script": "script", "rewrite": "text", "translate": "text",
-                "summarize": "summary"}
+SCRIPT_NODES = {"ai_writer": "script", "recap_script": "script", "review_script": "script", "rewrite": "text",
+                "translate": "text", "summarize": "summary"}
 
 
 @app.get("/api/scripts")
@@ -4439,6 +4490,292 @@ def delete_asset(asset_id: str, request: Request):
 @app.post("/api/assets/delete")
 def delete_assets(data: MediaDeleteInput, request: Request):
     return delete_media(request, data.asset_ids)
+
+
+# --- Movie sources (migration 0027, docs/MOVIE_SOURCES.md) -------------------------------------------------------
+# Temporary source movies in the operator's Google Drive. Members see names, sizes, durations and statuses, never
+# a scratch path, a full URL, a Drive credential or (outside the admin console) a Drive ID.
+
+class MovieSourceInput(BaseModel):
+    source_type: Literal["local", "url", "drive"]
+    path: str | None = Field(default=None, max_length=1000)
+    url: str | None = Field(default=None, max_length=2000)
+    drive_file_id: str | None = Field(default=None, max_length=200)
+    name: str | None = Field(default=None, max_length=255)
+    project_id: str | None = Field(default=None, max_length=36)
+
+
+class MovieSourceRetryInput(BaseModel):
+    stage: Literal["import", "upload"] = "import"
+
+
+class MovieSourceExtendInput(BaseModel):
+    days: Literal[1, 3, 7]
+
+
+class MovieReviewInput(BaseModel):
+    mode: Literal["recap", "review", "ending_explained"] | None = None
+    spoiler_level: Literal["none", "light", "full"] | None = None
+    tone: Literal["neutral", "cinematic", "funny", "critical", "storytelling", "documentary"] | None = None
+    duration: int | None = Field(default=None, ge=15, le=900)
+    language: Literal["auto", "vi", "en", "ja"] | None = None
+    section_count: int | None = Field(default=None, ge=3, le=20)
+    platform: Literal["generic", "youtube", "youtube_shorts", "tiktok", "facebook"] | None = None
+    project_id: str | None = Field(default=None, max_length=36)
+
+
+def _movie_failure(exc: movie_sources.MovieSourceError) -> HTTPException:
+    return HTTPException(exc.status, {"code": exc.code, "message": str(exc)})
+
+
+def _movie_member(request: Request, db, permission: str):
+    user, membership, ws = member_context(request, db)
+    require_permission(db, membership, permission)
+    return user, ws
+
+
+def _movie_source(db, ws, source_id: str, *, locked: bool = False):
+    source = movie_sources.for_workspace(db, ws.id, source_id, locked=locked)
+    if source is None:
+        raise HTTPException(404, "Movie source not found")
+    return source
+
+
+def _movie_config(workspace_id: str) -> dict:
+    current = movie_sources.settings()
+    folder = movie_sources.workspace_import_root(workspace_id)  # one import folder per studio
+    return {"enabled": current.enabled, "drive_problem": google_drive.config().problem(),
+            "local_import": bool(folder and folder.is_dir()), "retention_days": current.retention_days,
+            "max_retention_days": current.max_retention_days, "extend_days": list(movie_sources.EXTEND_DAYS),
+            "delete_after_success": current.delete_after_success, "success_grace_hours": current.success_grace_hours,
+            "max_source_bytes": current.max_source_bytes, "max_duration_seconds": current.max_duration_seconds,
+            "notice": RIGHTS_NOTICE}
+
+
+@app.get("/api/movie-sources/config")
+def movie_source_config(request: Request):
+    """What the Add dialog may offer: which source types work on this server, and the retention rules."""
+    with Session() as db:
+        ws = workspace_for(request, db)
+    return _movie_config(ws.id)
+
+
+@app.get("/api/movie-sources/local-files")
+def movie_source_local_files(request: Request, folder: str = Query(default="", max_length=1000)):
+    """One folder of the studio's import folder (``<import root>/<workspace id>``): sub-folders and movie files
+    (names and sizes only). Another studio's folder is never listed."""
+    with Session() as db:
+        ws = workspace_for(request, db, "content.edit")
+    if not movie_sources.settings().enabled:
+        raise HTTPException(409, {"code": "movie_sources_disabled", "message": "Movie sources are not enabled"})
+    try:
+        return movie_sources.list_local(folder, root=movie_sources.workspace_import_root(ws.id))
+    except movie_sources.MovieSourceError as exc:
+        raise _movie_failure(exc) from None
+
+
+@app.get("/api/movie-sources/drive-files")
+def movie_source_drive_files(request: Request, page_token: str | None = Query(default=None, max_length=1000)):
+    """The studio's Drive inbox (``<root>/inbox/<workspace id>/``): movie files the operator placed there."""
+    with Session() as db:
+        ws = workspace_for(request, db, "content.edit")
+    if not movie_sources.settings().enabled:
+        raise HTTPException(409, {"code": "movie_sources_disabled", "message": "Movie sources are not enabled"})
+    if problem := google_drive.config().problem():
+        raise HTTPException(409, {"code": "drive_not_configured", "message": f"Google Drive is not ready ({problem})"})
+    try:
+        with google_drive.DriveClient() as drive:
+            inbox = drive.inbox_folder(ws.id, create=True)
+            listing = drive.children(inbox, folders=False, videos=True, page_token=page_token, page_size=50)
+    except google_drive.DriveError as exc:
+        log_event(logger, "movie_drive_listing_failed", level=logging.WARNING, workspace_id=ws.id, error_code=exc.code)
+        raise HTTPException(502, {"code": f"drive_{exc.code}", "message": "Google Drive could not be read"}) from None
+    files = [{"id": item["id"], "name": movie_sources.sanitize_name(item.get("name")),
+              "bytes": int(item["size"]) if str(item.get("size") or "").isdigit() else None,
+              "mime_type": str(item.get("mimeType") or "")[:100], "created_at": item.get("createdTime")}
+             for item in listing["files"]]
+    return {"files": files, "next_page_token": listing["nextPageToken"]}
+
+
+@app.get("/api/movie-sources")
+def list_movie_sources(request: Request, q: str | None = Query(default=None, max_length=200),
+                       status: str | None = Query(default=None, max_length=24),
+                       source_type: str | None = Query(default=None, max_length=8),
+                       limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        if status is not None and status not in movie_sources.STATUSES:
+            raise HTTPException(422, {"code": "invalid_status", "message": "Unknown status"})
+        return {**movie_sources.page(db, ws.id, q=q, status=status, source_type=source_type, limit=limit,
+                                     offset=offset), "config": _movie_config(ws.id)}
+
+
+@app.post("/api/movie-sources", status_code=201)
+def create_movie_source(data: MovieSourceInput, request: Request):
+    """Queue an import (the movie worker fetches, checks and uploads it); nothing is downloaded in the request."""
+    same_origin(request)
+    with Session() as db:
+        _, ws = _movie_member(request, db, "content.edit")
+        active_plan(db, ws)
+    limit_rate("movie_source_create", ws.id)
+    with Session.begin() as db:
+        user, ws = _movie_member(request, db, "content.edit")
+        try:
+            source = movie_sources.create(db, workspace_id=ws.id, user=user, source_type=data.source_type,
+                                          path=data.path, url=data.url, drive_file_id=data.drive_file_id,
+                                          name=data.name, project_id=data.project_id)
+        except movie_sources.MovieSourceError as exc:
+            raise _movie_failure(exc) from None
+        return movie_sources.public(db, source, uses=[])
+
+
+@app.get("/api/movie-sources/{source_id}")
+def get_movie_source(source_id: str, request: Request):
+    with Session() as db:
+        ws = workspace_for(request, db)
+        return movie_sources.public(db, _movie_source(db, ws, source_id))
+
+
+@app.post("/api/movie-sources/{source_id}/retry")
+def retry_movie_source(source_id: str, data: MovieSourceRetryInput, request: Request):
+    """Try a failed import or upload again (or a failing deletion now)."""
+    same_origin(request)
+    with Session.begin() as db:
+        user, ws = _movie_member(request, db, "content.edit")
+        source = _movie_source(db, ws, source_id, locked=True)
+        try:
+            movie_sources.retry(db, source, stage=data.stage, user_id=user.id)
+        except movie_sources.MovieSourceError as exc:
+            raise _movie_failure(exc) from None
+        return movie_sources.public(db, source)
+
+
+@app.post("/api/movie-sources/{source_id}/import")
+def import_movie_source(source_id: str, request: Request):
+    """Start the import again from the original file, address or inbox file."""
+    return retry_movie_source(source_id, MovieSourceRetryInput(stage="import"), request)
+
+
+@app.post("/api/movie-sources/{source_id}/extend")
+def extend_movie_source(source_id: str, data: MovieSourceExtendInput, request: Request):
+    same_origin(request)
+    with Session.begin() as db:
+        user, ws = _movie_member(request, db, "content.edit")
+        source = _movie_source(db, ws, source_id, locked=True)
+        try:
+            movie_sources.extend(db, source, days=data.days, user_id=user.id)
+        except movie_sources.MovieSourceError as exc:
+            raise _movie_failure(exc) from None
+        return movie_sources.public(db, source)
+
+
+@app.delete("/api/movie-sources/{source_id}")
+def delete_movie_source(source_id: str, request: Request):
+    """Schedule the deletion (Drive file and local copies); refused while a workflow run uses the source."""
+    same_origin(request)
+    with Session.begin() as db:
+        user, ws = _movie_member(request, db, "movie_sources.delete")
+        source = _movie_source(db, ws, source_id, locked=True)
+        try:
+            movie_sources.request_delete(db, source, user_id=user.id)
+        except movie_sources.MovieSourceError as exc:
+            raise _movie_failure(exc) from None
+        return movie_sources.public(db, source)
+
+
+MOVIE_TEMPLATES = {"movie-review": "movie_source_review", "movie-recap": "movie_source_recap"}
+MOVIE_WORKFLOW_LABELS = {"movie_source_review": "Movie Review", "movie_source_recap": "Movie Recap"}
+
+
+def _movie_workflow(db, ws, source, template_id: str, graph: dict):
+    """This source's workflow of this kind, reused (with the new settings), else a new one."""
+    label = MOVIE_WORKFLOW_LABELS[template_id]
+    for workflow in db.scalars(select(Workflow).where(Workflow.workspace_id == ws.id,
+                                                      Workflow.definition.contains(source.id, autoescape=True))):
+        try:
+            nodes = parse_graph(workflow.definition).get("nodes") or []
+        except (TypeError, ValueError):
+            continue
+        if any(node.get("type") == "movie_source" and (node.get("config") or {}).get("movie_source_id") == source.id
+               for node in nodes if isinstance(node, dict)) and workflow.name.startswith(label):
+            workflow.definition = json.dumps(graph)
+            return workflow
+    enforce_limit(db, ws, Workflow, "workflow_limit")
+    workflow = Workflow(id=ident(), workspace_id=ws.id, name=f"{label} · {source.original_name}"[:150],
+                        definition=json.dumps(graph))
+    db.add(workflow)
+    db.flush()
+    return workflow
+
+
+def _start_movie_workflow(source_id: str, kind: str, data: MovieReviewInput, request: Request):
+    same_origin(request)
+    template_id = MOVIE_TEMPLATES[kind]
+    with Session.begin() as db:
+        user, ws = _movie_member(request, db, "runs.execute")
+        active_plan(db, ws)
+        source = _movie_source(db, ws, source_id, locked=True)
+        if source.status not in movie_sources.USABLE:
+            code = "source_not_ready" if source.status in movie_sources.WORKING else \
+                "source_failed" if source.status == "failed" else "source_expired"
+            raise HTTPException(409, {"code": code, "message": "This movie source cannot be used now"})
+        project_id = data.project_id or source.project_id
+        project = db.scalar(select(Project).where(Project.id == project_id, Project.workspace_id == ws.id)) \
+            if project_id else None
+        if project_id and project is None:
+            raise HTTPException(404, "Project not found")
+        if project is None:
+            enforce_limit(db, ws, Project, "project_limit")
+            project = Project(id=ident(), workspace_id=ws.id, title=source.original_name[:150],
+                              topic=source.original_name[:500])
+            db.add(project)
+            db.flush()
+        graph = template_graph(template_id)
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        nodes["movie"]["config"] = {"movie_source_id": source.id}
+        script = nodes["script"].setdefault("config", {})
+        for key in ("mode", "spoiler_level", "tone", "duration", "language", "section_count", "platform"):
+            if getattr(data, key) is not None:
+                script[key] = getattr(data, key)
+        if data.platform is not None:
+            nodes["metadata"].setdefault("config", {})["platform"] = data.platform
+        checked = WorkflowGraph.model_validate(graph)
+        validate_graph(checked)
+        definition = normalize_edges(checked.model_dump(), default_registry)
+        workflow = _movie_workflow(db, ws, source, template_id, definition)
+        run = persist_run(db, ws, workflow, project, workflow.definition)
+        log_event(logger, "movie_workflow_started", workspace_id=ws.id, movie_source_id=source.id,
+                  workflow_id=workflow.id, run_id=run["id"], template=template_id, user_id=user.id)
+        return {"workflow_id": workflow.id, "project_id": project.id, "run": run}
+
+
+@app.post("/api/movie-sources/{source_id}/movie-review", status_code=201)
+def start_movie_review(source_id: str, data: MovieReviewInput, request: Request):
+    """A Movie Review (or Ending Explained) of this source: its workflow is created or reused, then run."""
+    return _start_movie_workflow(source_id, "movie-review", data, request)
+
+
+@app.post("/api/movie-sources/{source_id}/movie-recap", status_code=201)
+def start_movie_recap(source_id: str, data: MovieReviewInput, request: Request):
+    return _start_movie_workflow(source_id, "movie-recap", data, request)
+
+
+@app.get("/api/admin/movie-sources")
+def admin_movie_sources(request: Request, q: str | None = Query(default=None, max_length=200),
+                        status: str | None = Query(default=None, max_length=24),
+                        workspace_id: str | None = Query(default=None, max_length=36),
+                        limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
+    """Every studio's movie sources with their Drive IDs and retry state, and what the Drive storage holds."""
+    with Session() as db:
+        admin_for(request, db)
+        if status is not None and status not in movie_sources.STATUSES:
+            raise HTTPException(422, {"code": "invalid_status", "message": "Unknown status"})
+        result = movie_sources.page(db, workspace_id, q=q, status=status, limit=limit, offset=offset, admin=True)
+        names = dict(db.execute(select(Workspace.id, Workspace.name).where(
+            Workspace.id.in_({item["workspace_id"] for item in result["items"]}))).all()) if result["items"] else {}
+        for item in result["items"]:
+            item["workspace_name"] = names.get(item["workspace_id"])
+        return {**result, "summary": movie_sources.summary(db)}
 
 
 # --- Phase 18B: notifications ----------------------------------------------------------------------------

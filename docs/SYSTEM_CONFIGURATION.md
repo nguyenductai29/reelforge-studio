@@ -175,6 +175,8 @@ The admin view shows each setting's source: **Admin**, **Môi trường (VARIABL
 |  | Video, image, voice job max wait; longest transcription | `VIDEO_JOB_MAX_AGE_SECONDS`, `IMAGE_JOB_MAX_AGE_SECONDS`, `VOICE_JOB_MAX_AGE_SECONDS`, `TRANSCRIPTION_MAX_SECONDS` |
 | Credit pricing | Video clip, text, image, voice, render, transcription | `VIDEO_CREDITS_PER_CLIP`, `TEXT_CREDITS_PER_GENERATION`, `IMAGE_CREDITS_PER_GENERATION`, `VOICE_CREDITS_PER_GENERATION`, `RENDER_CREDITS_PER_JOB`, `TRANSCRIPTION_CREDITS_PER_JOB` |
 | Notifications | Stream poll, stream lifetime, low-credit threshold | `REELFORGE_SSE_POLL_SECONDS`, `REELFORGE_SSE_MAX_SECONDS`, `CREDITS_LOW_THRESHOLD` |
+| Credit pricing | Visual analysis, per batch of 10 frames (movie sources) | `VISION_CREDITS_PER_BATCH` |
+| Movie sources | Enabled; retention, longest retention, delete after success and its grace; largest and longest movie; import folder, scratch space, local copies; frame interval and count; Google Drive (enabled, OAuth or service account, root folder, client ID, client secret, refresh token, service-account key, delete mode, warning size) | — (new; [MOVIE_SOURCES.md](MOVIE_SOURCES.md)). The Drive secrets are encrypted and write-only |
 | Payments (Admin → Thanh toán) | VietQR mode, manual bank QR details | — (new) |
 | Payments (Admin → Thanh toán) | payOS, OnePAY | `payos` in `instance/bootstrap.json`, `ONEPAY_*` (Phase 19, table `payment_provider_configs`) |
 
@@ -217,6 +219,7 @@ Credit prices are ReelForge's internal credits per operation, not money paid to 
 | `DOLA_*` | `app/providers/dola.py`, `catalog.py` | The experimental Dola gateway, off unless an operator runs one |
 | `REELFORGE_SMOKE_*`, `REELFORGE_LIVE_TESTS` | `app/provider_check.py`, `app/smoke_test.py` | Live smoke-test choices; deliberately not in the production UI. The tools themselves read keys from the database when run on a server |
 | `REELFORGE_TEST_DATABASE_URL` | tests | Runs the migration tests on an isolated PostgreSQL |
+| `REELFORGE_GOOGLE_API_BASE` | `app/google_drive.py` | Points the Google Drive client at a local test server (loopback addresses only; tests and the browser suite) |
 
 Admin → Cài đặt hệ thống → Bảo mật lists the known variables set in the API's environment: names and categories only, never values. It also lists the settings that still come from a legacy variable.
 
@@ -224,7 +227,7 @@ Admin → Cài đặt hệ thống → Bảo mật lists the known variables set
 
 Every worker reads its settings per job, never once at start-up:
 
-- `text_worker`, `image_worker`, `video_worker`, `voice_worker`, `source_worker`, `render_worker`, `youtube_worker`, `social_worker`, `scheduler_worker`;
+- `text_worker`, `image_worker`, `video_worker`, `voice_worker`, `source_worker`, `render_worker`, `youtube_worker`, `social_worker`, `scheduler_worker`, `movie_worker`;
 - the settings they read: provider keys, credit prices, job limits, FFmpeg, storage, OAuth apps.
 
 **Timing:**

@@ -25,7 +25,10 @@ INTERVAL_SECONDS = 15
 STALE_SECONDS = 120
 # Every long-running worker process; the API is not one of them.
 WORKERS = ("text_worker", "image_worker", "video_worker", "voice_worker", "render_worker", "source_worker",
-           "youtube_worker", "social_worker", "scheduler_worker")
+           "youtube_worker", "social_worker", "scheduler_worker", "movie_worker")
+# Workers only an optional feature needs, with the setting that turns it on: while it is off, the worker is
+# neither expected (never "missing") nor watched (a stopped one is not "stale").
+OPTIONAL_WORKERS = {"movie_worker": "movie_sources.enabled"}
 _last: dict[str, float] = {}
 _started = datetime.now(timezone.utc)
 
@@ -60,12 +63,24 @@ def beat(worker: str, *, status: str = "running", detail: str | None = None, for
         return False
 
 
+def expected(name: str) -> bool:
+    """Whether this server needs the worker: always, or while its optional feature is on."""
+    setting = OPTIONAL_WORKERS.get(name)
+    if setting is None:
+        return True
+    from app import system_config
+
+    return bool(system_config.get(setting))
+
+
 def worker_health(db, now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     rows = {row.worker: row for row in db.query(WorkerHeartbeat).all()}
     health = []
     for name in (*WORKERS, *sorted(set(rows) - set(WORKERS))):
         row = rows.get(name)
+        if not expected(name) and (row is None or (now - _utc(row.last_seen_at)).total_seconds() > STALE_SECONDS):
+            continue
         if row is None:
             health.append({"worker": name, "status": "missing", "last_seen_at": None, "host": None, "pid": None,
                            "detail": None})

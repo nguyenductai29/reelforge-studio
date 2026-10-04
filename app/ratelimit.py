@@ -45,6 +45,8 @@ LIMITS: dict[str, tuple[int, int]] = {
     "invite_lookup_ip": (60, 3600),
     "email_test": (10, 3600),
     "account_export": (10, 3600),
+    "movie_source_create": (60, 3600),
+    "drive_test": (20, 3600),
 }
 PRUNE_PROBABILITY = 0.05
 PRUNE_BATCH = 200

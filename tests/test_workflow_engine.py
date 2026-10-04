@@ -34,7 +34,9 @@ KNOWN_TYPES = {"idea", "script", "scenes", "image", "video", "assets", "voice", 
                "review", "publish"} | TEXT_TYPES | {
     # Phase 10 sources and Phase 11 Movie Recap.
     "source_text", "source_url", "source_media", "transcribe", "story_analysis", "recap_script", "match_scenes",
-    "extract_clips"}
+    "extract_clips",
+    # Movie sources (migration 0027).
+    "movie_source", "movie_prepare", "visual_analysis", "movie_timeline", "review_script", "clip_select"}
 VIDEO_ENV = {"FAL_KEY": "test-key", "VIDEO_CREDITS_PER_CLIP": "10"}
 
 

@@ -8,7 +8,9 @@
 * many failed jobs in the last hour;
 * rejected payment callbacks (bad signature, wrong amount) in the last hour;
 * the master key missing or unable to decrypt stored secrets;
-* transactional email failing.
+* transactional email failing;
+* movie sources (app/movie_sources.py): deletions from Google Drive failing for over an hour, the Drive space
+  they use above ``movie_sources.drive.warning_bytes``, or the feature enabled while Drive is not configured.
 
 Each condition has a stable key and a row in ``system_alerts``. Admins get one in-app
 notification (``system.alert``) when it starts, then at most one per ``COOLDOWN`` while it
@@ -114,6 +116,32 @@ def conditions(db, now: datetime) -> list[Condition]:
         if failures >= EMAIL_FAILURES_PER_HOUR:
             found.append(Condition("email:failures", "warning", f"{failures} emails could not be sent",
                                    {"count": int(failures)}))
+    if inspect(db.connection()).has_table("movie_sources"):
+        found += _movie_source_conditions(db, now)
+    return found
+
+
+def _movie_source_conditions(db, now: datetime) -> list[Condition]:
+    from app import movie_sources
+    from app.models import MovieSource
+
+    found = []
+    stuck = db.scalar(select(func.count()).select_from(MovieSource).where(
+        MovieSource.status.in_(("delete_scheduled", "deleting")), MovieSource.failure_code.is_not(None),
+        MovieSource.delete_requested_at <= now - timedelta(hours=1))) or 0
+    if stuck:
+        found.append(Condition("movie_sources:deletion", "warning",
+                               f"{stuck} movie sources could not be deleted from Google Drive", {"count": int(stuck)}))
+    summary = movie_sources.summary(db, now)
+    if summary["over_warning"]:
+        found.append(Condition("movie_sources:drive_usage", "warning",
+                               "Movie sources use more Google Drive space than the warning level",
+                               {"bytes": summary["bytes"], "warning_bytes": summary["warning_bytes"],
+                                "files": summary["files"]}))
+    if summary["enabled"] and summary["drive_problem"]:
+        found.append(Condition("movie_sources:drive", "warning",
+                               "Movie sources are enabled but Google Drive is not configured",
+                               {"problem": summary["drive_problem"]}))
     return found
 
 

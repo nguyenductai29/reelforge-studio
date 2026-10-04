@@ -4,6 +4,7 @@ Adapters translate one vendor API into ``TextResult``; nothing outside
 ``app/providers/text/`` sees a vendor response.
 """
 from abc import ABC, abstractmethod
+import base64
 from dataclasses import dataclass, field
 import math
 import re
@@ -17,6 +18,10 @@ RESPONSE_FORMATS = frozenset({"text", "json"})
 MAX_PROMPT_CHARS = 100_000
 MAX_SYSTEM_CHARS = 20_000
 MAX_OUTPUT_TOKENS = 32_768
+# Images sent with a prompt (the Visual Analysis step's frames): a few small JPEG, PNG or WebP files.
+MAX_IMAGES = 20
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 JSON_INSTRUCTION = "Respond with one valid JSON object and nothing else."
 
@@ -32,6 +37,17 @@ class TextProviderError(ProviderError):
 
 
 @dataclass(frozen=True)
+class TextImage:
+    """One picture sent with the prompt; adapters encode it as their API expects."""
+
+    data: bytes = field(repr=False)
+    mime_type: str = "image/jpeg"
+
+    def base64(self) -> str:
+        return base64.b64encode(self.data).decode("ascii")
+
+
+@dataclass(frozen=True)
 class TextRequest:
     model: str
     prompt: str
@@ -39,6 +55,7 @@ class TextRequest:
     temperature: float | None = None
     max_tokens: int = 1024
     response_format: str = "text"
+    images: tuple[TextImage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -92,6 +109,11 @@ def validate_request(request: TextRequest, *, model_pattern) -> None:
         raise TextProviderError("invalid_request", "max_tokens is out of range")
     if request.response_format not in RESPONSE_FORMATS:
         raise TextProviderError("invalid_request", "Unsupported response format")
+    if len(request.images) > MAX_IMAGES or any(
+            not isinstance(image, TextImage) or image.mime_type not in IMAGE_TYPES
+            or not isinstance(image.data, bytes) or not 0 < len(image.data) <= MAX_IMAGE_BYTES
+            for image in request.images):
+        raise TextProviderError("invalid_request", "Images must be at most 20 JPEG, PNG or WebP files of 4 MB")
 
 
 def system_prompt_for(request: TextRequest) -> str | None:
@@ -153,8 +175,8 @@ class TextGenerationProvider(ABC):
 
     def generate(self, *, model: str, prompt: str, system_prompt: str | None = None,
                  temperature: float | None = None, max_tokens: int = 1024,
-                 response_format: str = "text") -> TextResult:
-        request = TextRequest(model, prompt, system_prompt, temperature, max_tokens, response_format)
+                 response_format: str = "text", images: tuple[TextImage, ...] = ()) -> TextResult:
+        request = TextRequest(model, prompt, system_prompt, temperature, max_tokens, response_format, tuple(images))
         self.validate(request)
         return self._generate(request)
 

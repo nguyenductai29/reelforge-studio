@@ -21,6 +21,25 @@ Related: [PRODUCTION_BOOTSTRAP.md](PRODUCTION_BOOTSTRAP.md) · [BACKUP_RECOVERY.
 [SECURITY.md](SECURITY.md) · [EMAIL.md](EMAIL.md) · [TEAMS.md](TEAMS.md) · [LOAD_BASELINE.md](LOAD_BASELINE.md) ·
 the release audit: [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md)
 
+## Automated evidence (development machine, 2026-10-04, movie source phase)
+
+Results of the automated suites on the movie source phase (migration `0027_movie_sources`), run on the working tree
+before it was committed, copied without `instance/` like a CI checkout, on the same Windows development machine
+(Python 3.14.7, Node 22.23.2, PostgreSQL 16.2, a portable FFmpeg 9.0.2 build). **They do not replace CI**: CI has not
+run on this code yet, and only a green CI run on the deployed commit passes `release_ci_green`. No paid or live service
+was called: Google Drive was the in-memory double `tests/fake_drive.py`, direct URLs and AI providers were mocked. The
+seven movie-source gates stay MANUAL ([MOVIE_SOURCE_VERIFICATION.md](MOVIE_SOURCE_VERIFICATION.md)).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Backend tests, SQLite | `python -m unittest discover -s tests -v` with FFmpeg on `PATH`, `REELFORGE_TEST_FFMPEG`, `REELFORGE_TEST_FFPROBE` and `REELFORGE_REQUIRE_FFMPEG=1` | Passed: 649 tests, 31 skipped (18 need PostgreSQL, 2 need live providers, 5 need symlinks, which this Windows machine lacks; the 6 YouTube retry tests run inside a disposable copy instead). The real FFmpeg render test and the real movie pipeline ran |
+| Backend tests, PostgreSQL 16 (as on 2026-10-03, plus migration 0027 both ways, the movie-source work leases with `SKIP LOCKED` and a deletion waiting on a starting run's row lock, `tests/test_movie_postgres.py`; the other movie-source flows run on SQLite in this suite and on PostgreSQL in the browser tests) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 649 tests, 13 skipped (2 live providers, 5 symlinks; the 6 YouTube retry tests run in their copy). FFmpeg was on `PATH`, so the real render test and the real movie pipeline ran here too |
+| The movie pipeline with real FFmpeg: a synthetic 40-second movie (test-pattern video, a sine tone as sound) taken from a studio's import folder, uploaded to the Drive double, downloaded to scratch, then Prepare Movie, transcript, visual analysis of real JPEG frames, timeline, story analysis, review script, clip selection, clip extraction, voice, subtitles and render up to the human review; after approval and the 24-hour grace (simulated) the source is deleted and its scratch copy swept, and the final render and the transcript stay | `tests/test_movie_sources.py`, inside both runs above | Passed in both runs. The sound is a tone, not speech: the transcript and every AI answer were mocked, so this proves the plumbing and FFmpeg, not the quality of a real review |
+| Alembic on PostgreSQL 16.2 | `alembic upgrade head`, `alembic check`, `alembic downgrade base`, `alembic upgrade head`, `alembic check` (`REELFORGE_DATABASE_URL` on a scratch database) | Passed: no drift either time; `alembic current` is `0027_movie_sources (head)` |
+| Frontend typecheck and production build | `npm run typecheck`; `next build` | Passed: no type error; the production build (with its lint and type checks, run by `e2e/prepare.py` on a copy of `frontend/`) succeeded, `/media/movie-sources` 13.3 kB. No dependency was added (`requirements*.txt` and the `package*.json` files unchanged), so `npm ci` was not re-run |
+| Documentation checks after the movie-source edits | `tests.test_phase28`, `tests.test_product_audit` | Passed: 60 tests (1 skipped: the PostgreSQL migration test, which ran in the PostgreSQL suite) |
+| Browser tests (31 tests in 12 specs: the 30 of the release closure, below, plus movie sources against the Drive double: the Drive connection test, server file, URL and Drive inbox imports, details, retention, a Movie Review to the human review step, deletion refused while in use, approval, then *Delete now*, the failed import in Admin → Overview and the movie source Drive figures in Admin → Operations; Media → Movie sources added to the pages checked at the seven window sizes) | `e2e/` on PostgreSQL 16.2, a fresh database | Passed: 31 / 31 (4.7 minutes) |
+
 ## Automated evidence (development machine, 2026-10-03, release closure)
 
 Results of the automated suites on the code of the release candidate (`56ada10`, exported with `git archive`: no
@@ -32,7 +51,7 @@ on `56ada10` (14 / 14 check runs, [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md)).
 | --- | --- | --- |
 | Backend tests, SQLite | `python -m unittest discover -s tests -v` | Passed: 613 tests, 28 skipped (15 need PostgreSQL, 2 need live providers, 1 needs FFmpeg, 4 need symlinks, which this Windows machine lacks; the 6 YouTube retry tests run inside a disposable copy instead) |
 | Backend tests, PostgreSQL 16 (locks, SKIP LOCKED, ON CONFLICT, settlement, ledger, isolation, concurrent quota and checkout, job claims, migrations both ways, backup → restore rehearsal) | the same with `REELFORGE_TEST_DATABASE_URL` and `REELFORGE_TEST_PG_BIN` | Passed: 613 tests, 13 skipped (2 live providers, 1 FFmpeg, 4 symlinks; the 6 YouTube retry tests run in their copy) |
-| Alembic on PostgreSQL 16.2 | `alembic upgrade head`, `alembic check`, `alembic downgrade base`, `alembic upgrade head`, `alembic check` (`REELFORGE_DATABASE_URL` on a scratch database) | Passed: no drift either time; `alembic current` is `0026_change_production_origin (head)` |
+| Alembic on PostgreSQL 16.2 | `alembic upgrade head`, `alembic check`, `alembic downgrade base`, `alembic upgrade head`, `alembic check` (`REELFORGE_DATABASE_URL` on a scratch database) | Passed: no drift either time; `alembic current` was the head of that day, `0026_change_production_origin` |
 | Frontend install, typecheck and production build | `npm ci`, `npm run typecheck`, `npm run build` | Passed. `npm ci` reports 2 advisories, both in the PostCSS copy bundled inside `next@15.5.26` (`postcss@8.4.31`, build time only, for CSS the app writes itself; the app's own pipeline uses `postcss@8.5.28`): LOW, fixed only by Next.js 16 ([POST_V1_ROADMAP.md](POST_V1_ROADMAP.md)) |
 | Documentation checks after the release-closure edits | `tests.test_phase28` (release docs, checklist coverage, deploy script), `tests.test_product_audit` | Passed: 44 tests |
 | Browser tests (30 tests in 11 specs, [e2e/README.md](../e2e/README.md): first-run setup, sign-in, password reset, sessions, 2FA; teams; project and workflow; manual VietQR; support; admin pages and release gates; Settings and Admin fitting the window; members; Home; Admin → Overview; every main page at 390×844, 768×1024, 1024×768, 1366×768, 1440×900, 1680×1050 and 1920×1080) | `e2e/` on PostgreSQL 16.2, a fresh database | Passed: 30 / 30 |
@@ -78,7 +97,7 @@ is changed by hand, then recorded. The exact URLs: [V1_RELEASE_STATUS.md](V1_REL
 
 | # | Gate | How | Recorded as |
 | --- | --- | --- | --- |
-| D1 | `alembic current` is the head, `0026_change_production_origin` | Pre-flight, DATABASE | `preflight`, `migration_upgraded` |
+| D1 | `alembic current` is the head, `0027_movie_sources` | Pre-flight, DATABASE | `preflight`, `migration_upgraded` |
 | D2 | `/health/ready` answers `"status": "ok"` | Pre-flight, HEALTH | `preflight` |
 | D3 | The application's database role is not a superuser | Pre-flight, DATABASE | `preflight` |
 | D4 | Existing accounts still sign in after the upgrade | Sign in with an account from before the release | `migration_upgraded` |
@@ -192,6 +211,21 @@ is changed by hand, then recorded. The exact URLs: [V1_RELEASE_STATUS.md](V1_REL
 
 Optional, not a gate: re-run `tests/load_check.py` on the server against a disposable database
 ([LOAD_BASELINE.md](LOAD_BASELINE.md)).
+
+## Movie sources (optional: *Not applicable* while movie sources are off)
+
+Added after the release closure ([MOVIE_SOURCES.md](MOVIE_SOURCES.md)); each procedure is in
+[MOVIE_SOURCE_VERIFICATION.md](MOVIE_SOURCE_VERIFICATION.md).
+
+| # | Gate | How | Recorded as |
+| --- | --- | --- | --- |
+| M1 | Google Drive: *Test connection* passes (credentials, root folder, upload, delete) and leaves no test file | Admin → System settings → Movie sources; `python -m app.google_drive_check` | `movie_drive_connection` |
+| M2 | A movie from the studio's import folder on the server (`<root>/<studio id>/`) becomes Ready with the right size and length; a path outside it is refused and another studio does not see the file | Media → Movie sources | `movie_import_local` |
+| M3 | A movie from an https URL becomes Ready; an internal address and a page that is not a movie are refused | Same | `movie_import_url` |
+| M4 | Two reviews of one source download it once (`movie_scratch_downloaded` logged once) | The movie worker's journal | `movie_scratch_download` |
+| M5 | A live Movie Review from a source ends in an MP4 with narration, subtitles and short excerpts; each paid step charged once (paid) | *Use for Movie Review* | `movie_pipeline_live` |
+| M6 | *Delete now* is refused while a run uses the source; on a free source it ends Deleted with the Drive file in the trash | Same | `movie_source_deletion` |
+| M7 | A source past its retention, or past the grace period after a successful review, is deleted automatically | Audit log | `movie_retention_cleanup` |
 
 ## Legal
 

@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { FieldLabel } from "@/components/reelforge/primitives";
 import { useI18n } from "@/lib/i18n";
 import type { Dictionary } from "@/lib/i18n/vi";
-import { useDashboard } from "@/lib/queries";
+import { useDashboard, useMovieSources } from "@/lib/queries";
+import { formatClock } from "@/lib/studio";
 import type { AiTool, ConfigField, NodeConfig } from "@/lib/types";
 import { fieldValue, toolChoices, WARNING_CODES } from "./node-config";
 
@@ -98,6 +99,52 @@ function AssetSelect({
   );
 }
 
+/** One of the workspace's movie sources (Media → Movie sources); only usable ones are offered. */
+function MovieSourceSelect({
+  id,
+  field,
+  raw,
+  invalid,
+  onChange,
+}: {
+  id: string;
+  field: ConfigField;
+  raw: unknown;
+  invalid: boolean;
+  onChange: ConfigChange;
+}) {
+  const { t } = useI18n();
+  const sources = useMovieSources({ limit: 100, offset: 0 });
+  const label = t.config.fields[field.label] ?? field.label;
+  const choices = (sources.data?.items ?? []).filter((item) => item.can_use);
+  const current = typeof raw === "string" ? raw : NONE;
+  const listed = current === NONE || choices.some((item) => item.id === current);
+  return (
+    <>
+      <Select value={current} onValueChange={(v) => onChange(field, v === NONE ? null : v)}>
+        <Trigger id={id} label={label} invalid={invalid} />
+        <SelectContent>
+          <SelectItem value={NONE}>{t.config.movieSourceNone}</SelectItem>
+          {!listed && <SelectItem value={current}>{t.config.movieSourceMissing}</SelectItem>}
+          {choices.map((item) => (
+            <SelectItem key={item.id} value={item.id}>
+              {item.duration_seconds ? `${item.name} · ${formatClock(item.duration_seconds)}` : item.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {sources.data && choices.length === 0 && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">
+          {t.config.noMovieSource}{" "}
+          <Link href="/media/movie-sources" className="text-primary hover:underline">
+            {t.config.addMovieSource}
+          </Link>
+        </p>
+      )}
+    </>
+  );
+}
+
 /** A number typed freely: the draft may be empty or out of range while the user edits it. */
 function NumberInput({
   id,
@@ -162,6 +209,10 @@ function FieldInput({
 
   if (field.type === "asset") {
     return <AssetSelect id={id} field={field} raw={raw} invalid={invalid} onChange={onChange} />;
+  }
+
+  if (field.type === "movie_source") {
+    return <MovieSourceSelect id={id} field={field} raw={raw} invalid={invalid} onChange={onChange} />;
   }
 
   if (field.type === "tool") {

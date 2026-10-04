@@ -41,6 +41,8 @@ ACTIONS = (
     "admin.system_config_changed", "admin.system_settings_changed", "admin.support_replied",
     "admin.support_updated", "admin.reconciliation", "admin.verification_updated", "admin.email_test",
     "admin.master_key_backup_confirmed", "admin.user_password_reset", "payment.callback_rejected",
+    "movie_source.created", "movie_source.import_started", "movie_source.ready", "movie_source.retention_extended",
+    "movie_source.delete_requested", "movie_source.deleted", "movie_source.import_failed", "movie_source.drive_failed",
 )
 OUTCOMES = ("success", "failure", "denied")
 _SECRET_WORDS = ("password", "token", "secret", "otp", "totp", "cipher", "authorization", "cookie", "api_key",

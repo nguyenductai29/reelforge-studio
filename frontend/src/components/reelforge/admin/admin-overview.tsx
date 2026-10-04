@@ -216,6 +216,10 @@ function attentionText(item: AdminAttention, t: Translate, formatNumber: (n: num
     case "configuration": return a.configuration(n);
     case "support_high": return a.supportHigh(n);
     case "support_waiting": return item.since ? a.supportWaitingSince(n, formatRelative(item.since)) : a.supportWaiting(n);
+    case "movie_sources_deletion": return a.movieDeletion(n);
+    case "movie_sources_drive_usage": return a.movieDriveUsage(formatBytes(item.bytes ?? 0));
+    case "movie_sources_drive": return a.movieDrive;
+    case "movie_sources_failed": return a.movieFailed(n);
     default: return null;
   }
 }

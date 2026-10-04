@@ -26,7 +26,11 @@ class TemplateTest(unittest.TestCase):
         recap = ["source_media", "transcribe", "story_analysis", "recap_script", "voice", "match_scenes",
                  "extract_clips", "subtitle", "render", "review", "metadata", "publish"]
         slides = ["ai_writer", "scenes", "image", "voice", "subtitle", "render", "review", "metadata", "publish"]
+        movie = ["movie_source", "movie_prepare", "transcribe", "visual_analysis", "movie_timeline", "story_analysis",
+                 "review_script", "voice", "subtitle", "clip_select", "extract_clips", "render", "review", "metadata",
+                 "publish"]
         expected = {"repurpose": ["source_url", *social[1:]], "movie_recap": recap, "movie_review": recap,
+                    "movie_source_review": movie, "movie_source_recap": movie,
                     "article_to_video": ["source_url", *slides], "product_video": ["idea", *slides]}
         for template_id in TEMPLATES:
             with self.subTest(template=template_id):
@@ -253,8 +257,8 @@ def counts():
 TEMPLATES_SCENARIO = r'''
 listed = client.get("/api/workflow-templates").json()["templates"]
 assert [t["id"] for t in listed] == ["youtube_short", "youtube_landscape", "tiktok_short", "facebook_reel",
-                                    "repurpose", "movie_recap", "movie_review", "article_to_video",
-                                    "product_video"], listed
+                                    "repurpose", "movie_recap", "movie_review", "movie_source_review",
+                                    "movie_source_recap", "article_to_video", "product_video"], listed
 assert next(t for t in listed if t["id"] == "movie_recap")["notice"] == "Use only content you are authorized to use."
 created = client.post("/api/workflows", json={"name": "Short", "template": "youtube_short"})
 assert created.status_code == 201, created.text

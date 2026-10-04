@@ -3,7 +3,7 @@ import { asAdmin, expect, test } from "./helpers";
 
 // The app uses the width beside the sidebar: modest gutters (24 px on a desktop), nothing ever wider than the window.
 const PAGES = ["/", "/create", "/projects", "/workflows", "/library", "/publishing", "/calendar", "/models", "/media",
-               "/channels", "/billing", "/settings", "/admin", "/notifications", "/support"];
+               "/media/movie-sources", "/channels", "/billing", "/settings", "/admin", "/notifications", "/support"];
 const DESKTOP_GUTTER = 24;
 
 async function open(page: Page, url: string) {

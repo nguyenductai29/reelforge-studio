@@ -15,7 +15,8 @@ or any real provider.
 | `08-members` | Settings → Members: search, filters and pages; invitations and member actions; nothing beyond the member's role |
 | `09-home` | Home: the overview, what needs attention, quick create and recent work; a viewer only reads |
 | `10-admin-overview` | Admin → Overview is the first tab; its figures and what needs attention each open the tab that handles it |
-| `11-wide-layout` | Fifteen pages at 390×844, 768×1024, 1024×768, 1366×768, 1440×900, 1680×1050 and 1920×1080: no sideways scrolling, the content uses the width beside the sidebar, workflow diagrams not clipped, the plans side by side; at 1680 and 1920 the admin figures in one row, the panels side by side, the members table across the page and more templates a row |
+| `11-wide-layout` | Sixteen pages (Media → Movie sources included) at 390×844, 768×1024, 1024×768, 1366×768, 1440×900, 1680×1050 and 1920×1080: no sideways scrolling, the content uses the width beside the sidebar, workflow diagrams not clipped, the plans side by side; at 1680 and 1920 the admin figures in one row, the panels side by side, the members table across the page and more templates a row |
+| `12-movie-sources` | Movie sources: the Drive connection test leaves nothing behind; a movie from the studio's own import folder on the server (`<import root>/<workspace id>/`), a direct URL (and one redirecting to an internal address, refused) and a Drive inbox file become Ready, each with its project in the table; details, retention +3 days; *Use for Movie Review* runs the workflow; deleting the source is refused while the run uses it; the run's progress on the source; after approval the source is used; *Delete now* ends Deleted; Admin → Overview lists the failed import and Admin → Operations the movie source Drive |
 
 ## Run locally
 
@@ -30,9 +31,15 @@ npx playwright test
 * Run again on a clean database without rebuilding the frontend: `python e2e/prepare.py --skip-build`.
 * A Chromium already on disk: `E2E_CHROMIUM_PATH=/path/to/chrome npx playwright test`.
 
-Playwright starts three servers on loopback: the SMTP sink (`tests/smtp_sink.py`, port 2526, every message saved in
-`e2e/.mail/`), the API (port 8010, `e2e/.stack/api`) and the built frontend (port 3010). The specs run in order in
-one worker, on one database; run `prepare.py` before each full run.
+Playwright starts four servers on loopback: the SMTP sink (`tests/smtp_sink.py`, port 2526, every message saved in
+`e2e/.mail/`), an in-memory Google Drive (`tests/fake_drive.py`, port 8021, for movie sources), the API (port 8010,
+`e2e/.stack/api`) and the built frontend (port 3010). The specs run in order in one worker, on one database; run
+`prepare.py` before each full run.
+
+The movie source spec runs the movie workers itself through `e2e/movie_driver.py`, inside `e2e/.stack/api`, with test
+doubles only: the fake Drive, an in-process mock for direct URLs behind a resolver answering a public address (the SSRF
+rules stay on), fake FFmpeg and fake AI providers. `prepare.py` creates the import folder (`e2e/.stack/import`, one
+MP4-shaped file) and the dummy FFmpeg paths the API is started with.
 
 Each simulated person sends their own `CF-Connecting-IP` (TEST-NET-2 addresses). The API believes that header only
 from its trusted local proxy, exactly as in production behind Cloudflare, and its sign-in limits are per address,

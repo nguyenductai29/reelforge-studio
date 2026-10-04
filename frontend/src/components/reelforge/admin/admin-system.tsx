@@ -23,10 +23,11 @@ import { useI18n } from "@/lib/i18n";
 import type { Dictionary } from "@/lib/i18n/vi";
 import { keys, useBackups, useSettings, useSystemConfig } from "@/lib/queries";
 import { GIB, formatBytes } from "@/lib/studio";
-import type { ProviderTest, SecretUpdate, SystemConfigOverview, SystemSection, SystemSetting } from "@/lib/types";
+import type { DriveTestResult, ProviderTest, SecretUpdate, SystemConfigOverview, SystemSection, SystemSetting } from "@/lib/types";
+import { AdminMovieSources } from "./admin-movie-sources";
 import { cn } from "@/lib/utils";
 
-const NAV = ["security", "general", "email", "ai", "social", "storage", "backups", "runtime", "credits", "notifications"] as const;
+const NAV = ["security", "general", "email", "ai", "social", "storage", "backups", "movie_sources", "runtime", "credits", "notifications"] as const;
 type Nav = (typeof NAV)[number];
 const AI_PROVIDERS = ["openai", "anthropic", "gemini", "runway", "fal", "runware", "replicate"] as const;
 const CHANNELS = ["youtube", "tiktok", "facebook"] as const;
@@ -234,6 +235,103 @@ function SettingsCard({ title, description, section, settings, extra, footer, la
         </AlertDialogContent>
       </AlertDialog>
     </form>
+  );
+}
+
+/** Credentials, the root folder, a tiny upload and its permanent deletion: nothing stays in Drive. */
+function DriveTestButton() {
+  const { t } = useI18n();
+  const v = t.admin.system.movie;
+  const client = useQueryClient();
+  const showError = useErrorToast();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<DriveTestResult | null>(null);
+
+  async function run() {
+    setBusy(true);
+    try {
+      setResult(await api<DriveTestResult>("admin/system-config/movie_sources/drive/test", { method: "POST" }));
+      await client.invalidateQueries({ queryKey: keys.systemConfig });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void run()}>
+        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
+        {v.test}
+      </Button>
+      {result && (
+        <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]" aria-label={v.test}>
+          {result.checks.map((check) => (
+            <li key={check.key} className={STATUS_TONE[check.status] ?? "text-muted-foreground"}>
+              {v.checks[check.key as keyof typeof v.checks] ?? check.key}: {t.admin.system.testStatus[check.status]}
+              {check.code ? ` (${v.codes[check.code as keyof typeof v.codes] ?? check.code})` : ""}
+              {check.account ? ` · ${check.account}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Movie sources: Google Drive (write-only credentials and a connection test), retention, limits, folders. */
+function MovieSourcesPanel({ data, version }: { data: SystemConfigOverview; version: string }) {
+  const { t, formatDateTime, formatNumber } = useI18n();
+  const s = t.admin.system;
+  const v = s.movie;
+  const settings = data.sections.movie_sources ?? [];
+  const group = (name: string) => settings.filter((x) => x.group === name);
+  const gigabytes = { show: (value: number) => String(Math.round((value / GIB) * 100) / 100),
+                      store: (text: string) => Math.round(Number(text) * GIB), unit: "GB" };
+  const info = data.movie_sources;
+  const summary = info?.summary;
+  const lastTest = info?.last_test;
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">{v.hint}</p>
+      <div className="panel space-y-1.5 p-4 text-xs">
+        <p className={info?.drive_problem ? "text-warning" : "text-success"}>
+          {info?.drive_problem ? v.problems[info.drive_problem as keyof typeof v.problems] ?? info.drive_problem : v.driveReady}
+        </p>
+        {summary && (
+          <p className="text-muted-foreground">
+            {v.summary(formatNumber(summary.files), formatBytes(summary.bytes), formatNumber(summary.expiring_soon),
+                       formatNumber(summary.importing))}
+            {summary.oldest_at ? ` · ${v.oldest(formatDateTime(summary.oldest_at))}` : ""}
+          </p>
+        )}
+        {summary && summary.delete_failures > 0 && <p className="text-destructive">{v.deleteFailures(formatNumber(summary.delete_failures))}</p>}
+        {summary?.over_warning && <p className="text-warning">{v.overWarning(formatBytes(summary.warning_bytes))}</p>}
+        {lastTest && (
+          <p className="text-muted-foreground">
+            {v.lastTest(formatDateTime(lastTest.at), lastTest.metadata.status === "ok" ? s.testStatus.ok : s.testStatus.error)}
+          </p>
+        )}
+      </div>
+      <SettingsCard key={`movie-general-${version}`} section="movie_sources" title={v.groups.general} labels={s.labels}
+                    description={<span className="text-xs text-muted-foreground">{v.generalHint}</span>}
+                    settings={group("general")} />
+      <SettingsCard key={`movie-drive-${version}`} section="movie_sources" title={v.groups.drive} labels={s.labels}
+                    description={<span className="text-xs text-muted-foreground">{v.driveHint}</span>}
+                    settings={group("drive")} footer={<DriveTestButton />}
+                    transform={{ "movie_sources.drive.warning_bytes": gigabytes }} />
+      <SettingsCard key={`movie-retention-${version}`} section="movie_sources" title={v.groups.retention} labels={s.labels}
+                    settings={group("retention")} />
+      <SettingsCard key={`movie-limits-${version}`} section="movie_sources" title={v.groups.limits} labels={s.labels}
+                    settings={group("limits")} transform={{ "movie_sources.max_source_bytes": gigabytes }} />
+      <SettingsCard key={`movie-paths-${version}`} section="movie_sources" title={v.groups.paths} labels={s.labels}
+                    description={<span className="text-xs text-muted-foreground">{v.pathsHint}</span>}
+                    settings={group("paths")} />
+      <SettingsCard key={`movie-analysis-${version}`} section="movie_sources" title={v.groups.analysis} labels={s.labels}
+                    settings={group("analysis")} />
+      <AdminMovieSources />
+    </div>
   );
 }
 
@@ -598,6 +696,7 @@ export function AdminSystem({ initialSection }: { initialSection?: string | null
     );
     else if (nav === "email") content = <EmailPanel data={data} version={version} />;
     else if (nav === "backups") content = <BackupsPanel data={data} version={version} />;
+    else if (nav === "movie_sources") content = <MovieSourcesPanel data={data} version={version} />;
     else if (nav === "general") content = <GeneralPanel />;
     else if (nav === "ai") content = (
       <div className="space-y-3">

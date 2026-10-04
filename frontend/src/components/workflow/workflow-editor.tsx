@@ -316,7 +316,16 @@ function Inspector({
         ? outputText(step?.output, ports)
         : null;
   const prepared = d.type === "metadata" || d.type === "publish" ? outputMetadata(step?.output) : null;
-  const scenes = d.type === "scenes" || d.type === "recap_script" ? outputScenes(step?.output) : null;
+  const scenes = d.type === "scenes" || d.type === "recap_script" || d.type === "review_script" ? outputScenes(step?.output) : null;
+  // Movie steps report counts while they work: frames sampled, batches analysed, excerpts cut.
+  const progress = step?.output?.progress as
+    | { stage?: string; done?: number; total?: number; frames_done?: number; frames_total?: number }
+    | undefined;
+  const progressText = progress && typeof progress.done === "number" && typeof progress.total === "number" && progress.total > 0
+    ? [t.movieSources.progress.counts(progress.stage ?? "", progress.done, progress.total),
+       ...(typeof progress.frames_total === "number" && progress.frames_total > 0
+         ? [t.movieSources.progress.frames(progress.frames_done ?? 0, progress.frames_total)] : [])].join(" · ")
+    : null;
   const media =
     d.type === "image"
       ? outputMedia(step?.output, "image_assets")
@@ -391,6 +400,11 @@ function Inspector({
           >
             {detail}
           </div>
+        )}
+        {progressText && (
+          <p className="rounded-lg bg-surface px-3 py-2 text-xs tabular-nums text-muted-foreground" aria-live="polite">
+            {progressText}
+          </p>
         )}
         <div>
           <FieldLabel htmlFor="step-name">{i.stepName}</FieldLabel>

@@ -3,6 +3,7 @@ from app.workflow.nodes.assets import AssetsNodeHandler
 from app.workflow.nodes.base import NodeHandler
 from app.workflow.nodes.idea import IdeaNodeHandler
 from app.workflow.nodes.image import ImageNodeHandler
+from app.workflow.nodes.movie import MOVIE_HANDLERS
 from app.workflow.nodes.pending import PendingAITaskHandler, PendingServiceHandler, UnsupportedNodeHandler
 from app.workflow.nodes.publish import PublishNodeHandler
 from app.workflow.nodes.recap import RECAP_HANDLERS
@@ -18,6 +19,6 @@ from app.workflow.nodes.video import VideoNodeHandler
 from app.workflow.nodes.voice import VoiceNodeHandler
 
 __all__ = ["AIWriterNodeHandler", "AssetsNodeHandler", "CTANodeHandler", "HookNodeHandler", "IdeaNodeHandler", "ImageNodeHandler",
-           "NodeHandler", "PendingAITaskHandler", "MetadataNodeHandler", "PendingServiceHandler", "PublishNodeHandler", "RECAP_HANDLERS", "RenderNodeHandler", "ReviewNodeHandler",
+           "MOVIE_HANDLERS", "NodeHandler", "PendingAITaskHandler", "MetadataNodeHandler", "PendingServiceHandler", "PublishNodeHandler", "RECAP_HANDLERS", "RenderNodeHandler", "ReviewNodeHandler",
            "RewriteNodeHandler", "SOURCE_HANDLERS", "ScenesNodeHandler", "SubtitleNodeHandler", "SummarizeNodeHandler", "TEXT_HANDLERS", "TextNodeHandler", "TitleNodeHandler",
            "TranslateNodeHandler", "UnsupportedNodeHandler", "VideoNodeHandler", "VoiceNodeHandler"]

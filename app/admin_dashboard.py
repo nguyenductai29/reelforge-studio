@@ -27,11 +27,11 @@ back with the data (``periods``):
 """
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, inspect, or_, select
 
 from app import alerts, audit, heartbeat, mailer, readiness, reconciliation, render, storage
-from app.models import (Asset, AuditEvent, CreditAccount, CreditLedger, PaymentOrder, Plan, Subscription,
-                        SupportMessage, SupportTicket, UsageEvent, User, WorkflowJob, Workspace)
+from app.models import (Asset, AuditEvent, CreditAccount, CreditLedger, MovieSource, PaymentOrder, Plan,
+                        Subscription, SupportMessage, SupportTicket, UsageEvent, User, WorkflowJob, Workspace)
 from app.publications import Publication
 
 PERIOD_DAYS = 30
@@ -310,6 +310,19 @@ def _attention(db, now: datetime, day: datetime, conditions: list, health: list[
                 max_age_hours=condition.details.get("max_age_hours"))
         elif condition.key == "master_key":
             add("master_key", "critical", "verification", problem=condition.details.get("problem"))
+        elif condition.key.startswith("movie_sources:"):  # deletions failing, Drive space, Drive not configured
+            add(condition.key.replace(":", "_"), condition.level, "system", filter="movie_sources",
+                count=condition.details.get("count"), bytes=condition.details.get("bytes"),
+                problem=condition.details.get("problem"))
+    if inspect(db.connection()).has_table("movie_sources"):
+        # Movie source imports that failed today: a warning when Google Drive refused the upload (credentials,
+        # quota), else for information (usually the member's own link or file: not a movie, too large).
+        failed_sources, on_drive = db.execute(
+            select(func.count(), _tally(MovieSource.failure_stage == "upload")).select_from(MovieSource)
+            .where(MovieSource.status == "failed", MovieSource.updated_at >= day)).one()
+        if failed_sources:
+            add("movie_sources_failed", "warning" if on_drive else "info", "system", filter="movie_sources",
+                count=int(failed_sources), drive=int(on_drive))
     if rows["database"]["status"] == "critical":
         add("database", "critical", "verification", detail=rows["database"].get("detail"))
     if rows["workers"]["missing"]:

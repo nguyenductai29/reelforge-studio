@@ -32,10 +32,24 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
+      // An in-memory Google Drive for the movie sources (tests/fake_drive.py), shared by the API and the movie driver.
+      command: `${python} ../tests/fake_drive.py --port 8021`,
+      port: 8021,
+      reuseExistingServer: false,
+    },
+    {
       command: `${python} -m uvicorn app.main:app --host 127.0.0.1 --port 8010`,
       cwd: path.join(stack, "api"),
       url: "http://127.0.0.1:8010/health/live",
-      env: { PYTHONPATH: path.join(stack, "api"), REELFORGE_MASTER_KEY_FILE: path.join(stack, "api", "instance", "master.key") },
+      env: {
+        PYTHONPATH: path.join(stack, "api"),
+        REELFORGE_MASTER_KEY_FILE: path.join(stack, "api", "instance", "master.key"),
+        // Movie sources: the fake Drive, and dummy FFmpeg tools (steps only check that they exist; e2e/movie_driver.py
+        // fakes the work).
+        REELFORGE_GOOGLE_API_BASE: "http://127.0.0.1:8021",
+        RENDER_FFMPEG_PATH: path.join(stack, "api", "instance", "tools", "ffmpeg"),
+        RENDER_FFPROBE_PATH: path.join(stack, "api", "instance", "tools", "ffprobe"),
+      },
       reuseExistingServer: false,
       timeout: 60_000,
     },

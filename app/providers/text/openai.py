@@ -19,7 +19,13 @@ class OpenAITextProvider(TextGenerationProvider):
         system_prompt = system_prompt_for(request)
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": request.prompt})
+        if request.images:
+            content = [{"type": "text", "text": request.prompt}]
+            content += [{"type": "image_url", "image_url": {"url": f"data:{image.mime_type};base64,{image.base64()}",
+                                                            "detail": "low"}} for image in request.images]
+            messages.append({"role": "user", "content": content})
+        else:
+            messages.append({"role": "user", "content": request.prompt})
         payload = {"model": request.model, "messages": messages, "max_completion_tokens": request.max_tokens}
         if request.temperature is not None:
             payload["temperature"] = request.temperature

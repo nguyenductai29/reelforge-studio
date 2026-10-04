@@ -32,10 +32,19 @@ SOURCE_CLIPS = "source_clips"
 STORY = "story"
 # {"asset_id", "filename", "volume"}: background music Render mixes under the video (Phase 16).
 MUSIC = "music_track"
+# Movie sources (migration 0027, app/workflow/nodes/movie.py):
+# {"id", "name", "duration", "width", "height", "has_audio"}: one movie source, never a path.
+MOVIE = "movie_source"
+# [{"index", "time", "cut"}]: the moments Prepare Movie sampled as frames.
+FRAMES = "movie_frames"
+# {"frames": [{"index", "time", "description", "characters", "location", "action", "importance"}], ...}.
+VISUAL = "visual_notes"
+# {"windows": [{"start", "end", "dialogue", "visual", "importance", "cut"}], "duration", ...}.
+TIMELINE = "movie_timeline"
 DATA_TYPES = (BRIEF, TEXT, SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SUBTITLE_ASSET, PUBLICATION,
-              PUBLISH_METADATA, SOURCE, SOURCE_CLIPS, STORY, MUSIC)
+              PUBLISH_METADATA, SOURCE, SOURCE_CLIPS, STORY, MUSIC, MOVIE, FRAMES, VISUAL, TIMELINE)
 TEXT_TYPES = frozenset({BRIEF, TEXT})
-LIST_TYPES = frozenset({SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SOURCE_CLIPS})
+LIST_TYPES = frozenset({SCENES, IMAGE_ASSETS, VIDEO_ASSETS, AUDIO_ASSETS, SOURCE_CLIPS, FRAMES})
 
 # Context fallbacks an input can declare.
 PROJECT_TOPIC = "project_topic"

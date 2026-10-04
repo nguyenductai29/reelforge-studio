@@ -260,41 +260,14 @@ def _cut(claim: Claim, folder: Path, runner) -> list[tuple[Path, dict]]:
     ffmpeg, ffprobe = render.tools()
     if not ffmpeg or not ffprobe:
         raise render.RenderError("ffmpeg_missing", "FFmpeg or ffprobe is not installed", "configuration_error")
-    requested = claim.payload.get("clips") or []
-    if not requested or len(requested) > 20:
-        raise render.RenderError("input_missing", "There are no clips to cut", "invalid_request")
-    folder.mkdir(parents=True, exist_ok=True)
-    cut = []
-    for index, item in enumerate(requested, 1):
-        source = _input(claim, item.get("source_asset_id"))
-        start, end = item.get("start"), item.get("end")
-        if (not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or isinstance(start, bool)
-                or not 0 <= start < end or end - start > 120):
-            raise render.RenderError("invalid_request", "A clip has invalid bounds", "invalid_request")
-        name = f"clip-{index:02d}.mp4"
-        output = folder / name
-        attempts = ((True, False) if claim.payload.get("mode") != "reencode"
-                    and item.get("content_type") == "video/mp4" else (False,))
-        for copy in attempts:
-            output.unlink(missing_ok=True)
-            try:
-                render.run_ffmpeg(render.clip_command(ffmpeg, source, start, end, name, copy=copy), folder,
-                                  render.render_timeout_seconds(), runner)
-                if not output.is_file() or not valid_mp4(output, max_bytes=render.MAX_RENDER_BYTES):
-                    raise render.RenderError("invalid_output", "FFmpeg did not produce a valid MP4")
-                info = render.probe(ffprobe, output, runner)
-                if info["duration"] <= 0.1 or not info["width"]:
-                    raise render.RenderError("invalid_output", "The clip has no video")
-            except render.RenderError:
-                if copy:
-                    continue  # stream copy was not possible: re-encode instead
-                raise
-            cut.append((output, {"scene_index": item.get("scene_index"), "source_asset_id": item["source_asset_id"],
-                                 "source_start": round(float(start), 3), "source_end": round(float(end), 3),
-                                 "duration": round(info["duration"], 3), "width": info["width"],
-                                 "height": info["height"], "cut": "copy" if copy else "reencode"}))
-            break
-    return cut
+
+    def resolve(item):
+        return (_input(claim, item.get("source_asset_id")), item.get("content_type") == "video/mp4",
+                {"source_asset_id": item["source_asset_id"]})
+
+    return render.cut_clips(ffmpeg, ffprobe, claim.payload.get("clips") or [], folder, resolve,
+                            mode=claim.payload.get("mode") or "copy_first", timeout=render.render_timeout_seconds(),
+                            run=runner)
 
 
 def _store_clips(claim: Claim, cut: list[tuple[Path, dict]], started: float) -> None:

@@ -50,7 +50,8 @@ with Session.begin() as db:
 health = {w["worker"]: w["status"] for w in client.get("/api/admin/workers").json()["workers"]}
 assert (health["render_worker"], health["scheduler_worker"], health["voice_worker"], health["source_worker"]) == \
        ("ok", "error", "stale", "missing"), health
-assert set(heartbeat.WORKERS) <= set(health)
+assert {name for name in heartbeat.WORKERS if heartbeat.expected(name)} <= set(health)
+assert "movie_worker" not in health  # optional: not expected while movie sources are off
 
 # Admin job views: safe fields only, counts per queue, and a stuck-work audit.
 fund(10)

@@ -12,7 +12,13 @@
   the source video with FFmpeg in the render worker (stream copy first, H.264/AAC
   re-encode when copying is not possible) and stores each one as an asset that
   records the video it came from (``assets.source_asset_id``). Render joins them
-  like generated clips, one per scene.
+  like generated clips, one per scene. Clips chosen by the Clip Selector from a
+  movie source (``movie_source_id``) are cut by the movie worker from its local
+  copy of the movie instead, and their assets record ``assets.movie_source_id``.
+
+Story Analysis also reads a movie timeline (``source_type`` ``timeline``, from
+Movie Timeline): it then adds the setup, turning points, conflict, climax,
+ending and visual moments of the movie.
 
 Use only content you are authorized to use. Nothing here downloads protected
 streams, removes watermarks or bypasses DRM; the source must be a file the
@@ -44,6 +50,7 @@ SPOILER_LEVELS = {"none": "Do not reveal twists or the ending; stop before the c
                   "light": "Hint at the twists but do not reveal the ending.",
                   "full": "Cover the whole story, including the twists and the ending."}
 MAX_CLIPS = 20
+MAX_MOVIE_CLIPS = 40
 MAX_CLIP_SECONDS = 120.0
 VIDEO_TYPES = ("video/mp4", "video/webm")
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
@@ -59,6 +66,8 @@ CLIPS_INVALID_DETAIL = "Danh sách clip nguồn không hợp lệ."
 SOURCE_MISSING_DETAIL = "Không tìm thấy video nguồn trong kho media."
 STORAGE_FULL_DETAIL = "Kho media của workspace đã đầy; chưa cắt được clip."
 CLIPS_READY_DETAIL = "Sẵn sàng cắt clip bằng FFmpeg (miễn phí). Chỉ dùng nội dung bạn có quyền sử dụng."
+MOVIE_CLIPS_QUEUED_DETAIL = "Đã xếp hàng cắt đoạn trích từ nguồn phim."
+MOVIE_SOURCE_GONE_DETAIL = "Nguồn phim không còn dùng được (đã hết hạn hoặc đã bị xóa)."
 
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
@@ -99,7 +108,21 @@ def parse_story(text: str) -> dict[str, Any]:
             "summary": _text(value.get("summary"), 2000) or ("" if value else _text(text, 2000)),
             "characters": characters, "plot_points": [point for point in plot_points if point], "acts": acts,
             "important_moments": [moment for moment in moments if moment["description"] or moment["quote"]],
-            "themes": [theme for theme in (_text(item, 100) for item in _items(value.get("themes"), 12)) if theme]}
+            "themes": [theme for theme in (_text(item, 100) for item in _items(value.get("themes"), 12)) if theme],
+            **_structure(value)}
+
+
+def _structure(value: dict) -> dict[str, Any]:
+    """The movie-timeline fields (setup, turning points, conflict, climax, ending, visual moments), when given."""
+    found = {key: _text(value.get(key), 1200) for key in ("setup", "conflict", "climax", "ending")}
+    found["turning_points"] = [{"description": _text(item.get("description"), 400), "start": _seconds(item.get("start"))}
+                               for item in _items(value.get("turning_points"), 12)
+                               if isinstance(item, dict) and _text(item.get("description"))]
+    found["visual_moments"] = [{"description": _text(item.get("description"), 400), "start": _seconds(item.get("start")),
+                                "end": _seconds(item.get("end"))}
+                               for item in _items(value.get("visual_moments"), 20)
+                               if isinstance(item, dict) and _text(item.get("description"))]
+    return {key: item for key, item in found.items() if item}
 
 
 def _clock(seconds: float) -> str:
@@ -152,8 +175,21 @@ class StoryAnalysisNodeHandler(TextNodeHandler):
                  '"themes": [string]}.',
                  "plot_points are in story order. important_moments quote the exact line of dialogue when there is "
                  "one and give its time in seconds when the source shows timestamps like [mm:ss].",
-                 *self.extras(config), self.quoted("Source", source)]
+                 *self._timeline_lines(inputs.get("source")), *self.extras(config), self.quoted("Source", source)]
         return "\n".join(lines)
+
+    @staticmethod
+    def _timeline_lines(value) -> list[str]:
+        """A movie timeline (dialogue and on-screen notes per time window) asks for the movie's structure too."""
+        if not isinstance(value, dict) or value.get("source_type") != "timeline":
+            return []
+        return ["The source is a movie timeline: each line gives a time window, its dialogue and what is on screen.",
+                'Also return "setup", "conflict", "climax" and "ending" (strings), '
+                '"turning_points": [{"description": string, "start": seconds}] and '
+                '"visual_moments": [{"description": string, "start": seconds, "end": seconds}] for moments that '
+                "matter visually even without dialogue.",
+                "Describe people by their role or appearance unless the dialogue names them; never guess who an "
+                "actor or a character is from how they look."]
 
     def output_from(self, payload, result):
         analysis = parse_story(result.text)
@@ -302,6 +338,22 @@ def _clips(value) -> list[dict] | None:
     return clips
 
 
+def _movie_clips(value) -> list[dict] | None:
+    """Clips of one movie source (from the Clip Selector), or ``None`` when any of them is malformed."""
+    clips = []
+    for position, item in enumerate(value if isinstance(value, list) else [], 1):
+        if not isinstance(item, dict):
+            return None
+        start, end = _seconds(item.get("start")), _seconds(item.get("end"))
+        if (start is None or end is None or not isinstance(item.get("movie_source_id"), str)
+                or not 0.2 <= end - start <= MAX_CLIP_SECONDS):
+            return None
+        scene = item.get("scene_index")
+        clips.append({"movie_source_id": item["movie_source_id"], "start": start, "end": end,
+                      "scene_index": scene if isinstance(scene, int) and not isinstance(scene, bool) else position})
+    return clips
+
+
 def _extracted(output):
     assets = output.get("video_assets")
     return assets if isinstance(assets, list) and assets else None
@@ -319,7 +371,11 @@ class ExtractClipsNodeHandler(NodeHandler):
     )
 
     def execute(self, context, node, inputs):
-        clips = _clips(inputs.get("source_clips"))
+        value = inputs.get("source_clips")
+        if isinstance(value, list) and value and all(isinstance(item, dict) and item.get("movie_source_id")
+                                                     for item in value):
+            return self._movie(context, node, inputs, value)
+        clips = _clips(value)
         if not clips:
             return NodeExecutionResult.blocked(CLIPS_INVALID_DETAIL if clips is None else CLIPS_MISSING_DETAIL,
                                                NodeError("invalid_request", "Invalid source clips"))
@@ -344,6 +400,29 @@ class ExtractClipsNodeHandler(NodeHandler):
         return NodeExecutionResult.queued(CLIPS_QUEUED_DETAIL,
                                           JobRequest("render", payload, logical_key=f"render:{step.id}:clips"),
                                           {"expected": len(clips)})
+
+    def _movie(self, context, node, inputs, value):
+        """Excerpts of a movie source: cut by the movie worker from its local copy of the movie."""
+        from app import movie_sources
+
+        clips = _movie_clips(value)
+        if not clips or len(clips) > MAX_MOVIE_CLIPS or len({clip["movie_source_id"] for clip in clips}) != 1:
+            return NodeExecutionResult.blocked(CLIPS_INVALID_DETAIL, NodeError("invalid_request", "Invalid source clips"))
+        source = movie_sources.for_workspace(context.db, context.workspace.id, clips[0]["movie_source_id"])
+        if source is None or source.status not in movie_sources.USABLE:
+            return NodeExecutionResult.blocked(MOVIE_SOURCE_GONE_DETAIL,
+                                               NodeError("source_expired", "Movie source unavailable"))
+        if issue := render.tools_issue():
+            return NodeExecutionResult.blocked(issue[1], NodeError(issue[0], issue[1]))
+        if storage.is_full(context.db, context.workspace.id):
+            return NodeExecutionResult.blocked(STORAGE_FULL_DETAIL, NodeError("storage_limit_exceeded", "Storage full"))
+        step = context.step_for(node)
+        payload = {"kind": "movie.clip_extract", "node_type": self.node_type, "node_id": node["id"],
+                   "provider": "ffmpeg", "model": "local", "mode": self.config_values(inputs.config)["cut_mode"],
+                   "movie_source_id": source.id, "content_type": source.content_type, "clips": clips}
+        return NodeExecutionResult.queued(MOVIE_CLIPS_QUEUED_DETAIL,
+                                          JobRequest("movie", payload, logical_key=f"movie:{step.id}:clips"),
+                                          {"expected": len(clips), "movie_source_id": source.id})
 
     def readiness(self, context, node):
         if issue := render.tools_issue():

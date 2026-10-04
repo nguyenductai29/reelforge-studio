@@ -17,8 +17,13 @@ class AnthropicTextProvider(TextGenerationProvider):
     name = "anthropic"
 
     def _generate(self, request: TextRequest) -> TextResult:
+        content = request.prompt
+        if request.images:
+            content = [{"type": "image", "source": {"type": "base64", "media_type": image.mime_type,
+                                                    "data": image.base64()}} for image in request.images]
+            content.append({"type": "text", "text": request.prompt})
         payload = {"model": request.model, "max_tokens": request.max_tokens,
-                   "messages": [{"role": "user", "content": request.prompt}]}
+                   "messages": [{"role": "user", "content": content}]}
         system_prompt = system_prompt_for(request)
         if system_prompt:
             payload["system"] = system_prompt

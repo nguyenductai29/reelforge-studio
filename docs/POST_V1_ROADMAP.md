@@ -42,3 +42,16 @@ needs its own design, migration (if any), tests and release. The v1.0 release it
 | Bank statement matching for manual VietQR | An administrator confirms each transfer |
 | Audio ducking and fades; motion for still images | One background track; stills without motion |
 | Instagram publishing | Hidden: needs a professional account, its own publish flow and Meta review |
+
+## Movie sources
+
+Added after the release closure ([MOVIE_SOURCES.md](MOVIE_SOURCES.md)); possible next steps, none started:
+
+| Item | Today |
+| --- | --- |
+| A Google Drive account per studio | One Drive (the operator's) for every studio, one folder per studio |
+| Resuming an interrupted direct-URL download (HTTP ranges) | An interrupted download starts again (network errors are retried) |
+| Shared scratch space for several servers | Each server downloads a source once into its own scratch space |
+| Transcripts of movies longer than `TRANSCRIPTION_MAX_SECONDS` | Movies up to 4 hours can be imported; transcription stops at 3 hours by default |
+| Choosing and reordering excerpts by hand before the render | The Clip Selector chooses them; the run can be retried with other settings |
+| Drive's own quota in the admin view | The space sources use is counted from the table |

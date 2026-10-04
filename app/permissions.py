@@ -13,6 +13,7 @@
 | billing.view        | yes   | yes   | –      | –      | payment orders and their history |
 | billing.manage      | yes   | –     | –      | –      | buying or renewing a plan, reporting a transfer |
 | ownership.transfer  | yes   | –     | –      | –      | handing the workspace to another member |
+| movie_sources.delete| yes   | yes   | –      | –      | deleting a movie source now (members add, use and extend them) |
 
 ``*`` Editors publish unless the workspace turns ``editors_can_publish`` off.
 Everyone may open support tickets and read the plan, credits and storage of the workspace.
@@ -35,6 +36,7 @@ PERMISSIONS: dict[str, frozenset[str]] = {
     "billing.view": frozenset({"owner", "admin"}),
     "billing.manage": frozenset({"owner"}),
     "ownership.transfer": frozenset({"owner"}),
+    "movie_sources.delete": frozenset({"owner", "admin"}),
 }
 
 

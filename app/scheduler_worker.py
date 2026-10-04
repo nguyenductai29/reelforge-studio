@@ -10,14 +10,16 @@ ever queued twice, and nothing is published without the explicit request that
 scheduled it. Times are UTC.
 
 Each pass also retries transactional email that is due (``app/mailer.py``) and, every few
-minutes, evaluates the system alerts (``app/alerts.py``).
+minutes, evaluates the system alerts (``app/alerts.py``) and schedules the deletion of movie
+sources whose retention ran out or whose review succeeded (``app/movie_sources.py``; the movie
+worker deletes them).
 """
 import argparse
 from datetime import datetime, timezone
 import logging
 import time
 
-from app import alerts, heartbeat, mailer, publications
+from app import alerts, heartbeat, mailer, movie_sources, publications
 from app.logs import log_event
 from app.runtime_env import start_process
 
@@ -57,6 +59,7 @@ def main():
             handled = run_once()
             mailer.deliver_pending()
             alerts.maybe_evaluate()
+            movie_sources.maybe_schedule()
             heartbeat.beat("scheduler_worker", detail=f"dispatched {handled}" if handled else None)
         except Exception:  # noqa: BLE001 - a database outage must not stop the scheduler for good
             logger.exception("scheduler pass failed")

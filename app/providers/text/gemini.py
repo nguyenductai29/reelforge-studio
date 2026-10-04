@@ -27,7 +27,9 @@ class GeminiTextProvider(TextGenerationProvider):
             config["temperature"] = request.temperature
         if request.response_format == "json":
             config["responseMimeType"] = "application/json"
-        payload = {"contents": [{"role": "user", "parts": [{"text": request.prompt}]}], "generationConfig": config}
+        parts = [{"text": request.prompt}]
+        parts += [{"inline_data": {"mime_type": image.mime_type, "data": image.base64()}} for image in request.images]
+        payload = {"contents": [{"role": "user", "parts": parts}], "generationConfig": config}
         system_prompt = system_prompt_for(request)
         if system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}

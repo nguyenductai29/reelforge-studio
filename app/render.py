@@ -15,7 +15,9 @@ Audio policy:
 * narration (connected Voice audio) takes precedence and the clips' own audio is
   muted;
 * narration with one file per scene is placed at the start of its scene's clip,
-  padded with silence or cut to the clip's length;
+  padded with silence or cut to the clip's length; consecutive clips of one scene
+  (a movie review shows several short excerpts per section) share it, as one
+  window;
 * other narration (one file for the whole script) is joined in order and padded
   or cut to the whole video;
 * without narration, each clip keeps its own audio (silence if it has none).
@@ -203,12 +205,24 @@ def frame_size(clips: list[Clip]) -> tuple[int, int]:
 
 # Subtitles on the render timeline ---------------------------------------------
 
-def retime(cues: list[Cue], segments: list[Mapping[str, Any]], clips: list[Clip]) -> list[Cue]:
-    windows, clock = {}, 0.0
+def scene_windows(clips: list[Clip]) -> dict[int, tuple[float, float]]:
+    """Each scene's window on the timeline: its first clip, grown over the clips of the same scene that follow it."""
+    windows: dict[int, list[float]] = {}
+    clock, previous = 0.0, None
     for clip in clips:
-        if clip.scene_index is not None and clip.scene_index not in windows:
-            windows[clip.scene_index] = (clock, clock + clip.duration)
+        if clip.scene_index is not None:
+            if clip.scene_index not in windows:
+                windows[clip.scene_index] = [clock, clock + clip.duration]
+            elif previous == clip.scene_index:
+                windows[clip.scene_index][1] = clock + clip.duration
+        previous = clip.scene_index
         clock += clip.duration
+    return {scene: (start, end) for scene, (start, end) in windows.items()}
+
+
+def retime(cues: list[Cue], segments: list[Mapping[str, Any]], clips: list[Clip]) -> list[Cue]:
+    windows = scene_windows(clips)
+    clock = sum(clip.duration for clip in clips)
     total = round(clock * 1000)
     spans = {}
     for segment in segments:
@@ -302,18 +316,29 @@ def build_command(ffmpeg: str, clips: list[Clip], tracks: list[Track], *, subtit
                          f"aformat=sample_fmts=fltp:channel_layouts=stereo[t{offset}]")
         joined = "".join(f"[t{offset}]" for offset in range(len(tracks)))
         graph.append(f"{joined}concat=n={len(tracks)}:v=0:a=1,apad,atrim=duration={total:.3f}[{mixed}]")
-    else:
+    elif mode == "scenes":
         by_scene = {}
         for offset, track in enumerate(tracks):
             by_scene.setdefault(track.scene_index, first_track + offset)
-        for number, clip in enumerate(clips):
-            if mode == "scenes":
-                source = by_scene.get(clip.scene_index)
-                graph.append(fitted(f"{source}:a", f"a{number}", clip.duration) if source is not None
-                             else silence(f"a{number}", clip.duration))
+        # Consecutive clips of one scene form one audio segment: its narration plays across them, once.
+        segments: list[list] = []
+        for clip in clips:
+            if segments and segments[-1][0] == clip.scene_index:
+                segments[-1][1] += clip.duration
             else:
-                graph.append(fitted(f"{number}:a", f"a{number}", clip.duration) if clip.has_audio
-                             else silence(f"a{number}", clip.duration))
+                segments.append([clip.scene_index, clip.duration])
+        voiced = set()
+        for number, (scene, seconds) in enumerate(segments):
+            source = by_scene.get(scene) if scene not in voiced else None
+            voiced.add(scene)
+            graph.append(fitted(f"{source}:a", f"a{number}", seconds) if source is not None
+                         else silence(f"a{number}", seconds))
+        graph.append("".join(f"[a{number}]" for number in range(len(segments)))
+                     + f"concat=n={len(segments)}:v=0:a=1[{mixed}]")
+    else:
+        for number, clip in enumerate(clips):
+            graph.append(fitted(f"{number}:a", f"a{number}", clip.duration) if clip.has_audio
+                         else silence(f"a{number}", clip.duration))
         graph.append("".join(f"[a{number}]" for number in range(len(clips))) + f"concat=n={len(clips)}:v=0:a=1[{mixed}]")
     if music is not None:
         volume = min(1.0, max(0.01, music_volume))
@@ -344,6 +369,53 @@ def clip_command(ffmpeg: str, source: Path, start: float, end: float, output: st
         command += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
     return command + ["-movflags", "+faststart", output]
+
+
+def cut_clips(ffmpeg: str, ffprobe: str, requested: list, folder: Path, resolve, *, mode: str, timeout: int,
+              run: Runner = subprocess.run, max_clips: int = 20, max_seconds: float = 120.0,
+              progress=None) -> list[tuple[Path, dict]]:
+    """Each requested clip as a checked MP4 in ``folder`` with its facts, in request order.
+
+    ``resolve(item)`` returns the source file, whether a stream copy may be tried (an MP4 source), and the facts
+    that name the source (``source_asset_id`` for an upload, ``movie_source_id`` for a movie source). A stream
+    copy that does not give a valid clip is re-encoded; mode ``reencode`` always re-encodes. ``progress(done,
+    total)`` is called after each clip."""
+    from app.video_files import valid_mp4
+
+    if not requested or len(requested) > max_clips:
+        raise RenderError("input_missing", "There are no clips to cut", "invalid_request")
+    folder.mkdir(parents=True, exist_ok=True)
+    cut = []
+    for index, item in enumerate(requested, 1):
+        source, copyable, origin = resolve(item)
+        start, end = item.get("start"), item.get("end")
+        if (not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or isinstance(start, bool)
+                or not 0 <= start < end or end - start > max_seconds):
+            raise RenderError("invalid_request", "A clip has invalid bounds", "invalid_request")
+        name = f"clip-{index:02d}.mp4"
+        output = folder / name
+        attempts = (True, False) if mode != "reencode" and copyable else (False,)
+        for copy in attempts:
+            output.unlink(missing_ok=True)
+            try:
+                run_ffmpeg(clip_command(ffmpeg, source, start, end, name, copy=copy), folder, timeout, run)
+                if not output.is_file() or not valid_mp4(output, max_bytes=MAX_RENDER_BYTES):
+                    raise RenderError("invalid_output", "FFmpeg did not produce a valid MP4")
+                info = probe(ffprobe, output, run)
+                if info["duration"] <= 0.1 or not info["width"]:
+                    raise RenderError("invalid_output", "The clip has no video")
+            except RenderError:
+                if copy:
+                    continue  # stream copy was not possible: re-encode instead
+                raise
+            cut.append((output, {"scene_index": item.get("scene_index"), **origin,
+                                 "source_start": round(float(start), 3), "source_end": round(float(end), 3),
+                                 "duration": round(info["duration"], 3), "width": info["width"],
+                                 "height": info["height"], "cut": "copy" if copy else "reencode"}))
+            break
+        if progress:
+            progress(index, len(requested))
+    return cut
 
 
 def safe_message(stderr: str | None) -> str:

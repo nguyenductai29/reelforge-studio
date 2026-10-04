@@ -18,7 +18,10 @@ import type {
   AdminStorage,
   AdminUser,
   AdminWorkspace,
+  AdminMovieSourcePage,
   AiTool,
+  MovieSource,
+  MovieSourcePage,
   NotificationPage,
   PaymentSetupOverview,
   SystemConfigOverview,
@@ -104,6 +107,8 @@ export const keys = {
   onboarding: ["onboarding"] as const,
   audit: ["admin", "audit"] as const,
   backups: ["admin", "backups"] as const,
+  movieSources: ["movie-sources"] as const,
+  adminMovieSources: ["admin", "movie-sources"] as const,
 };
 
 /** Each node type's ports; fixed for a server release, so fetched once. */
@@ -285,6 +290,37 @@ export function useAdminWorkspaces(filters: AdminFilters) {
   });
 }
 
+// Imports, uploads and deletions move without a page action: follow them while one is in progress.
+const MOVING_SOURCE = new Set(["created", "importing", "uploading", "processing", "delete_scheduled", "deleting"]);
+
+/** One page of the studio's movie sources, with the server's movie-source settings. */
+export function useMovieSources(filters: AdminFilters) {
+  return useQuery({
+    queryKey: [...keys.movieSources, filters],
+    queryFn: () => adminPage<MovieSourcePage>("movie-sources", filters),
+    placeholderData: (previous) => previous,
+    refetchInterval: (query) => (query.state.data?.items.some((item) => MOVING_SOURCE.has(item.status)) ? POLL_MS : false),
+  });
+}
+
+export function useMovieSource(id: string | null) {
+  return useQuery({
+    queryKey: [...keys.movieSources, "detail", id],
+    queryFn: () => api<MovieSource>(`movie-sources/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+    refetchInterval: (query) => (query.state.data && MOVING_SOURCE.has(query.state.data.status) ? POLL_MS : false),
+  });
+}
+
+export function useAdminMovieSources(filters: AdminFilters, enabled = true) {
+  return useQuery({
+    queryKey: [...keys.adminMovieSources, filters],
+    queryFn: () => adminPage<AdminMovieSourcePage>("admin/movie-sources", filters),
+    placeholderData: (previous) => previous,
+    enabled,
+  });
+}
+
 export function useAdminPayments(filters: AdminFilters) {
   return useQuery({
     queryKey: [...keys.adminPayments, filters],
@@ -346,7 +382,7 @@ export function useAdminStorage(enabled: boolean, offset = 0, limit = 20) {
         const levels = data.levels ?? { ...NO_LEVELS };
         if (!data.levels) for (const item of workspaces) if (item.level !== "ok") levels[item.level] += 1;
         return { ...data, workspaces, levels, total: data.total ?? workspaces.length, disk: data.disk ?? null,
-                 retention: data.retention ?? null };
+                 retention: data.retention ?? null, movie_sources: data.movie_sources ?? null };
       }),
     enabled,
     placeholderData: (previous) => previous,

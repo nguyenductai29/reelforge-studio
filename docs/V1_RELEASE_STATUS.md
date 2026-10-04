@@ -1,26 +1,28 @@
 # ReelForge Studio v1.0 — release status
 
 > **Status: RELEASE_CANDIDATE.** Not ready for the `v1.0.0` tag: the Terms of Service and the Privacy Policy are still
-> templates, and the deployment of the release candidate, CI on it and the 46 mandatory gates are not recorded as
+> templates, and the deployment of the release candidate, CI on it and the 47 mandatory gates are not recorded as
 > passed anywhere this audit could see (the gates live in the production database, which it did not read). This file
 > says so until the release report says `READY_FOR_TAG`; it is updated by the operator, from what was actually checked.
 
-Audited on 2026-10-03 (release closure). Every value below comes from the repository, GitHub's public API or a run on
-a development machine; nothing about the production server is assumed.
+Audited on 2026-10-03 (release closure), updated on 2026-10-04 for the **movie source phase** added after it
+([MOVIE_SOURCES.md](MOVIE_SOURCES.md): migration `0027_movie_sources`, the movie worker, seven optional gates). Every
+value below comes from the repository, GitHub's public API or a run on a development machine; nothing about the
+production server is assumed.
 
 | | |
 | --- | --- |
 | Status | `RELEASE_CANDIDATE` |
 | Branch | `feat/studio-foundation` (in step with `origin` at the audit) |
 | Audited source commit | `56ada10845e595450f4c4aceccbf670a2715babc` ("redesign layout"): the code of the release candidate |
-| Release candidate | The release-closure commit on top of `56ada10`, the one that brings this version of this file: `git log -1 --format=%H -- docs/V1_RELEASE_STATUS.md` prints it. It changes documentation (`docs/`, `README.md`, `e2e/README.md`), a usage comment in `deploy/release-preflight.sh` and the documentation checks in `tests/test_phase28.py`; no application code, no migration (`git diff --stat 56ada10 <candidate>` shows it). A later fix makes a new candidate ([below](#a-bug-found-during-verification)) |
-| Migration head | `0026_change_production_origin` (one head; 0026 changes data only: the production origin) |
+| Release candidate | The commit that brings the movie source phase and this version of this file: `git log -1 --format=%H -- docs/V1_RELEASE_STATUS.md` prints it once committed (the phase was written after the release closure and was not committed at the time of writing). Unlike the closure commit it changes application code and adds migration `0027_movie_sources`, so nothing recorded for an earlier commit (CI, deployment, pre-flight) counts for it. A later fix makes a new candidate ([below](#a-bug-found-during-verification)) |
+| Migration head | `0027_movie_sources` (one head; 0027 adds two tables and a nullable column; 0026 changes data only: the production origin) |
 | Production origin | `https://reelforge.mul-service.com` (Cloudflare Tunnel → `http://127.0.0.1:3001`; the API on `127.0.0.1:8000`) |
 | Deployed on the server | MANUAL: the repository holds no record of a deployment of the release candidate. `./deploy.sh` on the server, then record `release_deploy` (commit, date, who) |
-| CI | PASS on `56ada10`: GitHub Actions, all 14 check runs successful (push and pull request; finished 2026-10-02 16:44 UTC). MANUAL for the release candidate: **CI must be green on the exact deployed release commit** (`release_ci_green`) |
+| CI | PASS on `56ada10`: GitHub Actions, all 14 check runs successful (push and pull request; finished 2026-10-02 16:44 UTC). MANUAL for the release candidate: **CI must be green on the exact deployed release commit** (`release_ci_green`); the movie source commit has not run CI yet (its backend jobs now install FFmpeg for the real-movie test) |
 | Pre-flight | Code audit PASS; on the server MANUAL (`release_preflight`) |
 | Release report | Code audit PASS; on the server MANUAL. With no gate recorded it can only say `RELEASE_CANDIDATE` |
-| Manual gates | 68 in Admin → Verification: 46 mandatory, 22 optional (passed or not applicable). Recorded: none known (MANUAL) |
+| Manual gates | 75 in Admin → Verification: 47 mandatory, 28 optional (passed or not applicable), including the seven optional movie source gates. Recorded: none known (MANUAL). (The closure counted its 68 as 46 + 22; the code then had 47 mandatory and 21 optional: corrected here.) |
 | Tag readiness | Not ready: `RELEASE_CANDIDATE` ([what remains](#remaining-blockers)) |
 
 ## How the release is decided
@@ -50,6 +52,7 @@ The status moves one step at a time, never skipping one; each step is written in
 | Date | Status | Commit | Evidence |
 | --- | --- | --- | --- |
 | 2026-10-03 | `RELEASE_CANDIDATE` | `56ada10` (audited code) and the release-closure commit | This audit; CI green on `56ada10`; no gate recorded |
+| 2026-10-04 | `RELEASE_CANDIDATE` | The movie source phase (not committed when written) | Local suites only ([RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-04-movie-source-phase)); CI not run on it; no gate recorded |
 
 ## Status by area
 
@@ -63,7 +66,7 @@ a real check, with the date and who.
 | Automated suites, development machine | PASS | [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-03-release-closure). Evidence only: not a gate | 2026-10-03 |
 | Deployment tooling (code audit) | PASS | `deploy.sh` read: pull (and the commit), bootstrap (no development override, database answering), master key (`deploy/ensure-master-key.sh`), dependencies, migrations and the head, frontend build, restart of the API, the frontend and every enabled worker, every restarted unit checked, `/health/ready` and the frontend, unit files that differ or need a reload, timers; exit status 1 on any failure | 2026-10-03 |
 | Pre-flight and report (code audit) | PASS | `app/release_check.py` read: commit and clean tree, database and head, master key, services and workers, ports, `/health/live` and `/ready`, storage, backups, FFmpeg, origin and Secure cookies, OAuth redirect overrides, setup closed, administrators' 2FA, legacy values. Verdict unchanged: `READY_FOR_TAG` only without a pre-flight FAIL, with CI on the commit neither failing, pending nor missing (when GitHub cannot be asked, the recorded `release_ci_green` decides), and every gate passed (or not applicable where allowed) | 2026-10-03 |
-| Admin → Verification against the checklist | PASS | 68 gates in 12 groups (46 mandatory, 22 optional, 13 paid), unique keys, each named in [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) and each checklist key a gate (`tests/test_phase28.py`); no gate names the old domain | 2026-10-03 |
+| Admin → Verification against the checklist | PASS | 75 gates in 13 groups (47 mandatory, 28 optional, 14 paid), unique keys, each named in [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) and each checklist key a gate (`tests/test_phase28.py`); no gate names the old domain | 2026-10-04 |
 | Domain change | MANUAL | The stored origin moves with migration 0026; Cloudflare, Google, TikTok, Meta, payOS and OnePAY are updated by hand ([below](#domain-change)) | |
 | Deployment (`./deploy.sh`) | MANUAL | `release_deploy` | |
 | Pre-flight on the server | MANUAL | `release_preflight`: source, database and head, master key, services and timers, ports, health, storage, backups, FFmpeg, configuration, administrators | |
@@ -81,6 +84,7 @@ a real check, with the date and who.
 | Operations | MANUAL | Alerts, support round trip and account closure, maintenance timer, cleanup dry run | |
 | Reboot | MANUAL | `server_reboot` | |
 | Legal | MANUAL | 11 placeholders still in the templates, in all three languages ([below](#legal)); lawyer review pending | |
+| Movie sources | MANUAL, or NOT_APPLICABLE while the feature is off | Seven optional gates ([MOVIE_SOURCE_VERIFICATION.md](MOVIE_SOURCE_VERIFICATION.md)): Drive connection test, server-file and URL imports, one scratch download per source, a live review (paid), deletion refused in use then done, automatic retention cleanup. Automated coverage uses a fake Drive and mocked providers only | |
 
 Accepted pre-flight warnings (write each one and why): none yet.
 

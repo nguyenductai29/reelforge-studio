@@ -60,7 +60,8 @@ from sqlalchemy import create_engine, text
 config = Config("alembic.ini")
 engine = create_engine(json.load(open("instance/bootstrap.json"))["database_url"])
 OLD, NEW = "https://studio.imokome-cloud.com", "https://reelforge.mul-service.com"
-BEFORE, HEAD = "0025_verification_status", "0026_change_production_origin"
+# HEAD is the newest migration: the chain upgrades through 0026 to it (0027 adds the movie source tables).
+BEFORE, HEAD = "0025_verification_status", "0027_movie_sources"
 OTHERS = {"storage_dir": "instance/media", "trial_project_limit": 2, "registration_enabled": True}
 CALLBACKS = {"social.youtube.redirect_uri": "/youtube/callback", "social.tiktok.redirect_uri": "/channels/callback/tiktok",
              "social.facebook.redirect_uri": "/channels/callback/facebook"}

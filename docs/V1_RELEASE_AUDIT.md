@@ -1,7 +1,7 @@
 # ReelForge Studio v1.0 — release audit (Phase 27)
 
 > **Historical record: the Phase 27 audit of 2026-10-02, made on `17a8bf5`.** Its commit, test counts and migration
-> head are those of that day. The current state of the release (candidate commit, head `0026_change_production_origin`,
+> head are those of that day. The current state of the release (candidate commit, head `0027_movie_sources`,
 > CI, gates) is [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md); the current automated evidence is in
 > [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-03-release-closure).
 

@@ -90,7 +90,7 @@ sudo systemctl restart reelforge-api
 sudo systemctl restart reelforge-frontend
 # Both layouts: one unit per worker (reelforge-text-worker) or the template (reelforge-worker@text).
 workers=()
-for worker in text image video voice render source youtube social scheduler; do
+for worker in text image video voice render source youtube social scheduler movie; do
   for unit in "reelforge-${worker}-worker" "reelforge-worker@${worker}"; do
     if systemctl is-enabled --quiet "${unit}" 2>/dev/null; then
       sudo systemctl restart "${unit}"

@@ -25,6 +25,7 @@ NUMBER = "number"    # decimal in [minimum, maximum]
 TEXT = "text"        # string of at most ``max_length``; ``multiline`` for a textarea
 TOOL = "tool"        # ID of one of the workspace's AI tools for ``task``
 ASSET = "asset"      # ID of one of the workspace's media assets, of one of ``content_types``
+MOVIE_SOURCE = "movie_source"  # ID of one of the workspace's movie sources (migration 0027)
 
 _TOOL_ID = re.compile(r"[A-Za-z0-9-]{1,64}\Z")
 
@@ -94,6 +95,9 @@ class ConfigField:
         elif self.type == ASSET:
             if not isinstance(value, str) or not _TOOL_ID.fullmatch(value):
                 raise ConfigError(self.code, f"{self.key} must be the ID of a media file", self.key)
+        elif self.type == MOVIE_SOURCE:
+            if not isinstance(value, str) or not _TOOL_ID.fullmatch(value):
+                raise ConfigError(self.code, f"{self.key} must be the ID of a movie source", self.key)
         else:
             raise ConfigError("invalid_config", f"{self.key} has an unknown field type", self.key)
 
@@ -180,6 +184,21 @@ def check_assets(fields: Iterable[ConfigField], config: Any, assets: Mapping[str
         asset = assets.get(asset_id)
         if asset is None or (field.content_types and asset.content_type not in field.content_types):
             raise ConfigError(field.code, f"{field.key} is not a supported media file in this workspace", field.key)
+
+
+def check_movie_sources(fields: Iterable[ConfigField], config: Any, sources: Mapping[str, Any]) -> None:
+    """Movie source settings must name a movie source of this workspace that is not deleted.
+
+    ``sources`` maps IDs to the workspace's movie sources; one of another workspace counts as missing."""
+    if not isinstance(config, Mapping):
+        return
+    for field in fields:
+        source_id = config.get(field.key)
+        if field.type != MOVIE_SOURCE or source_id is None:
+            continue
+        source = sources.get(source_id)
+        if source is None or source.status in ("deleting", "deleted"):
+            raise ConfigError(field.code, f"{field.key} is not a movie source of this workspace", field.key)
 
 
 def describe_config(fields: Iterable[ConfigField]) -> list[dict[str, Any]]:

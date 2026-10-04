@@ -188,8 +188,9 @@ success. After a successful deploy, `bash deploy/release-preflight.sh` checks th
 
 Configuration changes never need a deploy: save them in the admin UI.
 
-The migration head is `0026_change_production_origin`. Two data migrations move an installation still on an old
-default origin, and keep any other value an admin saved:
+The migration head is `0027_movie_sources` (movie sources, [MOVIE_SOURCES.md](MOVIE_SOURCES.md): two new tables and
+a nullable column; nothing to do unless the feature is enabled). Two data migrations move an installation still on an
+old default origin, and keep any other value an admin saved:
 
 - `0021_default_production_origin` moved the old localhost defaults (`http://localhost:3000`, cookies not Secure) to the
   first production origin, `https://studio.imokome-cloud.com`, with Secure cookies;

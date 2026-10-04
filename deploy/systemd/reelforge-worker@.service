@@ -1,6 +1,7 @@
 # One unit for every ReelForge worker: enable the ones this server runs, for example
 #   sudo systemctl enable --now reelforge-worker@text reelforge-worker@video reelforge-worker@render
-# Instances: text image video voice render source youtube social scheduler.
+# Instances: text image video voice render source youtube social scheduler, and movie (only with movie
+# sources enabled: it needs FFmpeg, the import folder and the scratch space, see docs/MOVIE_SOURCES.md).
 # Workers read provider keys and runtime settings from PostgreSQL (Admin -> System settings) and pick up
 # changes within 15 seconds; they need no provider variables. Adjust User/Group/paths to your server.
 [Unit]

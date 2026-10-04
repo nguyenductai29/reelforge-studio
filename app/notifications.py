@@ -36,7 +36,7 @@ TYPES = (
     "storage.warning", "storage.critical", "storage.full",
     "support.new", "support.reply", "support.status",
     "team.member_joined", "team.role_changed", "team.removed", "team.ownership_received",
-    "system.alert",
+    "system.alert", "movie_source.ready", "movie_source.failed",
 )
 RUN_STATUSES = {"completed": "run.completed", "failed": "run.failed", "needs_attention": "run.needs_attention",
                 "awaiting_review": "run.awaiting_review"}

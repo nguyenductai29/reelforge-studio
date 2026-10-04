@@ -1,7 +1,8 @@
 # Final product audit (v1.0: Phases 14–27)
 
-> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-03 (code of `56ada10`). Database head:
-> `0026_change_production_origin`. What v1.0 ships, in short: [RELEASE_NOTES_V1.md](RELEASE_NOTES_V1.md).
+> Snapshot: branch `feat/studio-foundation`, v1.0 release candidate, 2026-10-03 (code of `56ada10`), updated
+> 2026-10-04 for the movie source phase added after the release closure ([MOVIE_SOURCES.md](MOVIE_SOURCES.md)).
+> Database head: `0027_movie_sources`. What v1.0 ships, in short: [RELEASE_NOTES_V1.md](RELEASE_NOTES_V1.md).
 > Release state and the remaining production gates: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).
 > The release audit itself (findings, fixes, test results, what remains manual) is [V1_RELEASE_AUDIT.md](V1_RELEASE_AUDIT.md);
 > the operator's gate is [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md).
@@ -29,10 +30,16 @@ or Instagram in the channel lists.
 **Content creation**
 
 - **Templates** (`/create`), each a workflow the backend builds and runs: Social video; YouTube Short and YouTube
-  (16:9); TikTok video; Facebook Reel; Repurpose existing content; Movie Recap; Movie Review; Article → Video; Product
-  Video; Blank.
-- **Step library:** 47 entries, all executable (some are presets of an existing step: short and long scripts, movie
-  review, ending explained, thumbnail, key moments, text to video, merge clips, preview, schedule post, upload image).
+  (16:9); TikTok video; Facebook Reel; Movie Recap; Movie Review; Movie Review and Movie Recap from a movie source;
+  Repurpose existing content; Article → Video; Product Video; Blank.
+- **Step library:** 54 entries, all executable (some are presets of an existing step: short and long scripts, movie
+  review, ending explained, the movie review / recap / ending scripts, thumbnail, key moments, text to video, merge
+  clips, preview, schedule post, upload image).
+- **Movie sources** (after the release closure, migration 0027): temporary movies kept in the operator's Google Drive
+  (the studio's server import folder, direct https URL, Drive inbox), checked with ffprobe, retained 7 days by default (extendable,
+  capped), deleted automatically after a successful review or at expiry, never while a run uses them; a Movie Review /
+  Recap / Ending Explained pipeline with grounded visual analysis, a timeline, time-ranged sections and short excerpts.
+  [MOVIE_SOURCES.md](MOVIE_SOURCES.md)
 - **Background Music** under the narration (1–100 %, loop or play once); **image slideshows**; workspace content
   defaults (platform, tone, length).
 
@@ -79,9 +86,9 @@ release gate.
 | Payments | Search, provider and status filters; confirm or reject manual VietQR transfers (exact amount); refresh with the provider; gateway configuration (write-only secrets, enable/disable, OnePAY Sandbox/Production/Advanced) |
 | Support | Filters; reply, change status or priority, resolve, close |
 | Credit reconciliation | The review of held credits |
-| Operations | Worker heartbeats, jobs, stuck-work audit, media disk and studios per storage level |
-| Verification | Readiness (database, migrations, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security, configuration, backups, email, accounts, alerts), a stream check, and the 68 release gates, each passed, failed, not applicable or not checked, recorded by an admin with the date and a note |
-| System settings | Security (master key, trusted proxies), General, Email, AI providers, Social OAuth, Storage, Backups, Runtime, Credit pricing, Notifications; each value's source |
+| Operations | Worker heartbeats, jobs (the `movie` queue included), stuck-work audit, media disk and studios per storage level, the movie source Drive (files, bytes, oldest source, expiring within 24 hours, failing deletions; from the table, never Drive's quota) |
+| Verification | Readiness (database, migrations, storage, FFmpeg, workers, AI keys, publishing, payments, realtime, support, security, configuration, backups, email, accounts, alerts, movie sources), a stream check, and the 75 release gates (seven of them, optional, for movie sources), each passed, failed, not applicable or not checked, recorded by an admin with the date and a note |
+| System settings | Security (master key, trusted proxies), General, Email, AI providers, Social OAuth, Storage, Backups, Runtime, Credit pricing, Notifications, Movie sources (Google Drive with *Test Drive connection*, retention, folders, frames; every studio's sources); each value's source |
 | Audit log | Security and administration events, filtered and paginated on the server |
 
 ## 2. Security architecture (Phases 22, 24, 27)
@@ -192,7 +199,8 @@ publication uses them; scratch folders 3 days; `.part` files 1 day. The daily cl
 | API (`uvicorn app.main:app`, 127.0.0.1:8000) and Next.js (127.0.0.1:3001) | Always |
 | `reelforge-worker@text`, `@image`, `@video`, `@voice`, `@render`, `@source` | Writing, images, AI video, narration, render and clip extraction, sources and transcription |
 | `reelforge-worker@youtube`, `@social` | YouTube, TikTok and Facebook uploads |
-| `reelforge-worker@scheduler` | Scheduled publications, email retries, system alerts |
+| `reelforge-worker@scheduler` | Scheduled publications, email retries, system alerts, movie source retention |
+| `reelforge-worker@movie` | Only with movie sources enabled: imports to Google Drive, deletions, Prepare Movie, Visual Analysis, movie excerpts |
 | `reelforge-media-maintenance.timer` | Daily media cleanup at 03:00 |
 | `reelforge-backup.timer` | Daily database backup at 02:30 |
 
@@ -206,7 +214,7 @@ wins. `REELFORGE_TOKEN_ENCRYPTION_KEY` is only the legacy source of the master k
 
 ## 12. Database migration head
 
-`0026_change_production_origin`. Migrations 0001–0025 are unchanged; 0022–0025 only add nullable columns to existing
+`0027_movie_sources`. Migrations 0001–0026 are unchanged; 0022–0025 and 0027 only add nullable columns to existing
 tables and new tables, so code that predates them keeps working on the new schema, and 0026 changes data only (the
 production domain).
 
@@ -224,6 +232,7 @@ production domain).
 | `0024_operations` | `backup_runs`, `system_alerts` | `test_phase25.py` |
 | `0025_verification_status` | `verification_checks.status` (passed, failed, not applicable; NULL is not checked); verified rows become passed | `test_phase28.py` |
 | `0026_change_production_origin` | Data only: exactly `https://studio.imokome-cloud.com` becomes `https://reelforge.mul-service.com` (Secure cookies on), with OAuth redirect overrides that were exactly its callbacks; any other origin stays | `test_domain_migration.py` |
+| `0027_movie_sources` | `movie_sources`, `movie_source_uses`; `assets.movie_source_id` (nullable); indexes by workspace, status and next attempt, expiry, Drive file, project, run | `test_movie_migration.py` |
 
 Every migration test runs on SQLite and, with `REELFORGE_TEST_DATABASE_URL`, on PostgreSQL 16, in both directions,
 keeping every row. CI also runs `alembic check` after upgrading and after a full downgrade and upgrade.
@@ -231,7 +240,8 @@ keeping every row. CI also runs `alembic check` after upgrading and after a full
 ## 13. FFmpeg requirements
 
 System `ffmpeg` and `ffprobe` plus Noto fonts (`sudo apt install -y ffmpeg fonts-noto-core fonts-noto-cjk`); check with
-`python -m app.render_worker --check`. Needed by the API, the render worker and the source worker.
+`python -m app.render_worker --check`. Needed by the API, the render worker, the source worker and (with movie sources)
+the movie worker (`python -m app.movie_worker --check`).
 
 ## 14. Recommended home-server directories
 
@@ -246,9 +256,11 @@ separately from them.
 ## 15. Verification
 
 **Automated (no paid or live service):** backend tests on SQLite and PostgreSQL 16, Alembic upgrade/check/downgrade,
-frontend typecheck and build, the browser suite on PostgreSQL (30 tests in 11 specs, including the layout at seven
-window sizes from 390 to 1920 px), a load baseline ([LOAD_BASELINE.md](LOAD_BASELINE.md)), an accessibility pass.
-Current results: [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-03-release-closure);
+frontend typecheck and build, the browser suite on PostgreSQL (31 tests in 12 specs, including the layout at seven
+window sizes from 390 to 1920 px and movie sources against an in-memory Google Drive), a real FFmpeg run of the movie
+pipeline on a synthetic movie, a load baseline ([LOAD_BASELINE.md](LOAD_BASELINE.md)), an accessibility pass.
+Current results: [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-04-movie-source-phase)
+(the release closure's: [2026-10-03](RELEASE_V1_CHECKLIST.md#automated-evidence-development-machine-2026-10-03-release-closure));
 CI on the release candidate: [V1_RELEASE_STATUS.md](V1_RELEASE_STATUS.md).
 
 **Manual, on the real server:** every gate of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md), recorded in

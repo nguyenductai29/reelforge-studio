@@ -58,6 +58,14 @@ def prepare_api(database_url: str | None) -> None:
     (api / "instance" / "bootstrap.json").write_text(json.dumps({
         "database_url": url, "frontend_origin": f"http://127.0.0.1:{WEB_PORT}", "secure_cookies": False}))
     (api / "instance" / "master.key").write_text(Fernet.generate_key().decode() + "\n")
+    # Movie sources (e2e/tests/12-movie-sources.spec.ts): dummy FFmpeg tools (e2e/movie_driver.py fakes the work)
+    # and an empty import root (the spec puts a movie in its studio's folder, <root>/<workspace id>/).
+    tools = api / "instance" / "tools"
+    tools.mkdir()
+    for name in ("ffmpeg", "ffprobe"):
+        (tools / name).write_text("")
+    shutil.rmtree(STACK / "import", ignore_errors=True)
+    (STACK / "import").mkdir(parents=True)
     env = {**os.environ, "PYTHONPATH": str(api), "REELFORGE_MASTER_KEY_FILE": str(api / "instance" / "master.key")}
     if url.startswith("postgresql"):
         subprocess.run([sys.executable, "-m", "alembic", "downgrade", "base"], cwd=api, env=env, check=True)

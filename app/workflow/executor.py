@@ -26,7 +26,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import jobs, notifications
+from app import jobs, movie_sources, notifications
 from app.logs import log_event, payload_summary
 from app.models import WorkflowRun, WorkflowRunStep
 from app.workflow.config import TEXT as TEXT_FIELD, ConfigError
@@ -145,6 +145,8 @@ class WorkflowExecutor:
                 **self._run_fields(context), "previous_status": previous, "status": context.run.status}))
             # Completed, failed, needs attention or awaiting review: tell the studio (same transaction).
             notifications.run_status_changed(context.db, context.run, previous, context.run.status)
+            # A movie source a finished run used becomes ready again, or completed after a success.
+            movie_sources.run_status_changed(context.db, context.run, previous, context.run.status)
         self._flush(context)
         return RunProgress(steps, evaluated)
 

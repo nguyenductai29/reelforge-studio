@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import os
 
 from app.providers.text.anthropic import AnthropicTextProvider
-from app.providers.text.base import TextGenerationProvider, TextProviderError, TextResult, TextUsage
+from app.providers.text.base import TextGenerationProvider, TextImage, TextProviderError, TextResult, TextUsage
 from app.providers.text.gemini import GeminiTextProvider
 from app.providers.text.openai import OpenAITextProvider
 from app import system_config
@@ -59,5 +59,5 @@ def text_credit_cost() -> int:
     return amount
 
 
-__all__ = ["TEXT_PROVIDERS", "TEXT_TASK", "TextGenerationProvider", "TextProviderError", "TextProviderSpec",
+__all__ = ["TEXT_PROVIDERS", "TEXT_TASK", "TextGenerationProvider", "TextImage", "TextProviderError", "TextProviderSpec",
            "TextResult", "TextUsage", "create_text_provider", "text_credit_cost", "text_provider_config_issue"]

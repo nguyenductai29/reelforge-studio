@@ -39,9 +39,9 @@ The payments section shows each gateway's state (available, disabled, not config
 
 ## Release gates (recorded by hand)
 
-The checklist beside readiness holds the 68 release gates of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) that
-need a person, in twelve groups: release, domain change, platform, email, security, AI providers, render, publishing,
-VietQR payments, card payments, operations, legal. For each gate an admin records:
+The checklist beside readiness holds the 75 release gates of [RELEASE_V1_CHECKLIST.md](RELEASE_V1_CHECKLIST.md) that
+need a person, in thirteen groups: release, domain change, platform, email, security, AI providers, render,
+publishing, VietQR payments, card payments, operations, movie sources, legal. For each gate an admin records:
 
 - a **status**: *Passed*, *Failed*, *Not applicable* or *Not checked*;
 - who recorded it and when (kept while only the note changes);
@@ -51,9 +51,9 @@ Rules:
 
 - **Nothing is recorded automatically**: not a passing readiness check, a green pre-flight, a saved gateway, or a
   successful test. A gate is passed only when the person who checked it says so.
-- *Not applicable* is offered, and accepted by the API, only for a provider an installation may leave off: payOS,
-  OnePAY (every card item), Runway image and video, TikTok, Facebook, with their domain-change gates. Every other gate
-  must be *Passed*.
+- *Not applicable* is offered, and accepted by the API, only for a provider or feature an installation may leave
+  off: payOS, OnePAY (every card item), Runway image and video, TikTok, Facebook, with their domain-change gates, and
+  the movie source gates. Every other gate must be *Passed*.
 - *Failed* keeps the gate open; record what failed in the note, fix it, check again.
 - *Not checked* clears who and when; the note stays.
 - The header counts each status and says how many gates are still open. The release stays a release candidate until
@@ -101,7 +101,7 @@ Also: Admin → System settings → Social OAuth must hold no redirect override 
 
 | Gate | Steps |
 | --- | --- |
-| `migration_upgraded` | `python -m alembic current` shows `0026_change_production_origin (head)`; readiness shows Migration ok; an account created before the upgrade still signs in |
+| `migration_upgraded` | `python -m alembic current` shows `0027_movie_sources (head)`; readiness shows Migration ok; an account created before the upgrade still signs in |
 | `storage_on_hdd` | Admin → Cài đặt hệ thống → Lưu trữ: `/srv/data/videos/reelforge`; readiness shows the root and writable; Admin → Vận hành shows its disk ([STORAGE.md](STORAGE.md)) |
 | `ffmpeg_verified` | `python -m app.render_worker --check` |
 | `master_key_file` | `python -m app.master_key status`: a file, `ls -l /etc/reelforge/master.key` shows `-rw-------`; a copy is stored off the server, apart from the dumps ([SYSTEM_CONFIGURATION.md](SYSTEM_CONFIGURATION.md)) |
@@ -237,6 +237,13 @@ as the legal review (L2) requires, by hand, and note it on the request.
 | Gate | Steps |
 | --- | --- |
 | `server_reboot` | `sudo reboot`. Afterwards, without starting anything by hand: `systemctl --failed` lists no ReelForge unit; `systemctl list-timers 'reelforge*'` shows both timers; the Cloudflare tunnel is up (the site opens); `bash deploy/release-preflight.sh` has no new FAIL; a small workflow runs to the end |
+
+### Movie sources
+
+Optional: *Not applicable* while movie sources are off. Each gate's procedure (import folder, Google Drive, the
+movie worker, what to look for) is in [MOVIE_SOURCE_VERIFICATION.md](MOVIE_SOURCE_VERIFICATION.md):
+`movie_drive_connection`, `movie_import_local`, `movie_import_url`, `movie_scratch_download`, `movie_pipeline_live`
+(paid), `movie_source_deletion`, `movie_retention_cleanup`.
 
 ### Legal
 

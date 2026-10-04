@@ -194,7 +194,7 @@ assert other.post("/api/admin/system-config/ai/gemini/test").status_code == 403
 assert other.post("/api/admin/system-config/storage/check", json={"root": "/tmp"}).status_code == 403
 state = overview()
 assert set(state["sections"]) == {"ai", "social", "storage", "runtime", "credits", "notifications", "email", "security",
-                                 "backups"}
+                                 "backups", "movie_sources"}
 assert state["master_key"]["source"] == "legacy_env" and state["master_key"]["encryption_available"]
 
 # Environment fallback, then the admin value wins at once: no restart.

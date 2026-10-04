@@ -83,7 +83,8 @@ Each asset has a `kind`. It is set where the asset is created. Migration 0016 la
 | `generated_image` | Image | intermediate: 30 days |
 | `scene_video` | Video | intermediate: 30 days |
 | `voice` | Voice | intermediate: 30 days |
-| `extracted_clip` | Extract Source Clips | intermediate: 30 days |
+| `extracted_clip` | Extract Source Clips (an uploaded video or a movie source) | intermediate: 30 days |
+| `movie_audio` | Prepare Movie: a movie source's sound for the transcript | intermediate: 30 days |
 | `other` | anything unclassified | kept |
 
 An intermediate asset expires only when all of these hold:

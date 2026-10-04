@@ -1,7 +1,7 @@
 """Database models for the application schema."""
 import json
 from datetime import datetime, timezone
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -113,6 +113,8 @@ class Asset(Base):
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, deferred=True)
     expired_reason: Mapped[str | None] = mapped_column(String(24), nullable=True, deferred=True)
     expired_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True, deferred=True)
+    # Migration 0027: the movie source an extracted clip or the working audio came from (app/movie_sources.py).
+    movie_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True, deferred=True)
 
 
 class Workflow(Base):
@@ -592,3 +594,86 @@ class SystemAlert(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MovieSource(Base):
+    """A temporary source movie for the movie-processing workflows (migration 0027, app/movie_sources.py).
+
+    The original lives in the operator's Google Drive only while it is needed; the row stays after the file is
+    deleted (status ``deleted``) for the project history and the audit. No path is stored as given: a local import
+    keeps its path relative to the import root, a URL import keeps only a display form (scheme, host, path) and the
+    full URL encrypted until the import ends. The ``attempt_count`` … ``lease_expires_at`` columns are the work lease
+    of the movie worker while it imports, uploads or deletes the source."""
+
+    __tablename__ = "movie_sources"
+    __table_args__ = (
+        CheckConstraint("status IN ('created', 'importing', 'uploading', 'ready', 'processing', 'completed', "
+                        "'delete_scheduled', 'deleting', 'deleted', 'failed')", name="ck_movie_sources_status"),
+        CheckConstraint("source_type IN ('local', 'url', 'drive')", name="ck_movie_sources_source_type"),
+        Index("ix_movie_sources_workspace", "workspace_id", "created_at"),
+        Index("ix_movie_sources_work", "status", "next_attempt_at"),
+        Index("ix_movie_sources_expires", "expires_at"),
+        Index("ix_movie_sources_drive_file", "drive_file_id"),
+        Index("ix_movie_sources_project", "project_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"))
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", name="fk_movie_sources_project_id"),
+                                                   nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(16))
+    original_name: Mapped[str] = mapped_column(String(255))
+    original_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    url_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    drive_import_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(24))
+    failure_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    failure_message_safe: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    container: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    video_codec: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    audio_codec: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checksum_md5: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    drive_file_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    drive_folder_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    upload_session_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    progress_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processing_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delete_after_success: Mapped[bool] = mapped_column(Boolean, default=True)
+    delete_grace_hours: Mapped[int] = mapped_column(Integer, default=24)
+    delete_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MovieSourceUse(Base):
+    """A workflow run that uses a movie source (migration 0027): the durable reference that keeps the source.
+
+    A source is in use while any run that refers to it is still running or waiting for review; nothing is counted
+    in memory, so a crashed worker can never leave a source protected forever or deletable too early."""
+
+    __tablename__ = "movie_source_uses"
+    __table_args__ = (UniqueConstraint("movie_source_id", "run_id", name="uq_movie_source_uses_run"),
+                      Index("ix_movie_source_uses_run", "run_id"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    movie_source_id: Mapped[str] = mapped_column(ForeignKey("movie_sources.id"))
+    workspace_id: Mapped[str] = mapped_column(String(36))
+    run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

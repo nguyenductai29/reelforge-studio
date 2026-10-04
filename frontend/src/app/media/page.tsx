@@ -19,6 +19,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState, FieldLabel, FilterPills, PageHeader } from "@/components/reelforge/primitives";
 import { MediaThumb, assetKindIcon } from "@/components/reelforge/media-preview";
+import { MediaTabs } from "@/components/reelforge/media-tabs";
 import { api, assetUrl, jsonRequest } from "@/lib/api";
 import { useErrorToast } from "@/lib/errors";
 import { useDocumentTitle } from "@/lib/hooks";
@@ -150,6 +151,7 @@ function MediaPage() {
           </Button>
         }
       />
+      <MediaTabs active="files" />
       <input
         ref={input}
         type="file"

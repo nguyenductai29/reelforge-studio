@@ -24,7 +24,9 @@ ADMIN = r'''
 import uuid
 from app import admin_dashboard, storage
 from app.db import engine
-from app.heartbeat import WORKERS
+from app.heartbeat import WORKERS, expected
+# The movie worker is expected only while movie sources are enabled (off by default).
+EXPECTED = [name for name in WORKERS if expected(name)]
 from app.models import (BackupRun, CreditAccount, CreditLedger, PaymentOrder, Subscription, SupportMessage,
                         SupportTicket, User, WorkerHeartbeat, Workspace)
 ORIGIN = {"Origin": "http://testserver"}
@@ -71,11 +73,12 @@ assert first["periods"]["days"] == 30 and first["periods"]["jobs_hours"] == 24 a
 assert first["growth"]["days"][-1] == NOW.date().isoformat()
 assert set(first["credits"].values()) == {0} and first["payments"]["paid"] == 0 and first["ai_usage"]["jobs"] == 0
 # A new installation: no worker has reported and no backup ran yet; nothing is critical.
-assert row(first, "workers")["missing"] == list(WORKERS) and row(first, "workers")["status"] == "warning"
+assert row(first, "workers")["missing"] == EXPECTED and "movie_worker" not in EXPECTED
+assert row(first, "workers")["status"] == "warning"
 assert row(first, "backups")["status"] == "warning" and row(first, "backups")["detail"] == "never"
 assert row(first, "database")["status"] == ("healthy" if POSTGRES else "warning")
 assert first["health"]["status"] == first["overview"]["system_status"] != "critical"
-assert attention(first, "workers_missing")["count"] == len(WORKERS) and attention(first, "backup_never")["severity"] == "info"
+assert attention(first, "workers_missing")["count"] == len(EXPECTED) and attention(first, "backup_never")["severity"] == "info"
 
 second, second_ws = studio("second@example.com", "Second Studio")
 third, third_ws = studio("third@example.com", "Third Studio")

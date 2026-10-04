@@ -26,9 +26,10 @@ from app.workflow.results import derive_run_status
 
 logger = logging.getLogger(__name__)
 PAID_KINDS = {"video.generate": "video", "text.generate": "text", "image.generate": "image", "voice.generate": "voice",
-              "transcription.generate": "transcription"}
+              "transcription.generate": "transcription", "vision.analyze": "vision"}
 # The node type a paid job must belong to; text jobs name their own node type in the payload.
-PAID_NODE_TYPES = {"video": "video", "image": "image", "voice": "voice", "transcription": "transcribe"}
+PAID_NODE_TYPES = {"video": "video", "image": "image", "voice": "voice", "transcription": "transcribe",
+                   "vision": "visual_analysis"}
 
 
 class ReconciliationError(ValueError):

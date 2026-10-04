@@ -90,7 +90,7 @@ class SchemaTest(unittest.TestCase):
                                             "tool_id"])
         self.assertEqual(writer["language"]["options"], ["auto", "vi", "en", "ja"])
         self.assertEqual(writer["tone"]["options"], ["neutral", "casual", "professional", "cinematic", "storytelling",
-                                                     "documentary", "dramatic", "funny"])
+                                                     "documentary", "dramatic", "funny", "critical"])
         self.assertEqual(writer["platform"]["options"], ["generic", "youtube", "youtube_shorts", "tiktok", "facebook"])
         self.assertEqual(writer["duration"]["presets"], [30, 60, 180, 300, 600])
         self.assertEqual((writer["tool_id"]["type"], writer["tool_id"]["task"], writer["tool_id"]["providers"]),

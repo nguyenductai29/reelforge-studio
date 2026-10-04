@@ -26,7 +26,13 @@ export type NodeType =
   | "story_analysis"
   | "recap_script"
   | "match_scenes"
-  | "extract_clips";
+  | "extract_clips"
+  | "movie_source"
+  | "movie_prepare"
+  | "visual_analysis"
+  | "movie_timeline"
+  | "review_script"
+  | "clip_select";
 
 /** Per-node settings; the backend validates them for each node type. */
 export type NodeConfig = Record<string, unknown>;
@@ -51,7 +57,7 @@ export type OutputPort = { name: string; type: string };
  */
 export type ConfigField = {
   key: string;
-  type: "select" | "integer" | "number" | "text" | "tool" | "asset";
+  type: "select" | "integer" | "number" | "text" | "tool" | "asset" | "movie_source";
   label: string;
   default: string | number | null;
   required: boolean;
@@ -95,7 +101,8 @@ export type Permission =
   | "members.manage"
   | "billing.view"
   | "billing.manage"
-  | "ownership.transfer";
+  | "ownership.transfer"
+  | "movie_sources.delete";
 export type WorkspaceRef = { id: string; name: string; role: Role; active: boolean };
 export type AccountState = {
   email_verified: boolean;
@@ -399,6 +406,8 @@ export type AdminStorage = {
   disk: { total_bytes: number; used_bytes: number; free_bytes: number; percent: number } | null;
   default_quota_bytes: number;
   retention: RetentionInfo | null;
+  /** The temporary movie sources in Google Drive (from ReelForge's records), null before migration 0027. */
+  movie_sources: MovieDriveSummary | null;
 };
 export type RunStepItem = { node_id: string; node_type: NodeType; status: RunStatus; detail: string; error_code: string | null };
 /** GET /api/workflow-runs/{id}/summary: progress, results, credits and publishing of one run. */
@@ -727,7 +736,17 @@ export type SystemSetting = {
   configured?: boolean;
   value?: string | number | boolean | null;
 };
-export type SystemSection = "ai" | "social" | "storage" | "runtime" | "credits" | "notifications" | "email" | "security" | "backups";
+export type SystemSection =
+  | "ai"
+  | "social"
+  | "storage"
+  | "runtime"
+  | "credits"
+  | "notifications"
+  | "email"
+  | "security"
+  | "backups"
+  | "movie_sources";
 export type SystemConfigOverview = {
   sections: Record<SystemSection, SystemSetting[]>;
   history: Record<SystemSection, { action: string; at: string; by: string | null;
@@ -760,6 +779,108 @@ export type SystemConfigOverview = {
   migrated: boolean;
   /** Phase 22; absent from older APIs. */
   email?: { problem: string | null; provider: string; stats: { queued: number; sent: number; failed: number; last_error: string | null } };
+  /** Movie sources (migration 0027); absent from older APIs. */
+  movie_sources?: {
+    drive_problem: string | null;
+    last_test: { action: string; at: string; by: string | null; metadata: { status?: string; failed?: string } } | null;
+    summary: MovieDriveSummary | null;
+  };
+};
+
+/** Movie sources (migration 0027, docs/MOVIE_SOURCES.md): temporary source movies kept in the operator's Drive. */
+export type MovieSourceStatus =
+  | "created"
+  | "importing"
+  | "uploading"
+  | "ready"
+  | "processing"
+  | "completed"
+  | "delete_scheduled"
+  | "deleting"
+  | "deleted"
+  | "failed";
+export type MovieSourceType = "local" | "url" | "drive";
+export type MovieSource = {
+  id: string;
+  name: string;
+  source_type: MovieSourceType;
+  status: MovieSourceStatus;
+  project: { id: string; title: string } | null;
+  /** The address without its query (URL sources) and the path inside the import folder (server files). */
+  original_url: string | null;
+  local_path: string | null;
+  bytes: number | null;
+  duration_seconds: number | null;
+  width: number | null;
+  height: number | null;
+  container: string | null;
+  content_type: string | null;
+  video_codec: string | null;
+  audio_codec: string | null;
+  progress_bytes: number | null;
+  created_at: string | null;
+  ready_at: string | null;
+  expires_at: string | null;
+  success_at: string | null;
+  deleted_at: string | null;
+  delete_after_success: boolean;
+  delete_grace_hours: number;
+  deletion_due_at: string | null;
+  failure: { stage: string | null; code: string | null; message: string | null } | null;
+  stored_in_drive: boolean;
+  in_use: boolean;
+  runs: { id: string; status: RunStatus; workflow_id: string; created_at: string | null }[];
+  can_retry_upload: boolean;
+  can_retry_import: boolean;
+  can_extend: boolean;
+  can_use: boolean;
+  /** Admin console only. */
+  workspace_id?: string;
+  workspace_name?: string | null;
+  drive_file_id?: string | null;
+  drive_folder_id?: string | null;
+  attempt_count?: number;
+  next_attempt_at?: string | null;
+  checksum_sha256?: string | null;
+};
+export type MovieSourceConfig = {
+  enabled: boolean;
+  drive_problem: string | null;
+  local_import: boolean;
+  retention_days: number;
+  max_retention_days: number;
+  extend_days: number[];
+  delete_after_success: boolean;
+  success_grace_hours: number;
+  max_source_bytes: number;
+  max_duration_seconds: number;
+  notice: string;
+};
+export type MovieSourcePage = Page<MovieSource> & { config: MovieSourceConfig };
+export type LocalImportEntry = { type: "folder" | "file"; name: string; path: string; bytes?: number; modified_at?: string };
+export type LocalImportListing = { folder: string; parent: string | null; entries: LocalImportEntry[]; truncated: boolean };
+export type DriveInboxFile = { id: string; name: string; bytes: number | null; mime_type: string; created_at: string | null };
+export type DriveInboxListing = { files: DriveInboxFile[]; next_page_token: string | null };
+export type MovieDriveSummary = {
+  enabled: boolean;
+  drive_problem: string | null;
+  files: number;
+  bytes: number;
+  oldest_at: string | null;
+  expiring_soon: number;
+  delete_failures: number;
+  failed_last_day: number;
+  importing: number;
+  warning_bytes: number;
+  over_warning: boolean;
+};
+export type AdminMovieSourcePage = Page<MovieSource> & { summary: MovieDriveSummary };
+export type MovieReviewMode = "recap" | "review" | "ending_explained";
+export type MovieWorkflowStart = { workflow_id: string; project_id: string; run: Run };
+export type DriveTestResult = {
+  status: "ok" | "error";
+  checks: { key: string; status: "ok" | "error" | "warning"; code?: string; account?: string | null }[];
+  checked_at: string;
 };
 export type ProviderTest = {
   provider: string;
@@ -988,6 +1109,8 @@ export type AdminAttention = {
   detail?: string | null;
   problem?: string | null;
   max_age_hours?: number;
+  /** Movie sources: the Google Drive space they use. */
+  bytes?: number | null;
 };
 export type AdminHealthRow =
   | { key: "api"; status: HealthStatus }

@@ -79,6 +79,12 @@ export function readinessText(step: ReadinessStep, readiness: Readiness, t: Dict
       return r.ffmpegMissing;
     case "font_unavailable":
       return r.fontUnavailable;
+    case "source_not_ready":
+      return r.movieSourceNotReady;
+    case "source_failed":
+      return r.movieSourceFailed;
+    case "source_expired":
+      return r.movieSourceExpired;
     default:
       return step.detail;
   }

@@ -35,7 +35,7 @@ _LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 LANGUAGES = {"vi": "Vietnamese", "en": "English", "ja": "Japanese"}
 TONES = {"neutral": None, "casual": "casual and conversational", "professional": "professional",
          "cinematic": "cinematic", "storytelling": "storytelling", "documentary": "documentary",
-         "dramatic": "dramatic", "funny": "funny and light-hearted"}
+         "dramatic": "dramatic", "funny": "funny and light-hearted", "critical": "critical and analytical"}
 PLATFORMS = {"generic": None, "youtube": "YouTube (long-form)", "youtube_shorts": "YouTube Shorts (vertical, short)",
              "tiktok": "TikTok (vertical, short)", "facebook": "Facebook"}
 SUMMARY_LENGTHS = {"short": "in 2 to 3 sentences", "medium": "in one paragraph of about 5 to 7 sentences",
@@ -144,6 +144,10 @@ class TextNodeHandler(NodeHandler):
         return {self.outputs[0].name: result.text, "provider": result.provider, "model": result.model,
                 "usage": result.usage.as_dict(), "language": payload.get("language")}
 
+    def payload_extras(self, context, config, inputs) -> dict[str, Any]:
+        """Extra facts frozen in the job for ``output_from`` (e.g. a movie's length to check its time ranges)."""
+        return {}
+
     # Execution --------------------------------------------------------------
 
     def with_workspace_defaults(self, context, raw, config) -> dict[str, Any]:
@@ -189,7 +193,8 @@ class TextNodeHandler(NodeHandler):
         payload = {"kind": "text.generate", "node_type": self.node_type, "provider": tool.provider,
                    "model": tool.model, "tool_id": tool.id, "system_prompt": self.system_prompt, "prompt": prompt,
                    "temperature": config.get("temperature"), "max_tokens": config["max_tokens"],
-                   "response_format": self.response_format, "language": language, "credits": cost}
+                   "response_format": self.response_format, "language": language, "credits": cost,
+                   **self.payload_extras(context, config, inputs)}
         return NodeExecutionResult.queued(QUEUED_DETAIL, JobRequest("text", payload),
                                           {"provider": tool.provider, "model": tool.model},
                                           metadata={"credits_reserved": cost,

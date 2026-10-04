@@ -33,11 +33,13 @@ The workers:
 | `source_worker` | `source:` (web pages and transcription) |
 | `youtube_worker` | `publish:youtube:` |
 | `social_worker` | `publish:tiktok:`, `publish:facebook:` |
-| `scheduler_worker` | none; it queues scheduled publications |
+| `scheduler_worker` | none; it queues scheduled publications (and schedules movie source deletions) |
+| `movie_worker` | `movie:` (Prepare Movie, Visual Analysis, movie excerpts) and the movie source leases (import, upload, deletion); expected only while movie sources are enabled |
 
 ## Jobs and stuck work
 
-`GET /api/admin/jobs` (system admins; filters `state`, `queue`, `limit`, `offset`; the response has `total`) lists recent jobs of every workspace, one page at a time. It returns safe fields only:
+`GET /api/admin/jobs` (system admins; filters `state`, `queue` (`text`, `image`, `video`, `voice`, `render`, `source`,
+`publish`, `movie`), `limit`, `offset`; the response has `total`) lists recent jobs of every workspace, one page at a time. It returns safe fields only:
 
 - queue and channel;
 - state and attempt count;
@@ -57,6 +59,10 @@ Payloads are never returned: they can hold prompts or URLs. The response also ha
 - **Settings → Storage** (`GET /api/storage`) shows the workspace's stored bytes against its plan's quota, by kind (video, audio, image, document), with the intermediate media it can delete now. The dashboard also returns `storage`.
 - Quotas come from each plan's storage limit (Phase 17). The studio sees warnings at 70, 80, 90 and 100 %, and at 100 % nothing new can be stored. See [STORAGE.md](STORAGE.md).
 - `GET /api/admin/storage` lists studios fullest first, one page at a time, with the count at each warning level and the media disk's free space. Admin → Operations shows it.
+- The same response has `movie_sources`: the temporary movie sources kept in Google Drive (files, bytes, the oldest
+  source, sources expiring within 24 hours, failing deletions, the warning size), counted from the `movie_sources`
+  table, never from Drive's own quota. Admin → Operations shows it as *Movie source Drive* once movie sources are
+  enabled (or while Drive still holds some); see [MOVIE_SOURCES.md](MOVIE_SOURCES.md).
 - `python -m app.media_maintenance --usage` prints the same from the server.
 
 ## Media cleanup

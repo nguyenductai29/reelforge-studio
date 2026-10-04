@@ -53,6 +53,13 @@ export const statusTone: Record<string, string> = {
   waiting_user: "review",
   resolved: "completed",
   closed: "draft",
+  // Movie sources (migration 0027).
+  created: "queued",
+  importing: "processing",
+  processing: "generating",
+  delete_scheduled: "scheduled",
+  deleting: "processing",
+  deleted: "draft",
 };
 
 const TINTS = [
@@ -104,6 +111,15 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+}
+
+/** A length or a position in a movie: h:mm:ss, or m:ss under an hour. */
+export function formatClock(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = String(total % 60).padStart(2, "0");
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
 }
 
 /** Workflow videos are saved as MP4 assets that remember the run that made them. */
